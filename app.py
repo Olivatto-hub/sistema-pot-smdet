@@ -1,3 +1,5 @@
+[file name]: deepseek_python_20251128_6f44cc.py
+[file content begin]
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -24,6 +26,83 @@ def autenticar():
         st.stop()
     
     return email
+
+# Função auxiliar para obter coluna de conta
+def obter_coluna_conta(df):
+    """Identifica a coluna que contém o número da conta"""
+    colunas_conta = ['Num Cartao', 'Num_Cartao', 'Conta', 'Número da Conta', 'Numero_Conta']
+    for coluna in colunas_conta:
+        if coluna in df.columns:
+            return coluna
+    return None
+
+# Função auxiliar para formatar valores no padrão brasileiro
+def formatar_brasileiro(valor, tipo='numero'):
+    """Formata valores no padrão brasileiro"""
+    if tipo == 'monetario':
+        return f"R$ {valor:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
+    elif tipo == 'numero':
+        return f"{valor:,}".replace(',', '.')
+    else:
+        return str(valor)
+
+# Função para processar dados principais
+def processar_dados(dados, nomes_arquivos=None):
+    """Processa os dados para gerar métricas e análises"""
+    metrics = {
+        'beneficiarios_unicos': 0,
+        'total_pagamentos': 0,
+        'contas_unicas': 0,
+        'projetos_ativos': 0,
+        'valor_total': 0,
+        'pagamentos_duplicados': 0,
+        'valor_total_duplicados': 0,
+        'total_cpfs_duplicados': 0
+    }
+    
+    # Combinar com análise de ausência de dados
+    analise_ausencia = analisar_ausencia_dados(dados, nomes_arquivos.get('pagamentos'), nomes_arquivos.get('contas'))
+    metrics.update(analise_ausencia)
+    
+    if not dados['pagamentos'].empty:
+        df = dados['pagamentos']
+        
+        # Beneficiários únicos
+        coluna_beneficiario = 'Beneficiario' if 'Beneficiario' in df.columns else 'Beneficiário'
+        if coluna_beneficiario in df.columns:
+            metrics['beneficiarios_unicos'] = df[coluna_beneficiario].nunique()
+        
+        # Total de pagamentos
+        metrics['total_pagamentos'] = len(df)
+        
+        # Contas únicas
+        coluna_conta = obter_coluna_conta(df)
+        if coluna_conta:
+            metrics['contas_unicas'] = df[coluna_conta].nunique()
+            
+            # Verificar duplicidades
+            contas_duplicadas = df[df.duplicated([coluna_conta], keep=False)]
+            if not contas_duplicadas.empty:
+                metrics['pagamentos_duplicados'] = contas_duplicadas[coluna_conta].nunique()
+                
+                # Calcular valor total das duplicidades
+                if 'Valor_Limpo' in contas_duplicadas.columns:
+                    metrics['valor_total_duplicados'] = contas_duplicadas['Valor_Limpo'].sum()
+        
+        # Projetos ativos
+        if 'Projeto' in df.columns:
+            metrics['projetos_ativos'] = df['Projeto'].nunique()
+        
+        # Valor total
+        if 'Valor_Limpo' in df.columns:
+            metrics['valor_total'] = df['Valor_Limpo'].sum()
+        
+        # CPFs duplicados
+        if 'CPF' in df.columns:
+            cpfs_duplicados = df[df.duplicated(['CPF'], keep=False)]
+            metrics['total_cpfs_duplicados'] = cpfs_duplicados['CPF'].nunique()
+    
+    return metrics
 
 # NOVA FUNÇÃO: Processar CPF de forma inteligente
 def processar_cpf(cpf):
@@ -247,8 +326,6 @@ def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_co
     
     return analise_ausencia
 
-# [As demais funções permanecem as mesmas...]
-
 # CORREÇÃO: Nova função para processar colunas de data
 def processar_colunas_data(df):
     """Converte colunas de data de formato numérico do Excel para datas legíveis"""
@@ -371,8 +448,6 @@ def carregar_dados():
         st.sidebar.info("📁 Aguardando planilha de abertura de contas")
     
     return dados, nomes_arquivos
-
-# [As demais funções permanecem similares, atualizando as mensagens sobre RGs]
 
 def mostrar_dashboard(dados, nomes_arquivos=None):
     st.header("📊 Dashboard Executivo - POT")
@@ -517,8 +592,6 @@ def mostrar_dashboard(dados, nomes_arquivos=None):
                     formatar_brasileiro(metrics.get('valor_total_duplicados', 0), 'monetario'),
                     delta="Valor a investigar"
                 )
-
-# [As demais funções de interface atualizadas com informações sobre RGs]
 
 def mostrar_importacao():
     st.header("📥 Estrutura das Planilhas")
@@ -689,4 +762,70 @@ def mostrar_relatorios(dados, nomes_arquivos=None):
     col1, col2 = st.columns(2)
     
     with col1:
-        if st.button("📄 Gerar PDF Executivo
+        if st.button("📄 Gerar PDF Executivo", use_container_width=True):
+            st.info("Funcionalidade de PDF em desenvolvimento...")
+    
+    with col2:
+        if st.button("📊 Gerar Excel Completo", use_container_width=True):
+            if not dados['pagamentos'].empty:
+                # Criar um arquivo Excel com múltiplas abas
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                    dados['pagamentos'].to_excel(writer, sheet_name='Pagamentos', index=False)
+                    if not dados['contas'].empty:
+                        dados['contas'].to_excel(writer, sheet_name='Contas', index=False)
+                    
+                    # Adicionar aba de métricas
+                    metricas_df = pd.DataFrame([metrics])
+                    metricas_df.to_excel(writer, sheet_name='Métricas', index=False)
+                
+                output.seek(0)
+                
+                st.download_button(
+                    label="📥 Baixar Excel",
+                    data=output,
+                    file_name=f"relatorio_pot_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+            else:
+                st.warning("Nenhum dado disponível para exportar")
+
+# Função principal
+def main():
+    # Autenticação
+    email = autenticar()
+    
+    if email:
+        st.sidebar.success(f"👤 Logado como: {email}")
+        
+        # Carregar dados
+        dados, nomes_arquivos = carregar_dados()
+        
+        # Menu de navegação
+        st.sidebar.markdown("---")
+        pagina = st.sidebar.radio(
+            "Navegação:",
+            ["📊 Dashboard", "📥 Importar Dados", "🔍 Consultas", "📋 Relatórios"]
+        )
+        
+        # Navegação entre páginas
+        if pagina == "📊 Dashboard":
+            mostrar_dashboard(dados, nomes_arquivos)
+        elif pagina == "📥 Importar Dados":
+            mostrar_importacao()
+        elif pagina == "🔍 Consultas":
+            mostrar_consultas(dados)
+        elif pagina == "📋 Relatórios":
+            mostrar_relatorios(dados, nomes_arquivos)
+    
+    # Rodapé
+    st.sidebar.markdown("---")
+    st.sidebar.markdown(
+        "**Sistema POT - SMDET**  \n"
+        "Prefeitura de São Paulo  \n"
+        f"© {datetime.now().year} - Versão 2.0"
+    )
+
+if __name__ == "__main__":
+    main()
+[file content end]
