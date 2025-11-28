@@ -7,6 +7,7 @@ import io
 from fpdf import FPDF
 import numpy as np
 import re
+import base64
 
 # Configuração da página
 st.set_page_config(
@@ -402,6 +403,122 @@ def processar_colunas_valor(df):
             df_processed['Valor_Limpo'] = 0.0
     
     return df_processed
+
+# NOVA FUNÇÃO: Gerar PDF Executivo
+def gerar_pdf_executivo(dados, metrics, nomes_arquivos):
+    """Gera relatório PDF executivo"""
+    try:
+        pdf = FPDF()
+        pdf.add_page()
+        
+        # Cabeçalho
+        pdf.set_font('Arial', 'B', 16)
+        pdf.cell(0, 10, 'RELATÓRIO EXECUTIVO - SISTEMA POT', 0, 1, 'C')
+        pdf.ln(5)
+        
+        # Informações gerais
+        pdf.set_font('Arial', 'B', 12)
+        pdf.cell(0, 10, 'Informações Gerais', 0, 1)
+        pdf.set_font('Arial', '', 10)
+        
+        pdf.cell(0, 8, f'Data do Relatório: {datetime.now().strftime("%d/%m/%Y %H:%M")}', 0, 1)
+        if nomes_arquivos.get('pagamentos'):
+            pdf.cell(0, 8, f'Planilha de Pagamentos: {nomes_arquivos["pagamentos"]}', 0, 1)
+        if nomes_arquivos.get('contas'):
+            pdf.cell(0, 8, f'Planilha de Contas: {nomes_arquivos["contas"]}', 0, 1)
+        
+        pdf.ln(5)
+        
+        # Métricas principais
+        pdf.set_font('Arial', 'B', 12)
+        pdf.cell(0, 10, 'Métricas Principais', 0, 1)
+        pdf.set_font('Arial', '', 10)
+        
+        if metrics.get('beneficiarios_unicos', 0) > 0:
+            pdf.cell(0, 8, f'Beneficiários Únicos: {formatar_brasileiro(metrics["beneficiarios_unicos"], "numero")}', 0, 1)
+        
+        if metrics.get('total_pagamentos', 0) > 0:
+            pdf.cell(0, 8, f'Total de Pagamentos: {formatar_brasileiro(metrics["total_pagamentos"], "numero")}', 0, 1)
+        
+        if metrics.get('contas_unicas', 0) > 0:
+            pdf.cell(0, 8, f'Contas Únicas: {formatar_brasileiro(metrics["contas_unicas"], "numero")}', 0, 1)
+        
+        if metrics.get('total_contas_abertas', 0) > 0:
+            pdf.cell(0, 8, f'Contas Abertas: {formatar_brasileiro(metrics["total_contas_abertas"], "numero")}', 0, 1)
+        
+        if metrics.get('projetos_ativos', 0) > 0:
+            pdf.cell(0, 8, f'Projetos Ativos: {formatar_brasileiro(metrics["projetos_ativos"], "numero")}', 0, 1)
+        
+        if metrics.get('valor_total', 0) > 0:
+            pdf.cell(0, 8, f'Valor Total: {formatar_brasileiro(metrics["valor_total"], "monetario")}', 0, 1)
+        
+        pdf.ln(5)
+        
+        # Alertas e problemas
+        if metrics.get('total_registros_criticos', 0) > 0:
+            pdf.set_font('Arial', 'B', 12)
+            pdf.cell(0, 10, 'Alertas Críticos', 0, 1)
+            pdf.set_font('Arial', '', 10)
+            pdf.cell(0, 8, f'Registros com dados críticos ausentes: {formatar_brasileiro(metrics["total_registros_criticos"], "numero")}', 0, 1)
+        
+        if metrics.get('pagamentos_duplicados', 0) > 0:
+            pdf.set_font('Arial', 'B', 12)
+            pdf.cell(0, 10, 'Duplicidades Identificadas', 0, 1)
+            pdf.set_font('Arial', '', 10)
+            pdf.cell(0, 8, f'Contas com pagamentos duplicados: {formatar_brasileiro(metrics["pagamentos_duplicados"], "numero")}', 0, 1)
+            if metrics.get('valor_total_duplicados', 0) > 0:
+                pdf.cell(0, 8, f'Valor em duplicidades: {formatar_brasileiro(metrics["valor_total_duplicados"], "monetario")}', 0, 1)
+        
+        # Rodapé
+        pdf.ln(10)
+        pdf.set_font('Arial', 'I', 8)
+        pdf.cell(0, 10, f'Gerado pelo Sistema POT - SMDET em {datetime.now().strftime("%d/%m/%Y")}', 0, 0, 'C')
+        
+        return pdf.output(dest='S').encode('latin1')
+    
+    except Exception as e:
+        st.error(f"Erro ao gerar PDF: {str(e)}")
+        return None
+
+# NOVA FUNÇÃO: Gerar Excel Completo (sem xlsxwriter)
+def gerar_excel_completo(dados, metrics):
+    """Gera arquivo Excel completo com os dados"""
+    try:
+        output = io.BytesIO()
+        
+        # Criar um arquivo Excel simples usando pandas
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            # Aba de Pagamentos
+            if not dados['pagamentos'].empty:
+                dados['pagamentos'].to_excel(writer, sheet_name='Pagamentos', index=False)
+            
+            # Aba de Contas
+            if not dados['contas'].empty:
+                dados['contas'].to_excel(writer, sheet_name='Contas', index=False)
+            
+            # Aba de Métricas
+            metricas_df = pd.DataFrame([
+                {'Métrica': 'Beneficiários Únicos', 'Valor': metrics.get('beneficiarios_unicos', 0)},
+                {'Métrica': 'Total de Pagamentos', 'Valor': metrics.get('total_pagamentos', 0)},
+                {'Métrica': 'Contas Únicas', 'Valor': metrics.get('contas_unicas', 0)},
+                {'Métrica': 'Contas Abertas', 'Valor': metrics.get('total_contas_abertas', 0)},
+                {'Métrica': 'Projetos Ativos', 'Valor': metrics.get('projetos_ativos', 0)},
+                {'Métrica': 'Valor Total', 'Valor': metrics.get('valor_total', 0)},
+                {'Métrica': 'Registros Críticos', 'Valor': metrics.get('total_registros_criticos', 0)},
+                {'Métrica': 'Pagamentos Duplicados', 'Valor': metrics.get('pagamentos_duplicados', 0)}
+            ])
+            metricas_df.to_excel(writer, sheet_name='Métricas', index=False)
+            
+            # Aba de Problemas (se houver)
+            if not metrics.get('resumo_ausencias', pd.DataFrame()).empty:
+                metrics['resumo_ausencias'].to_excel(writer, sheet_name='Problemas_Identificados', index=False)
+        
+        output.seek(0)
+        return output.getvalue()
+    
+    except Exception as e:
+        st.error(f"Erro ao gerar Excel: {str(e)}")
+        return None
 
 # Sistema de upload de dados MELHORADO: capturar nomes dos arquivos
 def carregar_dados():
@@ -808,33 +925,27 @@ def mostrar_relatorios(dados, nomes_arquivos=None):
     
     with col1:
         if st.button("📄 Gerar PDF Executivo", use_container_width=True):
-            st.info("Funcionalidade de PDF em desenvolvimento...")
+            pdf_data = gerar_pdf_executivo(dados, metrics, nomes_arquivos)
+            if pdf_data:
+                st.success("✅ PDF gerado com sucesso!")
+                st.download_button(
+                    label="📥 Baixar PDF",
+                    data=pdf_data,
+                    file_name=f"relatorio_executivo_pot_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
+                    mime="application/pdf"
+                )
     
     with col2:
         if st.button("📊 Gerar Excel Completo", use_container_width=True):
-            if not dados['pagamentos'].empty or not dados['contas'].empty:
-                # Criar um arquivo Excel com múltiplas abas
-                output = io.BytesIO()
-                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                    if not dados['pagamentos'].empty:
-                        dados['pagamentos'].to_excel(writer, sheet_name='Pagamentos', index=False)
-                    if not dados['contas'].empty:
-                        dados['contas'].to_excel(writer, sheet_name='Contas', index=False)
-                    
-                    # Adicionar aba de métricas
-                    metricas_df = pd.DataFrame([metrics])
-                    metricas_df.to_excel(writer, sheet_name='Métricas', index=False)
-                
-                output.seek(0)
-                
+            excel_data = gerar_excel_completo(dados, metrics)
+            if excel_data:
+                st.success("✅ Excel gerado com sucesso!")
                 st.download_button(
                     label="📥 Baixar Excel",
-                    data=output,
-                    file_name=f"relatorio_pot_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                    data=excel_data,
+                    file_name=f"relatorio_completo_pot_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
-            else:
-                st.warning("Nenhum dado disponível para exportar")
 
 # Função principal
 def main():
