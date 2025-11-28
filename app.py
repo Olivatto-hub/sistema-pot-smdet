@@ -350,7 +350,8 @@ def gerar_pdf_executivo(dados, tipo_relatorio):
     pdf.set_font('Arial', '', 12)
     pdf.cell(0, 10, f'Tipo: {tipo_relatorio}', 0, 1, 'C')
     pdf.cell(0, 10, f'Data: {datetime.now().strftime("%d/%m/%Y")}', 0, 1, 'C')
-    pdf.cell(0, 10, 'Secretaria Municipal de Desenvolvimento Economico, Trabalho e Turismo', 0, 1, 'C')
+    # CORREÇÃO: Nome correto da Secretaria
+    pdf.cell(0, 10, 'Secretaria Municipal do Desenvolvimento Economico e Trabalho', 0, 1, 'C')
     
     pdf.add_page()
     
@@ -1080,7 +1081,8 @@ def mostrar_rodape():
     
     with col1:
         st.markdown("**SMDET**")
-        st.markdown("Secretaria Municipal de Desenvolvimento Econômico, Trabalho e Turismo")
+        # CORREÇÃO: Nome correto da Secretaria
+        st.markdown("Secretaria Municipal do Desenvolvimento Econômico e Trabalho")
     
     with col2:
         st.markdown("**Suporte Técnico**")
@@ -1104,7 +1106,8 @@ def main():
     
     # Menu principal
     st.title("🏛️ Sistema POT - Programa Operação Trabalho")
-    st.markdown("Desenvolvido para Secretaria Municipal de Desenvolvimento Econômico, Trabalho e Turismo")
+    # CORREÇÃO: Nome correto da Secretaria
+    st.markdown("Desenvolvido para Secretaria Municipal do Desenvolvimento Econômico e Trabalho")
     st.markdown("---")
     
     # Abas
