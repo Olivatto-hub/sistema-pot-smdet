@@ -75,9 +75,117 @@ def carregar_dados():
     
     return dados
 
+def analisar_duplicidades(dados):
+    """Analisa pagamentos duplicados e retorna estatísticas"""
+    analise = {
+        'total_pagamentos': 0,
+        'beneficiarios_unicos': 0,
+        'pagamentos_duplicados': 0,
+        'valor_total_duplicados': 0,
+        'detalhes_duplicados': pd.DataFrame(),
+        'resumo_duplicidades': pd.DataFrame()
+    }
+    
+    if dados['pagamentos'].empty:
+        return analise
+    
+    df = dados['pagamentos'].copy()
+    analise['total_pagamentos'] = len(df)
+    
+    # Identificar beneficiários únicos
+    if 'CPF' in df.columns:
+        analise['beneficiarios_unicos'] = df['CPF'].nunique()
+    
+    # Identificar pagamentos duplicados por CPF
+    if 'CPF' in df.columns:
+        # Contar ocorrências por CPF
+        contagem_cpf = df['CPF'].value_counts().reset_index()
+        contagem_cpf.columns = ['CPF', 'Quantidade_Pagamentos']
+        
+        # Identificar CPFs com mais de 1 pagamento
+        cpf_duplicados = contagem_cpf[contagem_cpf['Quantidade_Pagamentos'] > 1]
+        analise['pagamentos_duplicados'] = len(cpf_duplicados)
+        
+        # Detalhar os pagamentos duplicados
+        if not cpf_duplicados.empty:
+            cpfs_com_duplicidade = cpf_duplicados['CPF'].tolist()
+            detalhes = df[df['CPF'].isin(cpfs_com_duplicidade)].copy()
+            
+            # Ordenar por CPF e Data (se disponível)
+            colunas_ordenacao = ['CPF']
+            if 'Data' in detalhes.columns:
+                colunas_ordenacao.append('Data')
+            detalhes = detalhes.sort_values(by=colunas_ordenacao)
+            
+            analise['detalhes_duplicados'] = detalhes
+            
+            # Calcular valor total dos duplicados
+            if 'Valor' in df.columns:
+                try:
+                    # Preparar coluna de valor para cálculo
+                    if df['Valor'].dtype == 'object':
+                        df['Valor_Limpo'] = (
+                            df['Valor']
+                            .astype(str)
+                            .str.replace('R$', '')
+                            .str.replace('.', '')
+                            .str.replace(',', '.')
+                            .str.replace(' ', '')
+                            .astype(float)
+                        )
+                        valor_col = 'Valor_Limpo'
+                    else:
+                        valor_col = 'Valor'
+                    
+                    # Calcular valor total dos pagamentos duplicados (excluindo o primeiro de cada CPF)
+                    valor_duplicados = 0
+                    for cpf in cpfs_com_duplicidade:
+                        pagamentos_cpf = df[df['CPF'] == cpf]
+                        if len(pagamentos_cpf) > 1:
+                            # Somar todos os pagamentos exceto o primeiro (considerando o primeiro como legítimo)
+                            valor_duplicados += pagamentos_cpf.iloc[1:][valor_col].sum()
+                    
+                    analise['valor_total_duplicados'] = valor_duplicados
+                    
+                except Exception as e:
+                    analise['valor_total_duplicados'] = 0
+            
+            # Criar resumo de duplicidades
+            resumo = []
+            for cpf in cpfs_com_duplicidade:
+                pagamentos_cpf = df[df['CPF'] == cpf]
+                qtd = len(pagamentos_cpf)
+                
+                info = {
+                    'CPF': cpf,
+                    'Quantidade_Pagamentos': qtd,
+                    'Beneficiario': pagamentos_cpf.iloc[0]['Beneficiario'] if 'Beneficiario' in pagamentos_cpf.columns else 'N/A',
+                    'Projeto': pagamentos_cpf.iloc[0]['Projeto'] if 'Projeto' in pagamentos_cpf.columns else 'N/A'
+                }
+                
+                if 'Valor' in pagamentos_cpf.columns:
+                    try:
+                        if pagamentos_cpf['Valor'].dtype == 'object':
+                            valores = pagamentos_cpf['Valor'].str.replace('R$', '').str.replace('.', '').str.replace(',', '.').astype(float)
+                        else:
+                            valores = pagamentos_cpf['Valor']
+                        info['Valor_Total'] = valores.sum()
+                    except:
+                        info['Valor_Total'] = 0
+                
+                resumo.append(info)
+            
+            analise['resumo_duplicidades'] = pd.DataFrame(resumo)
+    
+    return analise
+
 def processar_dados(dados):
     """Processa os dados para o dashboard"""
     metrics = {}
+    
+    # Análise de duplicidades
+    analise_dup = analisar_duplicidades(dados)
+    metrics.update(analise_dup)
     
     # Métricas básicas
     if not dados['pagamentos'].empty:
@@ -210,8 +318,44 @@ def gerar_pdf_executivo(dados, tipo_relatorio):
     
     pdf.ln(10)
     
+    # Análise de Duplicidades
+    if metrics.get('pagamentos_duplicados', 0) > 0:
+        pdf.chapter_title('ANALISE DE DUPLICIDADES - ALERTA')
+        
+        pdf.set_font('Arial', 'B', 12)
+        pdf.cell(0, 8, 'Diferenca Identificada:', 0, 1)
+        pdf.set_font('Arial', '', 12)
+        diff = metrics.get('total_pagamentos', 0) - metrics.get('beneficiarios_unicos', 0)
+        pdf.cell(0, 8, f'- {metrics.get("total_pagamentos", 0):,} pagamentos para {metrics.get("beneficiarios_unicos", 0):,} beneficiarios (diferenca: {diff} pagamentos)', 0, 1)
+        
+        pdf.cell(0, 8, f'- {metrics.get("pagamentos_duplicados", 0):,} CPFs com pagamentos duplicados', 0, 1)
+        
+        if metrics.get('valor_total_duplicados', 0) > 0:
+            pdf.cell(0, 8, f'- Valor total em duplicidades: R$ {metrics.get("valor_total_duplicados", 0):,.2f}', 0, 1)
+        
+        pdf.ln(5)
+        
+        # Resumo dos CPFs com duplicidade
+        if not metrics['resumo_duplicidades'].empty:
+            pdf.set_font('Arial', 'B', 12)
+            pdf.cell(0, 8, 'Principais Casos de Duplicidade:', 0, 1)
+            
+            headers = ['CPF', 'Qtd Pagamentos', 'Beneficiario', 'Projeto']
+            col_widths = [40, 25, 60, 55]
+            pdf.table_header(headers, col_widths)
+            
+            # Mostrar os 10 primeiros casos
+            for _, row in metrics['resumo_duplicidades'].head(10).iterrows():
+                pdf.table_row([
+                    row['CPF'],
+                    str(row['Quantidade_Pagamentos']),
+                    str(row['Beneficiario']),
+                    str(row['Projeto'])
+                ], col_widths)
+    
     # Análise de Projetos
     if not dados['pagamentos'].empty and 'Projeto' in dados['pagamentos'].columns:
+        pdf.add_page()
         pdf.chapter_title('DISTRIBUICAO POR PROJETO')
         
         projetos_count = dados['pagamentos']['Projeto'].value_counts().head(10)
@@ -227,60 +371,35 @@ def gerar_pdf_executivo(dados, tipo_relatorio):
             percentual = (quantidade / total) * 100
             pdf.table_row([projeto, f"{quantidade:,}", f"{percentual:.1f}%"], col_widths)
     
-    # Últimos Pagamentos
-    if not dados['pagamentos'].empty:
+    # Detalhes de Duplicidades (página separada)
+    if not metrics['detalhes_duplicados'].empty:
         pdf.add_page()
-        pdf.chapter_title('ULTIMOS PAGAMENTOS REGISTRADOS')
+        pdf.chapter_title('DETALHES DOS PAGAMENTOS DUPLICADOS')
         
         # Selecionar colunas relevantes
-        colunas_relevantes = [col for col in ['Data', 'Beneficiario', 'Projeto', 'Valor', 'Status'] 
-                             if col in dados['pagamentos'].columns]
+        colunas_relevantes = [col for col in ['CPF', 'Beneficiario', 'Projeto', 'Data', 'Valor'] 
+                             if col in metrics['detalhes_duplicados'].columns]
         
-        if not colunas_relevantes:
-            colunas_relevantes = dados['pagamentos'].columns[:4].tolist()
-        
-        dados_exibir = dados['pagamentos'][colunas_relevantes].head(15)
-        
-        # Ajustar larguras das colunas
-        num_cols = len(colunas_relevantes)
-        col_width = 180 // num_cols
-        col_widths = [col_width] * num_cols
-        
-        # Cabeçalho
-        pdf.table_header(colunas_relevantes, col_widths)
-        
-        # Dados
-        for _, row in dados_exibir.iterrows():
-            row_data = []
-            for col in colunas_relevantes:
-                cell_value = str(row[col]) if pd.notna(row[col]) else ""
-                # Limpar caracteres especiais
-                cell_value = pdf.safe_text(cell_value)
-                row_data.append(cell_value)
-            pdf.table_row(row_data, col_widths)
-    
-    # Análise Temporal
-    if not dados['pagamentos'].empty and 'Data' in dados['pagamentos'].columns:
-        try:
-            pdf.add_page()
-            pdf.chapter_title('ANALISE TEMPORAL')
+        if colunas_relevantes:
+            dados_exibir = metrics['detalhes_duplicados'][colunas_relevantes].head(20)
             
-            dados_pagamentos = dados['pagamentos'].copy()
-            dados_pagamentos['Data'] = pd.to_datetime(dados_pagamentos['Data'])
-            dados_pagamentos['Mes/Ano'] = dados_pagamentos['Data'].dt.strftime('%m/%Y')
+            # Ajustar larguras das colunas
+            num_cols = len(colunas_relevantes)
+            col_width = 180 // num_cols
+            col_widths = [col_width] * num_cols
             
-            evolucao = dados_pagamentos.groupby('Mes/Ano').size().tail(6)
+            # Cabeçalho
+            pdf.table_header(colunas_relevantes, col_widths)
             
-            headers = ['Mes/Ano', 'Pagamentos']
-            col_widths = [60, 60]
-            pdf.table_header(headers, col_widths)
-            
-            for mes_ano, quantidade in evolucao.items():
-                pdf.table_row([mes_ano, f"{quantidade:,}"], col_widths)
-                
-        except Exception as e:
-            # Ignora erro na análise temporal
-            pass
+            # Dados
+            for _, row in dados_exibir.iterrows():
+                row_data = []
+                for col in colunas_relevantes:
+                    cell_value = str(row[col]) if pd.notna(row[col]) else ""
+                    # Limpar caracteres especiais
+                    cell_value = pdf.safe_text(cell_value)
+                    row_data.append(cell_value)
+                pdf.table_row(row_data, col_widths)
     
     # Conclusão
     pdf.add_page()
@@ -297,6 +416,15 @@ def gerar_pdf_executivo(dados, tipo_relatorio):
     if metrics.get('valor_total', 0) > 0:
         conclusoes.append(f"- Investimento total de R$ {metrics.get('valor_total', 0):,.2f}")
     
+    # Adicionar conclusões sobre duplicidades
+    if metrics.get('pagamentos_duplicados', 0) > 0:
+        conclusoes.append("")
+        conclusoes.append("*** ALERTA: DUPLICIDADES IDENTIFICADAS ***")
+        conclusoes.append(f"- {metrics.get('pagamentos_duplicados', 0):,} beneficiarios com pagamentos duplicados")
+        conclusoes.append(f"- Diferenca: {metrics.get('total_pagamentos', 0) - metrics.get('beneficiarios_unicos', 0)} pagamentos extras")
+        if metrics.get('valor_total_duplicados', 0) > 0:
+            conclusoes.append(f"- Valor em duplicidades: R$ {metrics.get('valor_total_duplicados', 0):,.2f}")
+    
     for conclusao in conclusoes:
         pdf.cell(0, 8, pdf.safe_text(conclusao), 0, 1)
     
@@ -304,12 +432,21 @@ def gerar_pdf_executivo(dados, tipo_relatorio):
     pdf.set_font('Arial', 'B', 12)
     pdf.cell(0, 8, 'Recomendacoes:', 0, 1)
     pdf.set_font('Arial', '', 11)
+    
     recomendacoes = [
         "- Manter monitoramento continuo dos projetos",
         "- Expandir para novas regioes da cidade",
         "- Avaliar impacto social do programa",
         "- Otimizar processos de pagamento"
     ]
+    
+    # Adicionar recomendações específicas para duplicidades
+    if metrics.get('pagamentos_duplicados', 0) > 0:
+        recomendacoes.append("")
+        recomendacoes.append("- *** URGENTE: Investigar pagamentos duplicados ***")
+        recomendacoes.append("- Revisar processos de controle de pagamentos")
+        recomendacoes.append("- Implementar validacao anti-duplicidade em tempo real")
+        recomendacoes.append("- Auditoria nos casos identificados")
     
     for recomendacao in recomendacoes:
         pdf.cell(0, 7, pdf.safe_text(recomendacao), 0, 1)
@@ -326,13 +463,17 @@ def gerar_relatorio_excel(dados, tipo_relatorio):
     """Gera relatório em Excel"""
     output = io.BytesIO()
     
+    metrics = processar_dados(dados)
+    
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         # Sheet de resumo
-        metrics = processar_dados(dados)
         resumo = pd.DataFrame({
             'Metrica': [
                 'Total de Pagamentos',
                 'Beneficiarios Unicos (Pagamentos)',
+                'Diferenca (Pagamentos - Beneficiarios)',
+                'CPFs com Pagamentos Duplicados',
+                'Valor Total em Duplicidades',
                 'Projetos Ativos',
                 'Contas Abertas',
                 'Contas Unicas',
@@ -342,6 +483,9 @@ def gerar_relatorio_excel(dados, tipo_relatorio):
             'Valor': [
                 metrics.get('total_pagamentos', 0),
                 metrics.get('beneficiarios_unicos', 0),
+                metrics.get('total_pagamentos', 0) - metrics.get('beneficiarios_unicos', 0),
+                metrics.get('pagamentos_duplicados', 0),
+                f"R$ {metrics.get('valor_total_duplicados', 0):,.2f}" if metrics.get('valor_total_duplicados', 0) > 0 else "R$ 0,00",
                 metrics.get('projetos_ativos', 0),
                 metrics.get('total_contas', 0),
                 metrics.get('contas_unicas', 0),
@@ -350,6 +494,14 @@ def gerar_relatorio_excel(dados, tipo_relatorio):
             ]
         })
         resumo.to_excel(writer, sheet_name='Resumo Executivo', index=False)
+        
+        # Sheet de análise de duplicidades
+        if not metrics['resumo_duplicidades'].empty:
+            metrics['resumo_duplicidades'].to_excel(writer, sheet_name='Resumo_Duplicidades', index=False)
+        
+        # Sheet com detalhes completos dos duplicados
+        if not metrics['detalhes_duplicados'].empty:
+            metrics['detalhes_duplicados'].to_excel(writer, sheet_name='Detalhes_Duplicados', index=False)
         
         # Sheets com dados completos
         if not dados['pagamentos'].empty:
@@ -365,6 +517,7 @@ def gerar_relatorio_excel(dados, tipo_relatorio):
                 'Total de Registros Processados',
                 'Valor Total dos Pagamentos',
                 'Media por Beneficiario',
+                'Taxa de Duplicidade',
                 'Data de Geracao',
                 'Status do Relatorio'
             ],
@@ -373,6 +526,7 @@ def gerar_relatorio_excel(dados, tipo_relatorio):
                 metrics.get('total_pagamentos', 0) + metrics.get('total_contas', 0),
                 f"R$ {metrics.get('valor_total', 0):,.2f}" if metrics.get('valor_total', 0) > 0 else "N/A",
                 f"R$ {metrics.get('valor_total', 0)/metrics.get('beneficiarios_unicos', 1):,.2f}" if metrics.get('valor_total', 0) > 0 else "N/A",
+                f"{(metrics.get('pagamentos_duplicados', 0)/metrics.get('beneficiarios_unicos', 1)*100 if metrics.get('beneficiarios_unicos', 0) > 0 else 0):.1f}%" if metrics.get('pagamentos_duplicados', 0) > 0 else "0%",
                 datetime.now().strftime('%d/%m/%Y %H:%M'),
                 'CONCLUIDO'
             ]
@@ -438,7 +592,7 @@ def mostrar_dashboard(dados):
         """)
         return
     
-    # Métricas
+    # Métricas principais
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
@@ -456,6 +610,54 @@ def mostrar_dashboard(dados):
     # Valor total se disponível
     if metrics.get('valor_total', 0) > 0:
         st.metric("Valor Total dos Pagamentos", f"R$ {metrics['valor_total']:,.2f}")
+    
+    # Análise de Duplicidades - DESTAQUE
+    if metrics.get('pagamentos_duplicados', 0) > 0:
+        st.error("🚨 **ALERTA: PAGAMENTOS DUPLICADOS IDENTIFICADOS**")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.metric(
+                "CPFs com Duplicidade", 
+                metrics.get('pagamentos_duplicados', 0),
+                delta=f"{metrics.get('pagamentos_duplicados', 0)} casos"
+            )
+        
+        with col2:
+            diff = metrics.get('total_pagamentos', 0) - metrics.get('beneficiarios_unicos', 0)
+            st.metric(
+                "Diferença Identificada", 
+                diff,
+                delta=f"{diff} pagamentos extras"
+            )
+        
+        with col3:
+            if metrics.get('valor_total_duplicados', 0) > 0:
+                st.metric(
+                    "Valor em Duplicidades", 
+                    f"R$ {metrics.get('valor_total_duplicados', 0):,.2f}",
+                    delta="Valor a investigar"
+                )
+        
+        # Mostrar resumo dos casos de duplicidade
+        with st.expander("🔍 **Ver Detalhes dos Pagamentos Duplicados**", expanded=False):
+            if not metrics['resumo_duplicidades'].empty:
+                st.dataframe(
+                    metrics['resumo_duplicidades'],
+                    use_container_width=True,
+                    hide_index=True
+                )
+                
+                # Botão para download dos detalhes
+                if not metrics['detalhes_duplicados'].empty:
+                    csv = metrics['detalhes_duplicados'].to_csv(index=False)
+                    st.download_button(
+                        label="📥 Baixar Detalhes Completos (CSV)",
+                        data=csv,
+                        file_name=f"pagamentos_duplicados_{datetime.now().strftime('%Y%m%d')}.csv",
+                        mime="text/csv"
+                    )
     
     # Gráficos
     col1, col2 = st.columns(2)
@@ -630,6 +832,13 @@ def mostrar_consultas(dados):
 
 def mostrar_relatorios(dados):
     st.header("📋 Gerar Relatórios")
+    
+    # Análise preliminar para mostrar alertas
+    metrics = processar_dados(dados)
+    
+    if metrics.get('pagamentos_duplicados', 0) > 0:
+        st.warning(f"🚨 **ALERTA:** Foram identificados {metrics.get('pagamentos_duplicados', 0)} CPFs com pagamentos duplicados")
+        st.info(f"📊 **Diferença:** {metrics.get('total_pagamentos', 0):,} pagamentos para {metrics.get('beneficiarios_unicos', 0):,} beneficiários")
     
     st.info("""
     **Escolha o formato do relatório:**
