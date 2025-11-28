@@ -152,12 +152,13 @@ def carregar_dados():
 
 # NOVA FUNÇÃO: Analisar ausência de dados
 def analisar_ausencia_dados(dados):
-    """Analisa e reporta ausência de dados críticos"""
+    """Analisa e reporta ausência de dados críticos de forma mais detalhada"""
     analise_ausencia = {
         'cpfs_sem_dados_completos': [],
         'total_registros_incompletos': 0,
         'colunas_com_ausencia': {},
-        'resumo_ausencias': pd.DataFrame()
+        'resumo_ausencias': pd.DataFrame(),
+        'registros_problema_detalhados': pd.DataFrame()  # NOVO: dados completos dos registros problemáticos
     }
     
     if not dados['pagamentos'].empty:
@@ -167,48 +168,64 @@ def analisar_ausencia_dados(dados):
         cpfs_ausentes = []
         if 'CPF' in df.columns:
             # CPFs vazios, nulos ou inválidos
-            cpfs_invalidos = df[
+            mask_cpf_invalido = (
                 df['CPF'].isna() | 
                 (df['CPF'].astype(str).str.strip() == '') |
                 (df['CPF'].astype(str).str.strip() == 'NaN') |
-                (df['CPF'].astype(str).str.strip() == 'None')
-            ]
+                (df['CPF'].astype(str).str.strip() == 'None') |
+                (df['CPF'].astype(str).str.strip() == 'nan') |
+                (df['CPF'].astype(str).str.strip() == '0') |
+                (df['CPF'].astype(str).str.strip().str.len() < 11)  # CPF incompleto
+            )
+            
+            cpfs_invalidos = df[mask_cpf_invalido]
             
             if not cpfs_invalidos.empty:
                 cpfs_ausentes = cpfs_invalidos.index.tolist()
                 analise_ausencia['cpfs_sem_dados_completos'] = cpfs_ausentes
                 analise_ausencia['total_registros_incompletos'] = len(cpfs_ausentes)
+                
+                # NOVO: Salvar os registros completos com problemas
+                analise_ausencia['registros_problema_detalhados'] = cpfs_invalidos.copy()
         
-        # Analisar ausência por coluna
-        colunas_criticas = ['CPF', 'Valor', 'Projeto']
+        # Analisar ausência por coluna crítica
+        colunas_criticas = ['CPF', 'Valor', 'Projeto', 'Beneficiario', 'Beneficiário', 'Nome']
         for coluna in colunas_criticas:
             if coluna in df.columns:
-                ausentes = df[df[coluna].isna() | (df[coluna].astype(str).str.strip() == '')]
+                # Verificar valores ausentes ou inválidos
+                mask_ausente = (
+                    df[coluna].isna() | 
+                    (df[coluna].astype(str).str.strip() == '') |
+                    (df[coluna].astype(str).str.strip() == 'NaN') |
+                    (df[coluna].astype(str).str.strip() == 'None') |
+                    (df[coluna].astype(str).str.strip() == 'nan')
+                )
+                ausentes = df[mask_ausente]
                 analise_ausencia['colunas_com_ausencia'][coluna] = len(ausentes)
         
-        # Criar resumo de ausências
+        # Criar resumo de ausências para exibição
         if cpfs_ausentes:
             resumo = []
-            for idx in cpfs_ausentes[:20]:  # Limitar aos 20 primeiros para relatório
+            for idx in cpfs_ausentes[:50]:  # Aumentar para 50 registros
                 registro = df.loc[idx]
                 info_ausencia = {'Indice_Registro': idx}
                 
-                # Adicionar informações disponíveis
-                coluna_benef = obter_coluna_beneficiario(df)
-                if coluna_benef and pd.notna(registro[coluna_benef]):
-                    info_ausencia['Nome_Disponivel'] = registro[coluna_benef]
-                else:
-                    info_ausencia['Nome_Disponivel'] = 'N/A'
+                # Adicionar todas as informações disponíveis
+                colunas_interesse = [
+                    'CPF', 'Projeto', 'Valor', 'Beneficiario', 'Beneficiário', 'Nome',
+                    'Data', 'Data Pagto', 'Data_Pagto', 'DataPagto',
+                    'Num Cartao', 'Num_Cartao', 'Conta', 'Status'
+                ]
                 
-                if 'Projeto' in df.columns and pd.notna(registro['Projeto']):
-                    info_ausencia['Projeto'] = registro['Projeto']
-                else:
-                    info_ausencia['Projeto'] = 'N/A'
-                
-                if 'Valor' in df.columns and pd.notna(registro['Valor']):
-                    info_ausencia['Valor'] = registro['Valor']
-                else:
-                    info_ausencia['Valor'] = 'N/A'
+                for col in colunas_interesse:
+                    if col in df.columns and pd.notna(registro[col]):
+                        # Truncar valores muito longos
+                        valor = str(registro[col])
+                        if len(valor) > 50:
+                            valor = valor[:47] + "..."
+                        info_ausencia[col] = valor
+                    else:
+                        info_ausencia[col] = 'N/A'
                 
                 resumo.append(info_ausencia)
             
@@ -491,15 +508,27 @@ class PDFReport(FPDF):
             self.ln()
     
     def safe_text(self, text):
-        """Remove caracteres problemáticos para Latin-1"""
-        problematic_chars = {
-            '•': '-', '´': "'", '`': "'", '“': '"', '”': '"', 
-            '‘': "'", ' ': ' ', '–': '-', '—': '-', '…': '...'
-        }
-        safe_text = str(text)
-        for char, replacement in problematic_chars.items():
-            safe_text = safe_text.replace(char, replacement)
-        return safe_text
+    """Remove caracteres problemáticos para Latin-1 incluindo emojis"""
+    # Primeiro, converter para string se não for
+    safe_text = str(text)
+    
+    # Dicionário de substituições
+    substitutions = {
+        '•': '-', '´': "'", '`': "'", '“': '"', '”': '"', 
+        '•': "'", ' ': ' ', '–': '-', '—': '-', '…': '...',
+        '🚨': '[ALERTA]', '✅': '[OK]', '📊': '[DASHBOARD]',
+        '⚠️': '[ATENCAO]', '❌': '[ERRO]', '📁': '[ARQUIVO]',
+        '🔍': '[LUPAR]', '👆': '[SETA_ACIMA]', '🏛️': '[PREFEITURA]'
+    }
+    
+    # Aplicar substituições
+    for char, replacement in substitutions.items():
+        safe_text = safe_text.replace(char, replacement)
+    
+    # Remover qualquer outro caractere Unicode problemático
+    safe_text = safe_text.encode('latin-1', 'replace').decode('latin-1')
+    
+    return safe_text
 
 def obter_coluna_beneficiario(df):
     """Detecta automaticamente a coluna do beneficiário"""
@@ -521,6 +550,53 @@ def obter_coluna_conta(df):
         if col in df.columns:
             return col
     return None
+
+
+def obter_coluna_data_ordenacao(df):
+    """Detecta automaticamente a coluna de data para ordenação, considerando múltiplos formatos"""
+    colunas_data = ['Data', 'Data Pagto', 'Data_Pagto', 'DataPagto', 'DATA', 'DATA_PAGTO']
+    
+    for coluna in colunas_data:
+        if coluna in df.columns:
+            # Tentar converter para datetime se ainda não estiver
+            if not pd.api.types.is_datetime64_any_dtype(df[coluna]):
+                try:
+                    # Tentar diferentes formatos de data
+                    df_temp = df.copy()
+                    df_temp[coluna] = pd.to_datetime(df_temp[coluna], errors='coerce')
+                    # Verificar se a conversão foi bem sucedida (não todos NaT)
+                    if not df_temp[coluna].isna().all():
+                        return coluna
+                except:
+                    continue
+            else:
+                return coluna
+    
+    # Se não encontrou coluna de data, usar o índice
+    return None
+
+# NOVA FUNÇÃO: Ordenar dados por data
+def ordenar_por_data(df, coluna_data):
+    """Ordena DataFrame por data de forma segura"""
+    if coluna_data and coluna_data in df.columns:
+        try:
+            df_ordenado = df.copy()
+            # Converter para datetime se necessário
+            if not pd.api.types.is_datetime64_any_dtype(df_ordenado[coluna_data]):
+                df_ordenado[coluna_data] = pd.to_datetime(
+                    df_ordenado[coluna_data], 
+                    dayfirst=True,  # Importante para formato brasileiro
+                    errors='coerce'
+                )
+            
+            # Ordenar por data (mais recente primeiro)
+            df_ordenado = df_ordenado.sort_values(by=coluna_data, ascending=False)
+            return df_ordenado
+        except Exception as e:
+            st.warning(f"Não foi possível ordenar por data: {str(e)}")
+            return df
+    else:
+        return df
 
 # CORREÇÃO: Nova função para formatar números no padrão brasileiro
 def formatar_brasileiro(valor, tipo='monetario'):
@@ -570,20 +646,59 @@ def gerar_pdf_executivo(dados, tipo_relatorio):
         pdf.metric_card('Valor Total Investido:', formatar_brasileiro(metrics.get('valor_total', 0), 'monetario'))
     
     # NOVO: Alertas de ausência de dados
-    if metrics.get('total_registros_incompletos', 0) > 0:
-        pdf.ln(5)
-        pdf.set_font('Arial', 'B', 12)
-        pdf.set_text_color(255, 0, 0)  # Vermelho para alertas
-        pdf.cell(0, 8, '🚨 ALERTA: AUSENCIA DE DADOS IDENTIFICADA', 0, 1)
-        pdf.set_text_color(0, 0, 0)  # Voltar ao preto
-        pdf.set_font('Arial', '', 10)
-        pdf.cell(0, 6, f'- {formatar_brasileiro(metrics.get("total_registros_incompletos", 0), "numero")} registros com CPF ausente ou invalido', 0, 1)
-        if metrics.get('colunas_com_ausencia'):
-            for coluna, qtd in metrics['colunas_com_ausencia'].items():
-                if qtd > 0:
-                    pdf.cell(0, 6, f'- {formatar_brasileiro(qtd, "numero")} registros sem {coluna}', 0, 1)
+    # ALERTA MELHORADO: Ausência de dados com opção de download
+if metrics.get('total_registros_incompletos', 0) > 0:
+    st.error(f"🚨 **ALERTA: AUSÊNCIA DE DADOS IDENTIFICADA** - {formatar_brasileiro(metrics.get('total_registros_incompletos', 0), 'numero')} registros com CPF ausente ou inválido")
     
-    pdf.ln(10)
+    col_alert1, col_alert2 = st.columns([3, 1])
+    
+    with col_alert1:
+        st.warning("**Estes registros precisam ser corrigidos para análise completa dos dados**")
+        
+    with col_alert2:
+        # Botão para exportar registros problemáticos
+        if not metrics['registros_problema_detalhados'].empty:
+            csv_problemas = metrics['registros_problema_detalhados'].to_csv(index=False, sep=';')
+            st.download_button(
+                label="📥 Exportar Registros Problemáticos",
+                data=csv_problemas,
+                file_name=f"registros_problema_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv",
+                help="Baixe esta lista para corrigir os dados ausentes"
+            )
+    
+    with st.expander("🔍 **Ver Detalhes dos Dados Ausentes**", expanded=False):
+        st.subheader("Resumo de Ausências por Campo")
+        
+        if metrics.get('colunas_com_ausencia'):
+            col_aus1, col_aus2, col_aus3 = st.columns(3)
+            colunas_ausencia = list(metrics['colunas_com_ausencia'].items())
+            
+            for i, (coluna, qtd) in enumerate(colunas_ausencia):
+                if qtd > 0:
+                    with [col_aus1, col_aus2, col_aus3][i % 3]:
+                        st.metric(
+                            label=f"Sem {coluna}",
+                            value=formatar_brasileiro(qtd, 'numero'),
+                            delta=f"{qtd/len(dados['pagamentos'])*100:.1f}% do total"
+                        )
+        
+        st.subheader("Exemplos de Registros com Problemas")
+        if not metrics['resumo_ausencias'].empty:
+            # Mostrar colunas mais relevantes primeiro
+            colunas_prioridade = ['Indice_Registro', 'CPF', 'Nome', 'Beneficiario', 'Beneficiário', 'Projeto', 'Valor']
+            colunas_exibir = [col for col in colunas_prioridade if col in metrics['resumo_ausencias'].columns]
+            colunas_restantes = [col for col in metrics['resumo_ausencias'].columns if col not in colunas_exibir]
+            colunas_exibir.extend(colunas_restantes)
+            
+            st.dataframe(
+                metrics['resumo_ausencias'][colunas_exibir],
+                use_container_width=True,
+                hide_index=True,
+                height=400
+            )
+            
+            st.info(f"Mostrando {len(metrics['resumo_ausencias'])} de {metrics['total_registros_incompletos']} registros com problemas. Use o botão de exportação acima para baixar a lista completa.")
     
     # Análise de Duplicidades
     if metrics.get('pagamentos_duplicados', 0) > 0:
