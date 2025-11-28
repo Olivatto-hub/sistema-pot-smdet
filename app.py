@@ -22,6 +22,80 @@ def autenticar():
     
     return email
 
+# Sistema de upload de dados
+def carregar_dados():
+    st.sidebar.header("📤 Carregar Dados Reais")
+    
+    # Upload para projetos
+    upload_projetos = st.sidebar.file_uploader(
+        "Planilha de Projetos", 
+        type=['xlsx', 'csv'],
+        key="projetos"
+    )
+    
+    # Upload para evolução mensal
+    upload_evolucao = st.sidebar.file_uploader(
+        "Planilha de Evolução Mensal", 
+        type=['xlsx', 'csv'],
+        key="evolucao"
+    )
+    
+    # Upload para pagamentos recentes
+    upload_pagamentos = st.sidebar.file_uploader(
+        "Planilha de Pagamentos Recentes", 
+        type=['xlsx', 'csv'],
+        key="pagamentos"
+    )
+    
+    dados = {}
+    
+    # Carregar dados de projetos
+    if upload_projetos is not None:
+        try:
+            if upload_projetos.name.endswith('.xlsx'):
+                dados['projetos'] = pd.read_excel(upload_projetos)
+            else:
+                dados['projetos'] = pd.read_csv(upload_projetos)
+            st.sidebar.success(f"✅ Projetos: {len(dados['projetos'])} registros")
+        except Exception as e:
+            st.sidebar.error(f"❌ Erro ao carregar projetos: {str(e)}")
+            dados['projetos'] = pd.DataFrame()
+    else:
+        dados['projetos'] = pd.DataFrame()
+        st.sidebar.info("📁 Aguardando planilha de projetos")
+    
+    # Carregar dados de evolução
+    if upload_evolucao is not None:
+        try:
+            if upload_evolucao.name.endswith('.xlsx'):
+                dados['evolucao'] = pd.read_excel(upload_evolucao)
+            else:
+                dados['evolucao'] = pd.read_csv(upload_evolucao)
+            st.sidebar.success(f"✅ Evolução: {len(dados['evolucao'])} registros")
+        except Exception as e:
+            st.sidebar.error(f"❌ Erro ao carregar evolução: {str(e)}")
+            dados['evolucao'] = pd.DataFrame()
+    else:
+        dados['evolucao'] = pd.DataFrame()
+        st.sidebar.info("📁 Aguardando planilha de evolução")
+    
+    # Carregar dados de pagamentos
+    if upload_pagamentos is not None:
+        try:
+            if upload_pagamentos.name.endswith('.xlsx'):
+                dados['pagamentos'] = pd.read_excel(upload_pagamentos)
+            else:
+                dados['pagamentos'] = pd.read_csv(upload_pagamentos)
+            st.sidebar.success(f"✅ Pagamentos: {len(dados['pagamentos'])} registros")
+        except Exception as e:
+            st.sidebar.error(f"❌ Erro ao carregar pagamentos: {str(e)}")
+            dados['pagamentos'] = pd.DataFrame()
+    else:
+        dados['pagamentos'] = pd.DataFrame()
+        st.sidebar.info("📁 Aguardando planilha de pagamentos")
+    
+    return dados
+
 def main():
     email = autenticar()
     
@@ -30,6 +104,9 @@ def main():
         return
     
     st.success(f"✅ Acesso permitido: {email}")
+    
+    # Carregar dados
+    dados = carregar_dados()
     
     # Menu principal
     st.title("🏛️ Sistema POT - Programa Operação Trabalho")
@@ -45,7 +122,7 @@ def main():
     ])
     
     with tab1:
-        mostrar_dashboard()
+        mostrar_dashboard(dados)
     
     with tab2:
         mostrar_importacao()
@@ -56,18 +133,46 @@ def main():
     with tab4:
         mostrar_relatorios()
 
-def mostrar_dashboard():
+def mostrar_dashboard(dados):
     st.header("📊 Dashboard Executivo - POT")
     
-    # Métricas
+    # Verificar se há dados carregados
+    dados_carregados = any([not df.empty for df in dados.values()])
+    
+    if not dados_carregados:
+        st.warning("📁 **Nenhum dado carregado ainda**")
+        st.info("""
+        **Para ver o dashboard:**
+        1. Use o menu lateral para carregar as planilhas
+        2. Formato suportado: XLSX ou CSV
+        3. Os gráficos serão atualizados automaticamente
+        """)
+        return
+    
+    # Métricas (agora dinâmicas)
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        st.metric("Beneficiários Ativos", "2.847", "+12%")
+        if not dados['projetos'].empty and 'Beneficiários' in dados['projetos'].columns:
+            total_benef = dados['projetos']['Beneficiários'].sum()
+            st.metric("Beneficiários Ativos", f"{total_benef:,}")
+        else:
+            st.metric("Beneficiários Ativos", "0")
+    
     with col2:
-        st.metric("Pagamentos Mensais", "R$ 4,2M", "+8%")
+        if not dados['pagamentos'].empty:
+            total_pagamentos = len(dados['pagamentos'])
+            st.metric("Pagamentos Registrados", total_pagamentos)
+        else:
+            st.metric("Pagamentos Registrados", "0")
+    
     with col3:
-        st.metric("Projetos Ativos", "36", "+3")
+        if not dados['projetos'].empty:
+            total_projetos = len(dados['projetos'])
+            st.metric("Projetos Ativos", total_projetos)
+        else:
+            st.metric("Projetos Ativos", "0")
+    
     with col4:
         st.metric("Taxa de Sucesso", "97,8%", "+0,2%")
     
@@ -76,105 +181,71 @@ def mostrar_dashboard():
     
     with col1:
         st.subheader("Evolução de Beneficiários")
-        dados_evolucao = pd.DataFrame({
-            'Mês': ['Jan/24', 'Fev/24', 'Mar/24', 'Abr/24', 'Mai/24', 'Jun/24'],
-            'Beneficiários': [2200, 2350, 2480, 2620, 2750, 2847],
-            'Pagamentos': [1200, 1500, 1800, 2100, 2400, 2847]
-        })
-        
-        fig = px.line(dados_evolucao, x='Mês', y='Beneficiários', 
-                     markers=True, line_shape='spline')
-        st.plotly_chart(fig, use_container_width=True)
+        if not dados['evolucao'].empty:
+            fig = px.line(dados['evolucao'], x='Mês', y='Beneficiários', 
+                         markers=True, line_shape='spline')
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("📊 Gráfico de evolução aparecerá aqui após carregar os dados")
     
     with col2:
         st.subheader("Distribuição por Projeto")
-        dados_projetos = pd.DataFrame({
-            'Projeto': ['Operação Trabalho', 'Emprega SP', 'Jovem Aprendiz', 'Capacitação Profissional'],
-            'Beneficiários': [1500, 800, 400, 147],
-            'Cor': ['#2E86AB', '#A23B72', '#F18F01', '#C73E1D']
-        })
-        
-        fig = px.pie(dados_projetos, values='Beneficiários', names='Projeto',
-            color='Cor')
-        st.plotly_chart(fig, use_container_width=True)
+        if not dados['projetos'].empty and 'Beneficiários' in dados['projetos'].columns:
+            fig = px.pie(dados['projetos'], values='Beneficiários', names='Projeto')
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("📊 Gráfico de projetos aparecerá aqui após carregar os dados")
     
     # Tabela recente
     st.subheader("Últimos Pagamentos Registrados")
-    dados_recentes = pd.DataFrame({
-        'Data': ['25/11/2024', '24/11/2024', '23/11/2024', '22/11/2024'],
-        'Beneficiário': ['Maria Silva Santos', 'João Oliveira Costa', 'Ana Pereira Lima', 'Pedro Almeida Souza'],
-        'CPF': ['123.456.789-00', '234.567.890-11', '345.678.901-22', '456.789.012-33'],
-        'Projeto': ['Operação Trabalho', 'Emprega SP', 'Operação Trabalho', 'Jovem Aprendiz'],
-        'Valor': ['R$ 1.200,00', 'R$ 1.200,00', 'R$ 1.200,00', 'R$ 980,00'],
-        'Status': ['✅ Pago', '✅ Pago', '⏳ Pendente', '✅ Pago']
-    })
-    
-    st.dataframe(dados_recentes, use_container_width=True)
+    if not dados['pagamentos'].empty:
+        st.dataframe(dados['pagamentos'].head(), use_container_width=True)
+    else:
+        st.info("📋 Tabela de pagamentos aparecerá aqui após carregar os dados")
 
 def mostrar_importacao():
     st.header("📥 Importação de Dados")
     
     st.info("""
+    **💡 AGORA USE O MENU LATERAL!**
+    
     **Instruções para importação:**
-    - A planilha deve estar nos formatos XLSX ou XLS
-    - Colunas obrigatórias: Nome, CPF, DataNasc, Data Pagto, Num Cartao, Projeto, Agência
-    - Certifique-se que os dados estejam formatados corretamente
+    - Acesse o menu lateral "📤 Carregar Dados Reais" 
+    - Faça upload das planilhas nos formatos XLSX ou CSV
+    - O dashboard será atualizado automaticamente
     """)
     
-    uploaded_file = st.file_uploader(
-        "Selecione a planilha de pagamentos", 
-        type=['xlsx', 'xls'],
-        help="Arraste o arquivo ou clique para procurar"
-    )
-    
-    if uploaded_file is not None:
-        try:
-            # Ler a planilha
-            df = pd.read_excel(uploaded_file)
-            
-            st.success(f"✅ Arquivo carregado com sucesso!")
-            st.success(f"📊 **{len(df)} registros** encontrados no arquivo")
-            
-            # Mostrar pré-visualização
-            st.subheader("Pré-visualização dos Dados")
-            st.dataframe(df.head(), use_container_width=True)
-            
-            # Estatísticas rápidas
-            st.subheader("📈 Estatísticas do Arquivo")
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                if 'CPF' in df.columns:
-                    st.metric("CPFs Únicos", df['CPF'].nunique())
-                else:
-                    st.metric("CPFs Únicos", "Coluna não encontrada")
-            
-            with col2:
-                if 'Projeto' in df.columns:
-                    st.metric("Projetos", df['Projeto'].nunique())
-                else:
-                    st.metric("Projetos", "Coluna não encontrada")
-            
-            with col3:
-                if 'Nome' in df.columns:
-                    st.metric("Nomes", df['Nome'].nunique())
-                else:
-                    st.metric("Nomes", "Coluna não encontrada")
-            
-            # Botão de processamento
-            if st.button("🔄 Processar e Salvar Dados", type="primary"):
-                with st.spinner("Processando dados... Isso pode levar alguns segundos"):
-                    # Simular processamento
-                    import time
-                    for i in range(100):
-                        time.sleep(0.01)
-                    
-                    st.success("🎉 Dados processados com sucesso!")
-                    st.balloons()
-                        
-        except Exception as e:
-            st.error(f"❌ Erro ao processar arquivo: {str(e)}")
-            st.info("💡 **Dica:** Verifique se o arquivo não está corrompido e se está no formato correto.")
+    # Estrutura esperada das planilhas
+    with st.expander("📋 Estrutura Esperada das Planilhas"):
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.markdown("**Planilha de Projetos:**")
+            st.code("""
+Projeto
+Beneficiários
+Status
+Cor (opcional)
+            """)
+        
+        with col2:
+            st.markdown("**Planilha de Evolução:**")
+            st.code("""
+Mês
+Beneficiários
+Pagamentos (opcional)
+            """)
+        
+        with col3:
+            st.markdown("**Planilha de Pagamentos:**")
+            st.code("""
+Data
+Beneficiário
+CPF
+Projeto
+Valor
+Status
+            """)
 
 def mostrar_consultas():
     st.header("🔍 Consultas de Pagamentos")
@@ -193,7 +264,6 @@ def mostrar_consultas():
         with col2:
             if st.button("🔍 Buscar CPF", use_container_width=True):
                 if cpf:
-                    # Simular busca
                     st.info(f"Buscando pagamentos para CPF: {cpf}")
                 else:
                     st.warning("Por favor, digite um CPF para buscar")
