@@ -69,9 +69,9 @@ def padronizar_documentos(df):
     
     return df_processed
 
-# FUNÇÃO MELHORADA: Analisar ausência de dados com critérios realistas
-def analisar_ausencia_dados(dados):
-    """Analisa e reporta apenas dados críticos realmente ausentes"""
+# FUNÇÃO MELHORADA: Analisar ausência de dados com informações da planilha original
+def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_contas=None):
+    """Analisa e reporta apenas dados críticos realmente ausentes com info da planilha original"""
     analise_ausencia = {
         'registros_criticos_problematicos': [],
         'total_registros_criticos': 0,
@@ -81,12 +81,17 @@ def analisar_ausencia_dados(dados):
         'documentos_padronizados': 0,
         'tipos_problemas': {},
         'registros_validos_com_x': 0,
-        'cpfs_com_zeros_adicional': 0,  # CPFs que receberam zeros à esquerda
-        'cpfs_formatos_diferentes': 0   # CPFs com formatos especiais de outros estados
+        'cpfs_com_zeros_adicional': 0,
+        'cpfs_formatos_diferentes': 0,
+        'nome_arquivo_pagamentos': nome_arquivo_pagamentos,  # NOVO: nome do arquivo
+        'nome_arquivo_contas': nome_arquivo_contas
     }
     
     if not dados['pagamentos'].empty:
         df = dados['pagamentos'].copy()
+        
+        # NOVO: Adicionar coluna com número da linha original (considerando que a planilha começa na linha 2 - linha 1 é cabeçalho)
+        df['Linha_Planilha_Original'] = df.index + 2
         
         # Contar documentos padronizados
         colunas_docs = ['RG', 'CPF']
@@ -102,7 +107,6 @@ def analisar_ausencia_dados(dados):
         
         # Contar CPFs que receberam zeros à esquerda
         if 'CPF' in df.columns:
-            # CPFs que originalmente tinham menos de 11 dígitos
             cpfs_com_zeros = df[
                 df['CPF'].notna() & 
                 (df['CPF'].astype(str).str.len() < 11) &
@@ -112,7 +116,6 @@ def analisar_ausencia_dados(dados):
             ]
             analise_ausencia['cpfs_com_zeros_adicional'] = len(cpfs_com_zeros)
             
-            # CPFs com formatos especiais (pontos, traços)
             cpfs_com_formatos = df[
                 df['CPF'].notna() & 
                 (df['CPF'].astype(str).str.contains(r'[.-]', na=False))
@@ -122,7 +125,7 @@ def analisar_ausencia_dados(dados):
         # CRITÉRIO CORRIGIDO: Apenas dados realmente críticos ausentes
         registros_problematicos = []
         
-        # 1. CPF COMPLETAMENTE AUSENTE (não formato diferente)
+        # 1. CPF COMPLETAMENTE AUSENTE
         if 'CPF' in df.columns:
             mask_cpf_ausente = (
                 df['CPF'].isna() | 
@@ -135,7 +138,7 @@ def analisar_ausencia_dados(dados):
             cpfs_ausentes = df[mask_cpf_ausente]
             registros_problematicos.extend(cpfs_ausentes.index.tolist())
         
-        # 2. Número da conta ausente (critério importante para duplicidade)
+        # 2. Número da conta ausente
         coluna_conta = obter_coluna_conta(df)
         if coluna_conta:
             mask_conta_ausente = (
@@ -145,34 +148,32 @@ def analisar_ausencia_dados(dados):
                 (df[coluna_conta].astype(str).str.strip() == 'None')
             )
             contas_ausentes = df[mask_conta_ausente]
-            # Adicionar apenas os novos registros problemáticos
             for idx in contas_ausentes.index:
                 if idx not in registros_problematicos:
                     registros_problematicos.append(idx)
         
-        # 3. Valor ausente ou zero (problema financeiro)
+        # 3. Valor ausente ou zero
         if 'Valor' in df.columns:
             mask_valor_invalido = (
                 df['Valor'].isna() | 
                 (df['Valor'].astype(str).str.strip() == '') |
                 (df['Valor'].astype(str).str.strip() == 'NaN') |
                 (df['Valor'].astype(str).str.strip() == 'None') |
-                (df['Valor_Limpo'] == 0)  # Valor zerado
+                (df['Valor_Limpo'] == 0)
             )
             valores_invalidos = df[mask_valor_invalido]
-            # Adicionar apenas os novos registros problemáticos
             for idx in valores_invalidos.index:
                 if idx not in registros_problematicos:
                     registros_problematicos.append(idx)
         
-        # Atualizar análise com registros realmente problemáticos
+        # Atualizar análise
         analise_ausencia['registros_criticos_problematicos'] = registros_problematicos
         analise_ausencia['total_registros_criticos'] = len(registros_problematicos)
         
         if registros_problematicos:
             analise_ausencia['registros_problema_detalhados'] = df.loc[registros_problematicos].copy()
         
-        # Analisar ausência por coluna crítica (apenas para informação)
+        # Analisar ausência por coluna crítica
         colunas_criticas = ['CPF', 'Num Cartao', 'Num_Cartao', 'Valor']
         for coluna in colunas_criticas:
             if coluna in df.columns:
@@ -187,12 +188,16 @@ def analisar_ausencia_dados(dados):
                     analise_ausencia['colunas_com_ausencia_critica'][coluna] = len(ausentes)
                     analise_ausencia['tipos_problemas'][f'Sem {coluna}'] = len(ausentes)
         
-        # Criar resumo de ausências para exibição (apenas registros realmente problemáticos)
+        # Criar resumo de ausências com informações da planilha original
         if registros_problematicos:
             resumo = []
-            for idx in registros_problematicos[:50]:  # Limitar para performance
+            for idx in registros_problematicos[:100]:  # Aumentei para 100 registros
                 registro = df.loc[idx]
-                info_ausencia = {'Indice_Registro': idx}
+                info_ausencia = {
+                    'Indice_Registro': idx,
+                    'Linha_Planilha': registro.get('Linha_Planilha_Original', idx + 2),  # NOVO: linha da planilha
+                    'Planilha_Origem': nome_arquivo_pagamentos or 'Pagamentos'  # NOVO: nome do arquivo
+                }
                 
                 colunas_interesse = [
                     'CPF', 'RG', 'Projeto', 'Valor', 'Beneficiario', 'Beneficiário', 'Nome',
@@ -209,7 +214,7 @@ def analisar_ausencia_dados(dados):
                     else:
                         info_ausencia[col] = 'N/A'
                 
-                # Marcar campos problemáticos de forma precisa
+                # Marcar campos problemáticos
                 problemas = []
                 if 'CPF' in df.columns and (pd.isna(registro['CPF']) or str(registro['CPF']).strip() in ['', 'NaN', 'None', 'nan']):
                     problemas.append('CPF ausente')
@@ -232,29 +237,24 @@ def processar_colunas_data(df):
     """Converte colunas de data de formato numérico do Excel para datas legíveis"""
     df_processed = df.copy()
     
-    # Identificar colunas de data
     colunas_data = ['Data', 'Data Pagto', 'Data_Pagto', 'DataPagto']
     
     for coluna in colunas_data:
         if coluna in df_processed.columns:
             try:
-                # Tentar converter de número do Excel (formato serial)
                 if df_processed[coluna].dtype in ['int64', 'float64']:
-                    # Converter de número do Excel para data
                     df_processed[coluna] = pd.to_datetime(
                         df_processed[coluna], 
                         unit='D', 
-                        origin='1899-12-30',  # Data base do Excel
+                        origin='1899-12-30',
                         errors='coerce'
                     )
                 else:
-                    # Tentar converter de string
                     df_processed[coluna] = pd.to_datetime(
                         df_processed[coluna], 
                         errors='coerce'
                     )
                 
-                # Formatar para string legível
                 df_processed[coluna] = df_processed[coluna].dt.strftime('%d/%m/%Y')
                 
             except Exception as e:
@@ -269,15 +269,14 @@ def processar_colunas_valor(df):
     
     if 'Valor' in df_processed.columns:
         try:
-            # Se for string, limpar e converter
             if df_processed['Valor'].dtype == 'object':
                 df_processed['Valor_Limpo'] = (
                     df_processed['Valor']
                     .astype(str)
                     .str.replace('R$', '')
                     .str.replace('R$ ', '')
-                    .str.replace('.', '')  # Remove separador de milhar
-                    .str.replace(',', '.')  # Converte decimal para padrão numérico
+                    .str.replace('.', '')
+                    .str.replace(',', '.')
                     .str.replace(' ', '')
                     .astype(float)
                 )
@@ -290,18 +289,16 @@ def processar_colunas_valor(df):
     
     return df_processed
 
-# Sistema de upload de dados
+# Sistema de upload de dados MELHORADO: capturar nomes dos arquivos
 def carregar_dados():
     st.sidebar.header("📤 Carregar Dados Reais")
     
-    # Upload para pagamentos
     upload_pagamentos = st.sidebar.file_uploader(
         "Planilha de Pagamentos", 
         type=['xlsx', 'csv'],
         key="pagamentos"
     )
     
-    # Upload para abertura de contas
     upload_contas = st.sidebar.file_uploader(
         "Planilha de Abertura de Contas", 
         type=['xlsx', 'csv'],
@@ -309,6 +306,7 @@ def carregar_dados():
     )
     
     dados = {}
+    nomes_arquivos = {}  # NOVO: armazenar nomes dos arquivos
     
     # Carregar dados de pagamentos
     if upload_pagamentos is not None:
@@ -318,13 +316,15 @@ def carregar_dados():
             else:
                 df_pagamentos = pd.read_csv(upload_pagamentos)
             
-            # CORREÇÃO: Processar datas, valores e documentos
+            # NOVO: Salvar nome do arquivo
+            nomes_arquivos['pagamentos'] = upload_pagamentos.name
+            
             df_pagamentos = processar_colunas_data(df_pagamentos)
             df_pagamentos = processar_colunas_valor(df_pagamentos)
             df_pagamentos = padronizar_documentos(df_pagamentos)
             
             dados['pagamentos'] = df_pagamentos
-            st.sidebar.success(f"✅ Pagamentos: {len(dados['pagamentos'])} registros")
+            st.sidebar.success(f"✅ Pagamentos: {len(dados['pagamentos'])} registros - {upload_pagamentos.name}")
         except Exception as e:
             st.sidebar.error(f"❌ Erro ao carregar pagamentos: {str(e)}")
             dados['pagamentos'] = pd.DataFrame()
@@ -340,12 +340,14 @@ def carregar_dados():
             else:
                 df_contas = pd.read_csv(upload_contas)
             
-            # CORREÇÃO: Processar datas e documentos
+            # NOVO: Salvar nome do arquivo
+            nomes_arquivos['contas'] = upload_contas.name
+            
             df_contas = processar_colunas_data(df_contas)
             df_contas = padronizar_documentos(df_contas)
             
             dados['contas'] = df_contas
-            st.sidebar.success(f"✅ Contas: {len(dados['contas'])} registros")
+            st.sidebar.success(f"✅ Contas: {len(dados['contas'])} registros - {upload_contas.name}")
         except Exception as e:
             st.sidebar.error(f"❌ Erro ao carregar contas: {str(e)}")
             dados['contas'] = pd.DataFrame()
@@ -353,7 +355,8 @@ def carregar_dados():
         dados['contas'] = pd.DataFrame()
         st.sidebar.info("📁 Aguardando planilha de abertura de contas")
     
-    return dados
+    # NOVO: Retornar também os nomes dos arquivos
+    return dados, nomes_arquivos
 
 # FUNÇÃO CORRIGIDA: Analisar duplicidades por NÚMERO DA CONTA
 def analisar_duplicidades(dados):
@@ -376,11 +379,9 @@ def analisar_duplicidades(dados):
     df = dados['pagamentos'].copy()
     analise['total_pagamentos'] = len(df)
     
-    # Identificar contas únicas (apenas contas válidas)
     coluna_conta = obter_coluna_conta(df)
     
     if coluna_conta:
-        # Filtrar apenas contas válidas
         contas_validas = df[
             df[coluna_conta].notna() & 
             (df[coluna_conta].astype(str).str.strip() != '') &
@@ -390,7 +391,6 @@ def analisar_duplicidades(dados):
         
         analise['contas_unicas'] = contas_validas[coluna_conta].nunique()
         
-        # Identificar contas com problemas
         contas_com_problemas = df[
             df[coluna_conta].isna() | 
             (df[coluna_conta].astype(str).str.strip() == '') |
@@ -401,7 +401,6 @@ def analisar_duplicidades(dados):
         if not contas_com_problemas.empty:
             analise['contas_com_erros'] = contas_com_problemas.index.tolist()
     
-    # Identificar pagamentos duplicados por NÚMERO DA CONTA
     if coluna_conta:
         df_validos = df[
             df[coluna_conta].notna() & 
@@ -442,7 +441,6 @@ def analisar_duplicidades(dados):
                     except Exception as e:
                         analise['valor_total_duplicados'] = 0
                 
-                # Criar resumo de duplicidades
                 resumo = []
                 for conta in contas_com_duplicidade:
                     pagamentos_conta = df_validos[df_validos[coluna_conta] == conta]
@@ -485,7 +483,6 @@ def analisar_duplicidades(dados):
                 
                 analise['resumo_duplicidades'] = pd.DataFrame(resumo)
     
-    # Análise de CPFs duplicados (apenas para informação)
     if 'CPF' in df.columns:
         cpfs_validos = df[
             df['CPF'].notna() & 
@@ -515,8 +512,8 @@ def analisar_duplicidades(dados):
     
     return analise
 
-# FUNÇÃO QUE ESTAVA FALTANDO: processar_dados
-def processar_dados(dados):
+# FUNÇÃO processar_dados ATUALIZADA: receber nomes dos arquivos
+def processar_dados(dados, nomes_arquivos=None):
     """Processa os dados para o dashboard"""
     metrics = {}
     
@@ -524,8 +521,12 @@ def processar_dados(dados):
     analise_dup = analisar_duplicidades(dados)
     metrics.update(analise_dup)
     
-    # Análise de ausência de dados
-    analise_ausencia = analisar_ausencia_dados(dados)
+    # Análise de ausência de dados COM INFORMAÇÕES DA PLANILHA
+    analise_ausencia = analisar_ausencia_dados(
+        dados, 
+        nome_arquivo_pagamentos=nomes_arquivos.get('pagamentos') if nomes_arquivos else None,
+        nome_arquivo_contas=nomes_arquivos.get('contas') if nomes_arquivos else None
+    )
     metrics.update(analise_ausencia)
     
     # Métricas básicas
@@ -590,11 +591,11 @@ def formatar_brasileiro(valor, tipo='monetario'):
     except:
         return str(valor)
 
-# Dashboard
-def mostrar_dashboard(dados):
+# Dashboard MELHORADO: mostrar informações da planilha original
+def mostrar_dashboard(dados, nomes_arquivos=None):
     st.header("📊 Dashboard Executivo - POT")
     
-    metrics = processar_dados(dados)
+    metrics = processar_dados(dados, nomes_arquivos)
     
     dados_carregados = any([not df.empty for df in dados.values()])
     
@@ -608,7 +609,17 @@ def mostrar_dashboard(dados):
         """)
         return
     
-    # CORREÇÃO: Alertas mais específicos e informativos
+    # NOVO: Mostrar nomes dos arquivos carregados
+    if nomes_arquivos:
+        col_arq1, col_arq2 = st.columns(2)
+        with col_arq1:
+            if 'pagamentos' in nomes_arquivos:
+                st.info(f"📋 **Planilha de Pagamentos:** {nomes_arquivos['pagamentos']}")
+        with col_arq2:
+            if 'contas' in nomes_arquivos:
+                st.info(f"🏦 **Planilha de Contas:** {nomes_arquivos['contas']}")
+    
+    # CORREÇÃO: Alertas com informações da planilha original
     if metrics.get('total_registros_criticos', 0) > 0:
         st.error(f"🚨 **DADOS CRÍTICOS AUSENTES** - {formatar_brasileiro(metrics.get('total_registros_criticos', 0), 'numero')} registros com dados essenciais ausentes")
         
@@ -620,20 +631,47 @@ def mostrar_dashboard(dados):
             - CPF completamente ausente
             - Número da conta ausente  
             - Valor ausente ou zerado
+            
+            **📍 Localização na planilha:** 
+            - A coluna 'Linha_Planilha' mostra a linha exata na planilha original
+            - A coluna 'Planilha_Origem' mostra o arquivo de origem
             """)
             
         with col_alert2:
             if not metrics['registros_problema_detalhados'].empty:
-                csv_problemas = metrics['registros_problema_detalhados'].to_csv(index=False, sep=';')
+                # NOVO: Incluir informações da planilha no CSV de exportação
+                df_export = metrics['registros_problema_detalhados'].copy()
+                if 'Linha_Planilha_Original' not in df_export.columns:
+                    df_export['Linha_Planilha_Original'] = df_export.index + 2
+                df_export['Planilha_Origem'] = metrics.get('nome_arquivo_pagamentos', 'Pagamentos')
+                
+                csv_problemas = df_export.to_csv(index=False, sep=';')
                 st.download_button(
                     label="📥 Exportar para Correção",
                     data=csv_problemas,
                     file_name=f"dados_criticos_ausentes_{datetime.now().strftime('%Y%m%d')}.csv",
                     mime="text/csv",
-                    help="Baixe esta lista para corrigir apenas dados essenciais ausentes"
+                    help="Baixe esta lista com informações da planilha original para correção"
                 )
+        
+        # NOVO: Expandir para mostrar detalhes com informações da planilha
+        with st.expander("🔍 **Ver Detalhes dos Dados Ausentes com Localização na Planilha**", expanded=False):
+            if not metrics['resumo_ausencias'].empty:
+                # Ordenar colunas para mostrar primeiro as informações de localização
+                colunas_ordenadas = ['Linha_Planilha', 'Planilha_Origem', 'Problemas_Identificados']
+                colunas_restantes = [col for col in metrics['resumo_ausencias'].columns if col not in colunas_ordenadas]
+                colunas_exibir = colunas_ordenadas + colunas_restantes
+                
+                st.dataframe(
+                    metrics['resumo_ausencias'][colunas_exibir],
+                    use_container_width=True,
+                    hide_index=True,
+                    height=400
+                )
+                
+                st.info(f"📍 **Localização para correção:** Mostrando {len(metrics['resumo_ausencias'])} de {metrics['total_registros_criticos']} registros problemáticos. Use a coluna 'Linha_Planilha' para encontrar rapidamente os registros na planilha original.")
     
-    # NOVAS INFORMAÇÕES: Documentos processados corretamente
+    # Informações sobre documentos processados
     if metrics.get('cpfs_com_zeros_adicional', 0) > 0:
         st.success(f"✅ **CPFS NORMALIZADOS** - {formatar_brasileiro(metrics.get('cpfs_com_zeros_adicional', 0), 'numero')} CPFs receberam zeros à esquerda")
     
@@ -692,13 +730,15 @@ def mostrar_dashboard(dados):
                     delta="Valor a investigar"
                 )
 
-# [As funções restantes de interface permanecem iguais...]
+# [As funções restantes de interface permanecem similares, atualizando para receber nomes_arquivos]
 
 def mostrar_importacao():
     st.header("📥 Estrutura das Planilhas")
     
     st.info("""
     **💡 USE O MENU LATERAL PARA CARREGAR AS PLANILHAS!**
+    
+    **📍 NOVO:** O sistema agora mostra a linha exata da planilha original onde estão os dados ausentes!
     """)
     
     with st.expander("📋 Estrutura das Planilhas Necessárias"):
@@ -748,7 +788,6 @@ def mostrar_consultas(dados):
                 if cpf:
                     resultados = {}
                     if not dados['pagamentos'].empty and 'CPF' in dados['pagamentos'].columns:
-                        # Processar o CPF de busca da mesma forma que os dados
                         cpf_busca = processar_cpf(cpf)
                         resultados['pagamentos'] = dados['pagamentos'][dados['pagamentos']['CPF'].astype(str).str.contains(cpf_busca)]
                     if not dados['contas'].empty and 'CPF' in dados['contas'].columns:
@@ -819,10 +858,10 @@ def mostrar_consultas(dados):
     else:
         st.info("Os resultados aparecerão aqui após a busca")
 
-def mostrar_relatorios(dados):
+def mostrar_relatorios(dados, nomes_arquivos=None):
     st.header("📋 Gerar Relatórios")
     
-    metrics = processar_dados(dados)
+    metrics = processar_dados(dados, nomes_arquivos)
     
     if metrics.get('pagamentos_duplicados', 0) > 0:
         st.warning(f"🚨 **ALERTA:** Foram identificados {formatar_brasileiro(metrics.get('pagamentos_duplicados', 0), 'numero')} contas com pagamentos duplicados")
@@ -877,7 +916,7 @@ def mostrar_rodape():
     
     with col3:
         st.markdown("**Versão**")
-        st.markdown("2.0 - Corrigido para CPFs de todos os estados")
+        st.markdown("3.0 - Com localização na planilha original")
 
 def main():
     email = autenticar()
@@ -888,10 +927,11 @@ def main():
     
     st.success(f"✅ Acesso permitido: {email}")
     
-    dados = carregar_dados()
+    # NOVO: Receber tanto os dados quanto os nomes dos arquivos
+    dados, nomes_arquivos = carregar_dados()
     
     st.title("🏛️ Sistema POT - Programa Operação Trabalho")
-    st.markdown("**✅ CORRIGIDO: Aceita CPFs de todos os estados, incluindo Nordeste**")
+    st.markdown("**📍 NOVO: Mostra a linha exata da planilha onde estão os dados ausentes!**")
     st.markdown("---")
     
     tab1, tab2, tab3, tab4 = st.tabs([
@@ -902,7 +942,7 @@ def main():
     ])
     
     with tab1:
-        mostrar_dashboard(dados)
+        mostrar_dashboard(dados, nomes_arquivos)
     
     with tab2:
         mostrar_importacao()
@@ -911,7 +951,7 @@ def main():
         mostrar_consultas(dados)
     
     with tab4:
-        mostrar_relatorios(dados)
+        mostrar_relatorios(dados, nomes_arquivos)
     
     mostrar_rodape()
 
