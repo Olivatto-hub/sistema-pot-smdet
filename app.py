@@ -507,19 +507,28 @@ class PDFReport(FPDF):
         if not hasattr(self, '_in_multiline') or not self._in_multiline:
             self.ln()
     
-    def safe_text(self, text):
-    """Remove caracteres problemáticos para Latin-1 incluindo emojis"""
-    # Primeiro, converter para string se não for
-    safe_text = str(text)
-    
-    # Dicionário de substituições
-    substitutions = {
-        '•': '-', '´': "'", '`': "'", '“': '"', '”': '"', 
-        '•': "'", ' ': ' ', '–': '-', '—': '-', '…': '...',
-        '🚨': '[ALERTA]', '✅': '[OK]', '📊': '[DASHBOARD]',
-        '⚠️': '[ATENCAO]', '❌': '[ERRO]', '📁': '[ARQUIVO]',
-        '🔍': '[LUPAR]', '👆': '[SETA_ACIMA]', '🏛️': '[PREFEITURA]'
-    }
+      def safe_text(self, text):
+        """Remove caracteres problemáticos para Latin-1 incluindo emojis"""
+        # Primeiro, converter para string se não for
+        safe_text = str(text)
+        
+        # Dicionário de substituições
+        substitutions = {
+            '•': '-', '´': "'", '`': "'", '“': '"', '”': '"', 
+            '‘': "'", ' ': ' ', '–': '-', '—': '-', '…': '...',
+            '🚨': '[ALERTA]', '✅': '[OK]', '📊': '[DASHBOARD]',
+            '⚠️': '[ATENCAO]', '❌': '[ERRO]', '📁': '[ARQUIVO]',
+            '🔍': '[LUPAR]', '👆': '[SETA_ACIMA]', '🏛️': '[PREFEITURA]'
+        }
+        
+        # Aplicar substituições
+        for char, replacement in substitutions.items():
+            safe_text = safe_text.replace(char, replacement)
+        
+        # Remover qualquer outro caractere Unicode problemático
+        safe_text = safe_text.encode('latin-1', 'replace').decode('latin-1')
+        
+        return safe_text
     
     # Aplicar substituições
     for char, replacement in substitutions.items():
@@ -647,59 +656,19 @@ def gerar_pdf_executivo(dados, tipo_relatorio):
     
     # NOVO: Alertas de ausência de dados
     # ALERTA MELHORADO: Ausência de dados com opção de download
-if metrics.get('total_registros_incompletos', 0) > 0:
-    st.error(f"🚨 **ALERTA: AUSÊNCIA DE DADOS IDENTIFICADA** - {formatar_brasileiro(metrics.get('total_registros_incompletos', 0), 'numero')} registros com CPF ausente ou inválido")
-    
-    col_alert1, col_alert2 = st.columns([3, 1])
-    
-    with col_alert1:
-        st.warning("**Estes registros precisam ser corrigidos para análise completa dos dados**")
-        
-    with col_alert2:
-        # Botão para exportar registros problemáticos
-        if not metrics['registros_problema_detalhados'].empty:
-            csv_problemas = metrics['registros_problema_detalhados'].to_csv(index=False, sep=';')
-            st.download_button(
-                label="📥 Exportar Registros Problemáticos",
-                data=csv_problemas,
-                file_name=f"registros_problema_{datetime.now().strftime('%Y%m%d')}.csv",
-                mime="text/csv",
-                help="Baixe esta lista para corrigir os dados ausentes"
-            )
-    
-    with st.expander("🔍 **Ver Detalhes dos Dados Ausentes**", expanded=False):
-        st.subheader("Resumo de Ausências por Campo")
-        
+    # NOVO: Alertas de ausência de dados
+    if metrics.get('total_registros_incompletos', 0) > 0:
+        pdf.ln(5)
+        pdf.set_font('Arial', 'B', 12)
+        pdf.set_text_color(255, 0, 0)  # Vermelho para alertas
+        pdf.cell(0, 8, '[ALERTA] AUSENCIA DE DADOS IDENTIFICADA', 0, 1)
+        pdf.set_text_color(0, 0, 0)  # Voltar ao preto
+        pdf.set_font('Arial', '', 10)
+        pdf.cell(0, 6, f'- {formatar_brasileiro(metrics.get("total_registros_incompletos", 0), "numero")} registros com CPF ausente ou invalido', 0, 1)
         if metrics.get('colunas_com_ausencia'):
-            col_aus1, col_aus2, col_aus3 = st.columns(3)
-            colunas_ausencia = list(metrics['colunas_com_ausencia'].items())
-            
-            for i, (coluna, qtd) in enumerate(colunas_ausencia):
+            for coluna, qtd in metrics['colunas_com_ausencia'].items():
                 if qtd > 0:
-                    with [col_aus1, col_aus2, col_aus3][i % 3]:
-                        st.metric(
-                            label=f"Sem {coluna}",
-                            value=formatar_brasileiro(qtd, 'numero'),
-                            delta=f"{qtd/len(dados['pagamentos'])*100:.1f}% do total"
-                        )
-        
-        st.subheader("Exemplos de Registros com Problemas")
-        if not metrics['resumo_ausencias'].empty:
-            # Mostrar colunas mais relevantes primeiro
-            colunas_prioridade = ['Indice_Registro', 'CPF', 'Nome', 'Beneficiario', 'Beneficiário', 'Projeto', 'Valor']
-            colunas_exibir = [col for col in colunas_prioridade if col in metrics['resumo_ausencias'].columns]
-            colunas_restantes = [col for col in metrics['resumo_ausencias'].columns if col not in colunas_exibir]
-            colunas_exibir.extend(colunas_restantes)
-            
-            st.dataframe(
-                metrics['resumo_ausencias'][colunas_exibir],
-                use_container_width=True,
-                hide_index=True,
-                height=400
-            )
-            
-            st.info(f"Mostrando {len(metrics['resumo_ausencias'])} de {metrics['total_registros_incompletos']} registros com problemas. Use o botão de exportação acima para baixar a lista completa.")
-    
+                    pdf.cell(0, 6, f'- {formatar_brasileiro(qtd, "numero")} registros sem {coluna}', 0, 1)
     # Análise de Duplicidades
     if metrics.get('pagamentos_duplicados', 0) > 0:
         pdf.chapter_title('ANALISE DE DUPLICIDADES - ALERTA')
