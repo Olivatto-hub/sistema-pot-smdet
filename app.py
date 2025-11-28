@@ -115,6 +115,8 @@ def analisar_duplicidades(dados):
             colunas_ordenacao = ['CPF']
             if 'Data' in detalhes.columns:
                 colunas_ordenacao.append('Data')
+            elif 'Data Pagto' in detalhes.columns:
+                colunas_ordenacao.append('Data Pagto')
             detalhes = detalhes.sort_values(by=colunas_ordenacao)
             
             analise['detalhes_duplicados'] = detalhes
@@ -162,6 +164,14 @@ def analisar_duplicidades(dados):
                     'Beneficiario': pagamentos_cpf.iloc[0]['Beneficiario'] if 'Beneficiario' in pagamentos_cpf.columns else 'N/A',
                     'Projeto': pagamentos_cpf.iloc[0]['Projeto'] if 'Projeto' in pagamentos_cpf.columns else 'N/A'
                 }
+                
+                # Adicionar número da conta se disponível
+                if 'Num Cartao' in pagamentos_cpf.columns:
+                    info['Num_Cartao'] = pagamentos_cpf.iloc[0]['Num Cartao']
+                elif 'Conta' in pagamentos_cpf.columns:
+                    info['Num_Cartao'] = pagamentos_cpf.iloc[0]['Conta']
+                else:
+                    info['Num_Cartao'] = 'N/A'
                 
                 if 'Valor' in pagamentos_cpf.columns:
                     try:
@@ -340,8 +350,8 @@ def gerar_pdf_executivo(dados, tipo_relatorio):
             pdf.set_font('Arial', 'B', 12)
             pdf.cell(0, 8, 'Principais Casos de Duplicidade:', 0, 1)
             
-            headers = ['CPF', 'Qtd Pagamentos', 'Beneficiario', 'Projeto']
-            col_widths = [40, 25, 60, 55]
+            headers = ['CPF', 'Qtd Pagamentos', 'Beneficiario', 'Num Conta', 'Projeto']
+            col_widths = [35, 20, 50, 30, 45]
             pdf.table_header(headers, col_widths)
             
             # Mostrar os 10 primeiros casos
@@ -350,24 +360,29 @@ def gerar_pdf_executivo(dados, tipo_relatorio):
                     row['CPF'],
                     str(row['Quantidade_Pagamentos']),
                     str(row['Beneficiario']),
+                    str(row['Num_Cartao']),
                     str(row['Projeto'])
                 ], col_widths)
     
-    # Análise de Projetos
+    # Análise de Projetos - CORRIGIDA: Agrupar por projeto único
     if not dados['pagamentos'].empty and 'Projeto' in dados['pagamentos'].columns:
         pdf.add_page()
         pdf.chapter_title('DISTRIBUICAO POR PROJETO')
         
-        projetos_count = dados['pagamentos']['Projeto'].value_counts().head(10)
+        # CORREÇÃO: Agrupar por projeto único e contar ocorrências
+        projetos_count = dados['pagamentos']['Projeto'].value_counts().reset_index()
+        projetos_count.columns = ['Projeto', 'Quantidade']
         
         # Cabeçalho da tabela
         headers = ['Projeto', 'Quantidade', '% do Total']
         col_widths = [80, 40, 40]
         pdf.table_header(headers, col_widths)
         
-        # Dados da tabela
-        total = projetos_count.sum()
-        for projeto, quantidade in projetos_count.items():
+        # Dados da tabela - CORREÇÃO: Mostrar apenas projetos únicos
+        total = projetos_count['Quantidade'].sum()
+        for _, row in projetos_count.iterrows():
+            projeto = row['Projeto']
+            quantidade = row['Quantidade']
             percentual = (quantidade / total) * 100
             pdf.table_row([projeto, f"{quantidade:,}", f"{percentual:.1f}%"], col_widths)
     
@@ -376,17 +391,44 @@ def gerar_pdf_executivo(dados, tipo_relatorio):
         pdf.add_page()
         pdf.chapter_title('DETALHES DOS PAGAMENTOS DUPLICADOS')
         
-        # Selecionar colunas relevantes
-        colunas_relevantes = [col for col in ['CPF', 'Beneficiario', 'Projeto', 'Data', 'Valor'] 
-                             if col in metrics['detalhes_duplicados'].columns]
+        # Selecionar colunas relevantes incluindo número da conta e data
+        colunas_base = ['CPF', 'Beneficiario', 'Projeto']
+        
+        # Adicionar colunas de data (verificar diferentes nomes possíveis)
+        colunas_data = []
+        for col_data in ['Data', 'Data Pagto', 'Data_Pagto', 'DataPagto']:
+            if col_data in metrics['detalhes_duplicados'].columns:
+                colunas_data.append(col_data)
+                break
+        
+        # Adicionar colunas de número da conta (verificar diferentes nomes possíveis)
+        colunas_conta = []
+        for col_conta in ['Num Cartao', 'Num_Cartao', 'Conta', 'Numero Conta', 'Numero_Cartao']:
+            if col_conta in metrics['detalhes_duplicados'].columns:
+                colunas_conta.append(col_conta)
+                break
+        
+        # Adicionar valor
+        colunas_valor = ['Valor'] if 'Valor' in metrics['detalhes_duplicados'].columns else []
+        
+        colunas_relevantes = colunas_base + colunas_data + colunas_conta + colunas_valor
         
         if colunas_relevantes:
             dados_exibir = metrics['detalhes_duplicados'][colunas_relevantes].head(20)
             
-            # Ajustar larguras das colunas
+            # Ajustar larguras das colunas dinamicamente
             num_cols = len(colunas_relevantes)
             col_width = 180 // num_cols
             col_widths = [col_width] * num_cols
+            
+            # Ajustar larguras específicas para colunas importantes
+            if num_cols >= 4:
+                col_widths[0] = 30  # CPF
+                col_widths[1] = 50  # Beneficiario
+                if len(colunas_data) > 0:
+                    col_widths[2] = 25  # Data
+                if len(colunas_conta) > 0:
+                    col_widths[3] = 25  # Número da conta
             
             # Cabeçalho
             pdf.table_header(colunas_relevantes, col_widths)
@@ -400,6 +442,69 @@ def gerar_pdf_executivo(dados, tipo_relatorio):
                     cell_value = pdf.safe_text(cell_value)
                     row_data.append(cell_value)
                 pdf.table_row(row_data, col_widths)
+    
+    # Últimos Pagamentos com dados completos
+    if not dados['pagamentos'].empty:
+        pdf.add_page()
+        pdf.chapter_title('ULTIMOS PAGAMENTOS REGISTRADOS')
+        
+        # Selecionar colunas incluindo número da conta e data
+        colunas_base = ['CPF', 'Beneficiario', 'Projeto']
+        
+        # Adicionar colunas de data
+        colunas_data = []
+        for col_data in ['Data', 'Data Pagto', 'Data_Pagto', 'DataPagto']:
+            if col_data in dados['pagamentos'].columns:
+                colunas_data.append(col_data)
+                break
+        
+        # Adicionar colunas de número da conta
+        colunas_conta = []
+        for col_conta in ['Num Cartao', 'Num_Cartao', 'Conta', 'Numero Conta', 'Numero_Cartao']:
+            if col_conta in dados['pagamentos'].columns:
+                colunas_conta.append(col_conta)
+                break
+        
+        # Adicionar valor e status
+        colunas_adicionais = []
+        if 'Valor' in dados['pagamentos'].columns:
+            colunas_adicionais.append('Valor')
+        if 'Status' in dados['pagamentos'].columns:
+            colunas_adicionais.append('Status')
+        
+        colunas_relevantes = colunas_base + colunas_data + colunas_conta + colunas_adicionais
+        
+        if not colunas_relevantes:
+            colunas_relevantes = dados['pagamentos'].columns[:6].tolist()
+        
+        dados_exibir = dados['pagamentos'][colunas_relevantes].head(15)
+        
+        # Ajustar larguras das colunas
+        num_cols = len(colunas_relevantes)
+        col_width = 180 // num_cols
+        col_widths = [col_width] * num_cols
+        
+        # Ajustar larguras específicas
+        if num_cols >= 5:
+            col_widths[0] = 30  # CPF
+            col_widths[1] = 40  # Beneficiario
+            if len(colunas_data) > 0:
+                col_widths[2] = 20  # Data
+            if len(colunas_conta) > 0:
+                col_widths[3] = 25  # Número da conta
+        
+        # Cabeçalho
+        pdf.table_header(colunas_relevantes, col_widths)
+        
+        # Dados
+        for _, row in dados_exibir.iterrows():
+            row_data = []
+            for col in colunas_relevantes:
+                cell_value = str(row[col]) if pd.notna(row[col]) else ""
+                # Limpar caracteres especiais
+                cell_value = pdf.safe_text(cell_value)
+                row_data.append(cell_value)
+            pdf.table_row(row_data, col_widths)
     
     # Conclusão
     pdf.add_page()
@@ -501,11 +606,34 @@ def gerar_relatorio_excel(dados, tipo_relatorio):
         
         # Sheet com detalhes completos dos duplicados
         if not metrics['detalhes_duplicados'].empty:
+            # Incluir todas as colunas disponíveis nos detalhes
             metrics['detalhes_duplicados'].to_excel(writer, sheet_name='Detalhes_Duplicados', index=False)
         
-        # Sheets com dados completos
+        # Sheets com dados completos de pagamentos
         if not dados['pagamentos'].empty:
             dados['pagamentos'].to_excel(writer, sheet_name='Pagamentos_Completo', index=False)
+            
+            # Sheet adicional com colunas principais
+            colunas_principais = []
+            # Adicionar colunas base
+            for col in ['CPF', 'Beneficiario', 'Projeto', 'Valor', 'Status']:
+                if col in dados['pagamentos'].columns:
+                    colunas_principais.append(col)
+            
+            # Adicionar data (verificar diferentes nomes)
+            for col_data in ['Data', 'Data Pagto', 'Data_Pagto', 'DataPagto']:
+                if col_data in dados['pagamentos'].columns:
+                    colunas_principais.append(col_data)
+                    break
+            
+            # Adicionar número da conta (verificar diferentes nomes)
+            for col_conta in ['Num Cartao', 'Num_Cartao', 'Conta', 'Numero Conta', 'Numero_Cartao']:
+                if col_conta in dados['pagamentos'].columns:
+                    colunas_principais.append(col_conta)
+                    break
+            
+            if colunas_principais:
+                dados['pagamentos'][colunas_principais].to_excel(writer, sheet_name='Pagamentos_Principais', index=False)
         
         if not dados['contas'].empty:
             dados['contas'].to_excel(writer, sheet_name='Abertura_Contas_Completo', index=False)
@@ -643,8 +771,13 @@ def mostrar_dashboard(dados):
         # Mostrar resumo dos casos de duplicidade
         with st.expander("🔍 **Ver Detalhes dos Pagamentos Duplicados**", expanded=False):
             if not metrics['resumo_duplicidades'].empty:
+                # Adicionar número da conta ao display se disponível
+                colunas_display = ['CPF', 'Quantidade_Pagamentos', 'Beneficiario', 'Projeto']
+                if 'Num_Cartao' in metrics['resumo_duplicidades'].columns:
+                    colunas_display.append('Num_Cartao')
+                
                 st.dataframe(
-                    metrics['resumo_duplicidades'],
+                    metrics['resumo_duplicidades'][colunas_display],
                     use_container_width=True,
                     hide_index=True
                 )
@@ -665,6 +798,7 @@ def mostrar_dashboard(dados):
     with col1:
         st.subheader("Distribuição por Projeto (Pagamentos)")
         if not dados['pagamentos'].empty and 'Projeto' in dados['pagamentos'].columns:
+            # CORREÇÃO: Usar value_counts() para agrupar por projeto único
             projetos_count = dados['pagamentos']['Projeto'].value_counts().reset_index()
             projetos_count.columns = ['Projeto', 'Quantidade']
             
@@ -701,9 +835,16 @@ def mostrar_dashboard(dados):
     with col1:
         st.subheader("Últimos Pagamentos")
         if not dados['pagamentos'].empty:
-            # Mostrar colunas mais relevantes
-            colunas_pagamentos = [col for col in ['Data', 'Beneficiário', 'CPF', 'Projeto', 'Valor', 'Status'] 
+            # Mostrar colunas mais relevantes incluindo número da conta e data
+            colunas_pagamentos = [col for col in ['Data', 'Data Pagto', 'Beneficiário', 'CPF', 'Projeto', 'Valor', 'Status'] 
                                 if col in dados['pagamentos'].columns]
+            
+            # Adicionar número da conta se disponível
+            for col_conta in ['Num Cartao', 'Num_Cartao', 'Conta', 'Numero Conta']:
+                if col_conta in dados['pagamentos'].columns:
+                    colunas_pagamentos.append(col_conta)
+                    break
+            
             if colunas_pagamentos:
                 st.dataframe(dados['pagamentos'][colunas_pagamentos].head(10), use_container_width=True)
             else:
@@ -738,11 +879,12 @@ def mostrar_importacao():
         with col1:
             st.markdown("**📋 Planilha de Pagamentos:**")
             st.code("""
-Data (dd/mm/aaaa)
+Data ou Data Pagto (dd/mm/aaaa)
 Beneficiário (texto)
 CPF (número)
 Projeto (texto)
 Valor (número)
+Num Cartao (número da conta)
 Status (texto)
 *Outras colunas opcionais*
             """)
@@ -819,7 +961,21 @@ def mostrar_consultas(dados):
         
         if resultados.get('pagamentos') is not None and not resultados['pagamentos'].empty:
             st.markdown("**📋 Pagamentos Encontrados:**")
-            st.dataframe(resultados['pagamentos'], use_container_width=True)
+            
+            # Mostrar colunas incluindo número da conta e data
+            colunas_display = [col for col in ['Data', 'Data Pagto', 'Beneficiário', 'CPF', 'Projeto', 'Valor', 'Status'] 
+                             if col in resultados['pagamentos'].columns]
+            
+            # Adicionar número da conta se disponível
+            for col_conta in ['Num Cartao', 'Num_Cartao', 'Conta', 'Numero Conta']:
+                if col_conta in resultados['pagamentos'].columns:
+                    colunas_display.append(col_conta)
+                    break
+            
+            if colunas_display:
+                st.dataframe(resultados['pagamentos'][colunas_display], use_container_width=True)
+            else:
+                st.dataframe(resultados['pagamentos'], use_container_width=True)
         
         if resultados.get('contas') is not None and not resultados['contas'].empty:
             st.markdown("**🏦 Contas Encontradas:**")
