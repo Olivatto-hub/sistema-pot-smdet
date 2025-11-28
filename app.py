@@ -25,6 +25,23 @@ def autenticar():
     
     return email
 
+# NOVA FUNÇÃO: Processar CPF de forma inteligente
+def processar_cpf(cpf):
+    """Processa CPF, completando com zeros à esquerda e removendo caracteres especiais"""
+    if pd.isna(cpf) or cpf in ['', 'NaN', 'None', 'nan']:
+        return cpf
+    
+    cpf_str = str(cpf).strip()
+    
+    # Remover todos os caracteres não numéricos
+    cpf_limpo = re.sub(r'[^\d]', '', cpf_str)
+    
+    # Completar com zeros à esquerda se tiver menos de 11 dígitos
+    if cpf_limpo and len(cpf_limpo) < 11:
+        cpf_limpo = cpf_limpo.zfill(11)
+    
+    return cpf_limpo
+
 # FUNÇÃO CORRIGIDA: Padronizar documentos de forma inteligente
 def padronizar_documentos(df):
     """Padroniza RGs e CPFs, completando com zeros à esquerda quando necessário"""
@@ -51,23 +68,6 @@ def padronizar_documentos(df):
                 st.warning(f"⚠️ Não foi possível padronizar a coluna '{coluna}': {str(e)}")
     
     return df_processed
-
-# NOVA FUNÇÃO: Processar CPF de forma inteligente
-def processar_cpf(cpf):
-    """Processa CPF, completando com zeros à esquerda e removendo caracteres especiais"""
-    if pd.isna(cpf) or cpf in ['', 'NaN', 'None', 'nan']:
-        return cpf
-    
-    cpf_str = str(cpf).strip()
-    
-    # Remover todos os caracteres não numéricos
-    cpf_limpo = re.sub(r'[^\d]', '', cpf_str)
-    
-    # Completar com zeros à esquerda se tiver menos de 11 dígitos
-    if cpf_limpo and len(cpf_limpo) < 11:
-        cpf_limpo = cpf_limpo.zfill(11)
-    
-    return cpf_limpo
 
 # FUNÇÃO MELHORADA: Analisar ausência de dados com critérios realistas
 def analisar_ausencia_dados(dados):
@@ -355,8 +355,242 @@ def carregar_dados():
     
     return dados
 
-# [As funções restantes permanecem iguais, apenas atualizando as mensagens no dashboard]
+# FUNÇÃO CORRIGIDA: Analisar duplicidades por NÚMERO DA CONTA
+def analisar_duplicidades(dados):
+    """Analisa pagamentos duplicados por NÚMERO DA CONTA e retorna estatísticas"""
+    analise = {
+        'total_pagamentos': 0,
+        'contas_unicas': 0,
+        'pagamentos_duplicados': 0,
+        'valor_total_duplicados': 0,
+        'detalhes_duplicados': pd.DataFrame(),
+        'resumo_duplicidades': pd.DataFrame(),
+        'contas_com_erros': [],
+        'cpfs_duplicados_info': pd.DataFrame(),
+        'total_cpfs_duplicados': 0
+    }
+    
+    if dados['pagamentos'].empty:
+        return analise
+    
+    df = dados['pagamentos'].copy()
+    analise['total_pagamentos'] = len(df)
+    
+    # Identificar contas únicas (apenas contas válidas)
+    coluna_conta = obter_coluna_conta(df)
+    
+    if coluna_conta:
+        # Filtrar apenas contas válidas
+        contas_validas = df[
+            df[coluna_conta].notna() & 
+            (df[coluna_conta].astype(str).str.strip() != '') &
+            (df[coluna_conta].astype(str).str.strip() != 'NaN') &
+            (df[coluna_conta].astype(str).str.strip() != 'None')
+        ]
+        
+        analise['contas_unicas'] = contas_validas[coluna_conta].nunique()
+        
+        # Identificar contas com problemas
+        contas_com_problemas = df[
+            df[coluna_conta].isna() | 
+            (df[coluna_conta].astype(str).str.strip() == '') |
+            (df[coluna_conta].astype(str).str.strip() == 'NaN') |
+            (df[coluna_conta].astype(str).str.strip() == 'None')
+        ]
+        
+        if not contas_com_problemas.empty:
+            analise['contas_com_erros'] = contas_com_problemas.index.tolist()
+    
+    # Identificar pagamentos duplicados por NÚMERO DA CONTA
+    if coluna_conta:
+        df_validos = df[
+            df[coluna_conta].notna() & 
+            (df[coluna_conta].astype(str).str.strip() != '') &
+            (df[coluna_conta].astype(str).str.strip() != 'NaN') &
+            (df[coluna_conta].astype(str).str.strip() != 'None')
+        ].copy()
+        
+        if not df_validos.empty:
+            contagem_contas = df_validos[coluna_conta].value_counts().reset_index()
+            contagem_contas.columns = [coluna_conta, 'Quantidade_Pagamentos']
+            
+            contas_duplicadas = contagem_contas[contagem_contas['Quantidade_Pagamentos'] > 1]
+            analise['pagamentos_duplicados'] = len(contas_duplicadas)
+            
+            if not contas_duplicadas.empty:
+                contas_com_duplicidade = contas_duplicadas[coluna_conta].tolist()
+                detalhes = df_validos[df_validos[coluna_conta].isin(contas_com_duplicidade)].copy()
+                
+                colunas_ordenacao = [coluna_conta]
+                if 'Data' in detalhes.columns:
+                    colunas_ordenacao.append('Data')
+                elif 'Data Pagto' in detalhes.columns:
+                    colunas_ordenacao.append('Data Pagto')
+                detalhes = detalhes.sort_values(by=colunas_ordenacao)
+                
+                analise['detalhes_duplicados'] = detalhes
+                
+                if 'Valor_Limpo' in df_validos.columns:
+                    try:
+                        valor_duplicados = 0
+                        for conta in contas_com_duplicidade:
+                            pagamentos_conta = df_validos[df_validos[coluna_conta] == conta]
+                            if len(pagamentos_conta) > 1:
+                                valor_duplicados += pagamentos_conta.iloc[1:]['Valor_Limpo'].sum()
+                        
+                        analise['valor_total_duplicados'] = valor_duplicados
+                    except Exception as e:
+                        analise['valor_total_duplicados'] = 0
+                
+                # Criar resumo de duplicidades
+                resumo = []
+                for conta in contas_com_duplicidade:
+                    pagamentos_conta = df_validos[df_validos[coluna_conta] == conta]
+                    qtd = len(pagamentos_conta)
+                    
+                    info = {
+                        'Numero_Conta': conta,
+                        'Quantidade_Pagamentos': qtd,
+                    }
+                    
+                    if 'CPF' in pagamentos_conta.columns:
+                        cpfs = pagamentos_conta['CPF'].unique()
+                        if len(cpfs) == 1:
+                            info['CPF'] = cpfs[0]
+                        else:
+                            info['CPF'] = f"Múltiplos: {', '.join(map(str, cpfs[:2]))}"
+                    
+                    coluna_beneficiario = obter_coluna_beneficiario(pagamentos_conta)
+                    if coluna_beneficiario:
+                        beneficiarios = pagamentos_conta[coluna_beneficiario].unique()
+                        if len(beneficiarios) == 1:
+                            info['Beneficiario'] = beneficiarios[0]
+                        else:
+                            info['Beneficiario'] = f"Múltiplos: {', '.join(map(str, beneficiarios[:2]))}"
+                    
+                    if 'Projeto' in pagamentos_conta.columns:
+                        projetos = pagamentos_conta['Projeto'].unique()
+                        if len(projetos) == 1:
+                            info['Projeto'] = projetos[0]
+                        else:
+                            info['Projeto'] = f"Múltiplos: {', '.join(map(str, projetos[:2]))}"
+                    
+                    if 'Valor_Limpo' in pagamentos_conta.columns:
+                        try:
+                            info['Valor_Total'] = pagamentos_conta['Valor_Limpo'].sum()
+                        except:
+                            info['Valor_Total'] = 0
+                    
+                    resumo.append(info)
+                
+                analise['resumo_duplicidades'] = pd.DataFrame(resumo)
+    
+    # Análise de CPFs duplicados (apenas para informação)
+    if 'CPF' in df.columns:
+        cpfs_validos = df[
+            df['CPF'].notna() & 
+            (df['CPF'].astype(str).str.strip() != '') &
+            (df['CPF'].astype(str).str.strip() != 'NaN') &
+            (df['CPF'].astype(str).str.strip() != 'None')
+        ]
+        
+        if not cpfs_validos.empty:
+            contagem_cpf = cpfs_validos['CPF'].value_counts().reset_index()
+            contagem_cpf.columns = ['CPF', 'Quantidade_Ocorrencias']
+            
+            cpfs_duplicados = contagem_cpf[contagem_cpf['Quantidade_Ocorrencias'] > 1]
+            analise['total_cpfs_duplicados'] = len(cpfs_duplicados)
+            
+            if not cpfs_duplicados.empty:
+                cpfs_com_duplicidade = cpfs_duplicados['CPF'].tolist()
+                detalhes_cpfs = cpfs_validos[cpfs_validos['CPF'].isin(cpfs_com_duplicidade)].copy()
+                detalhes_cpfs = detalhes_cpfs.sort_values(by=['CPF'])
+                
+                if coluna_conta:
+                    detalhes_cpfs['Pagamento_Duplicado_Real'] = detalhes_cpfs.duplicated(
+                        subset=[coluna_conta], keep=False
+                    )
+                
+                analise['cpfs_duplicados_info'] = detalhes_cpfs
+    
+    return analise
 
+# FUNÇÃO QUE ESTAVA FALTANDO: processar_dados
+def processar_dados(dados):
+    """Processa os dados para o dashboard"""
+    metrics = {}
+    
+    # Análise de duplicidades
+    analise_dup = analisar_duplicidades(dados)
+    metrics.update(analise_dup)
+    
+    # Análise de ausência de dados
+    analise_ausencia = analisar_ausencia_dados(dados)
+    metrics.update(analise_ausencia)
+    
+    # Métricas básicas
+    if not dados['pagamentos'].empty:
+        metrics['total_pagamentos'] = len(dados['pagamentos'])
+        if 'Valor_Limpo' in dados['pagamentos'].columns:
+            metrics['valor_total'] = dados['pagamentos']['Valor_Limpo'].sum()
+        else:
+            metrics['valor_total'] = 0
+        
+        if 'Projeto' in dados['pagamentos'].columns:
+            metrics['projetos_ativos'] = dados['pagamentos']['Projeto'].nunique()
+        else:
+            metrics['projetos_ativos'] = 0
+            
+        if 'CPF' in dados['pagamentos'].columns:
+            metrics['beneficiarios_unicos'] = dados['pagamentos']['CPF'].nunique()
+        else:
+            metrics['beneficiarios_unicos'] = 0
+    
+    if not dados['contas'].empty:
+        metrics['total_contas'] = len(dados['contas'])
+        if 'CPF' in dados['contas'].columns:
+            metrics['contas_unicas'] = dados['contas']['CPF'].nunique()
+        else:
+            metrics['contas_unicas'] = 0
+    
+    return metrics
+
+# Funções auxiliares
+def obter_coluna_beneficiario(df):
+    """Detecta automaticamente a coluna do beneficiário"""
+    for col in ['Beneficiario', 'Beneficiário', 'Nome', 'Nome Beneficiario']:
+        if col in df.columns:
+            return col
+    return None
+
+def obter_coluna_data(df):
+    """Detecta automaticamente a coluna de data"""
+    for col in ['Data', 'Data Pagto', 'Data_Pagto', 'DataPagto']:
+        if col in df.columns:
+            return col
+    return None
+
+def obter_coluna_conta(df):
+    """Detecta automaticamente a coluna do número da conta"""
+    for col in ['Num Cartao', 'Num_Cartao', 'Conta', 'Numero Conta', 'Numero_Cartao']:
+        if col in df.columns:
+            return col
+    return None
+
+def formatar_brasileiro(valor, tipo='monetario'):
+    """Formata números no padrão brasileiro"""
+    try:
+        if isinstance(valor, (int, float)):
+            if tipo == 'monetario':
+                return f"R$ {valor:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
+            else:
+                return f"{valor:,.0f}".replace(',', 'X').replace('.', ',').replace('X', '.')
+        else:
+            return str(valor)
+    except:
+        return str(valor)
+
+# Dashboard
 def mostrar_dashboard(dados):
     st.header("📊 Dashboard Executivo - POT")
     
@@ -458,44 +692,192 @@ def mostrar_dashboard(dados):
                     delta="Valor a investigar"
                 )
 
-# [As funções restantes permanecem iguais...]
+# [As funções restantes de interface permanecem iguais...]
 
-# Funções auxiliares (obter_coluna_beneficiario, obter_coluna_data, etc.) permanecem as mesmas
-def obter_coluna_beneficiario(df):
-    """Detecta automaticamente a coluna do beneficiário"""
-    for col in ['Beneficiario', 'Beneficiário', 'Nome', 'Nome Beneficiario']:
-        if col in df.columns:
-            return col
-    return None
+def mostrar_importacao():
+    st.header("📥 Estrutura das Planilhas")
+    
+    st.info("""
+    **💡 USE O MENU LATERAL PARA CARREGAR AS PLANILHAS!**
+    """)
+    
+    with st.expander("📋 Estrutura das Planilhas Necessárias"):
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("**📋 Planilha de Pagamentos:**")
+            st.code("""
+Data ou Data Pagto (dd/mm/aaaa)
+Beneficiário (texto)
+CPF (número - aceita formatos de todos os estados)
+RG (número, pode conter X)
+Projeto (texto)
+Valor (número)
+Num Cartao (número da conta) ← CRITÉRIO PARA DUPLICIDADE
+Status (texto)
+*Outras colunas opcionais*
+            """)
+        
+        with col2:
+            st.markdown("**🏦 Planilha de Abertura de Contas:**")
+            st.code("""
+Data (dd/mm/aaaa)
+Nome (texto)
+CPF (número - aceita formatos de todos os estados)
+RG (número, pode conter X)
+Projeto (texto)
+Agência (texto/número)
+*Outras colunas opcionais*
+            """)
 
-def obter_coluna_data(df):
-    """Detecta automaticamente a coluna de data"""
-    for col in ['Data', 'Data Pagto', 'Data_Pagto', 'DataPagto']:
-        if col in df.columns:
-            return col
-    return None
-
-def obter_coluna_conta(df):
-    """Detecta automaticamente a coluna do número da conta"""
-    for col in ['Num Cartao', 'Num_Cartao', 'Conta', 'Numero Conta', 'Numero_Cartao']:
-        if col in df.columns:
-            return col
-    return None
-
-def formatar_brasileiro(valor, tipo='monetario'):
-    """Formata números no padrão brasileiro"""
-    try:
-        if isinstance(valor, (int, float)):
-            if tipo == 'monetario':
-                return f"R$ {valor:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
+def mostrar_consultas(dados):
+    st.header("🔍 Consultas de Dados")
+    
+    opcao_consulta = st.radio(
+        "Tipo de consulta:",
+        ["Por CPF", "Por Projeto", "Por Número da Conta"],
+        horizontal=True
+    )
+    
+    if opcao_consulta == "Por CPF":
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            cpf = st.text_input("Digite o CPF (qualquer formato):", placeholder="123.456.789-00 ou 12345678900")
+        with col2:
+            if st.button("🔍 Buscar CPF", use_container_width=True):
+                if cpf:
+                    resultados = {}
+                    if not dados['pagamentos'].empty and 'CPF' in dados['pagamentos'].columns:
+                        # Processar o CPF de busca da mesma forma que os dados
+                        cpf_busca = processar_cpf(cpf)
+                        resultados['pagamentos'] = dados['pagamentos'][dados['pagamentos']['CPF'].astype(str).str.contains(cpf_busca)]
+                    if not dados['contas'].empty and 'CPF' in dados['contas'].columns:
+                        cpf_busca = processar_cpf(cpf)
+                        resultados['contas'] = dados['contas'][dados['contas']['CPF'].astype(str).str.contains(cpf_busca)]
+                    
+                    st.session_state.resultados_consulta = resultados
+                else:
+                    st.warning("Por favor, digite um CPF para buscar")
+    
+    elif opcao_consulta == "Por Projeto":
+        projeto = st.text_input("Digite o nome do projeto:")
+        if st.button("🏢 Buscar por Projeto"):
+            if projeto:
+                resultados = {}
+                if not dados['pagamentos'].empty and 'Projeto' in dados['pagamentos'].columns:
+                    resultados['pagamentos'] = dados['pagamentos'][dados['pagamentos']['Projeto'].str.contains(projeto, case=False, na=False)]
+                if not dados['contas'].empty and 'Projeto' in dados['contas'].columns:
+                    resultados['contas'] = dados['contas'][dados['contas']['Projeto'].str.contains(projeto, case=False, na=False)]
+                
+                st.session_state.resultados_consulta = resultados
             else:
-                return f"{valor:,.0f}".replace(',', 'X').replace('.', ',').replace('X', '.')
-        else:
-            return str(valor)
-    except:
-        return str(valor)
+                st.warning("Por favor, digite um projeto para buscar")
+    
+    else:
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            numero_conta = st.text_input("Digite o número da conta:")
+        with col2:
+            if st.button("💳 Buscar por Conta", use_container_width=True):
+                if numero_conta:
+                    resultados = {}
+                    coluna_conta = obter_coluna_conta(dados['pagamentos'])
+                    if not dados['pagamentos'].empty and coluna_conta:
+                        resultados['pagamentos'] = dados['pagamentos'][dados['pagamentos'][coluna_conta].astype(str).str.contains(numero_conta)]
+                    
+                    st.session_state.resultados_consulta = resultados
+                else:
+                    st.warning("Por favor, digite um número da conta para buscar")
+    
+    st.markdown("---")
+    st.subheader("Resultados da Consulta")
+    
+    if 'resultados_consulta' in st.session_state:
+        resultados = st.session_state.resultados_consulta
+        
+        if resultados.get('pagamentos') is not None and not resultados['pagamentos'].empty:
+            st.markdown("**📋 Pagamentos Encontrados:**")
+            
+            colunas_display = [col for col in ['Data', 'Data Pagto', 'Beneficiário', 'CPF', 'Projeto', 'Valor', 'Status'] 
+                             if col in resultados['pagamentos'].columns]
+            
+            coluna_conta = obter_coluna_conta(resultados['pagamentos'])
+            if coluna_conta:
+                colunas_display.append(coluna_conta)
+            
+            if colunas_display:
+                st.dataframe(resultados['pagamentos'][colunas_display], use_container_width=True)
+            else:
+                st.dataframe(resultados['pagamentos'], use_container_width=True)
+        
+        if resultados.get('contas') is not None and not resultados['contas'].empty:
+            st.markdown("**🏦 Contas Encontradas:**")
+            st.dataframe(resultados['contas'], use_container_width=True)
+        
+        if not any([not df.empty if df is not None else False for df in resultados.values()]):
+            st.info("Nenhum resultado encontrado para a consulta.")
+    else:
+        st.info("Os resultados aparecerão aqui após a busca")
 
-# [Restante do código permanece igual...]
+def mostrar_relatorios(dados):
+    st.header("📋 Gerar Relatórios")
+    
+    metrics = processar_dados(dados)
+    
+    if metrics.get('pagamentos_duplicados', 0) > 0:
+        st.warning(f"🚨 **ALERTA:** Foram identificados {formatar_brasileiro(metrics.get('pagamentos_duplicados', 0), 'numero')} contas com pagamentos duplicados")
+    
+    if metrics.get('total_registros_criticos', 0) > 0:
+        st.error(f"🚨 **ALERTA:** {formatar_brasileiro(metrics.get('total_registros_criticos', 0), 'numero')} registros com dados críticos ausentes")
+    
+    if metrics.get('cpfs_com_zeros_adicional', 0) > 0:
+        st.success(f"✅ **INFORMAÇÃO:** {formatar_brasileiro(metrics.get('cpfs_com_zeros_adicional', 0), 'numero')} CPFs receberam zeros à esquerda")
+    
+    if metrics.get('total_cpfs_duplicados', 0) > 0:
+        st.info(f"ℹ️ **INFORMAÇÃO:** {formatar_brasileiro(metrics.get('total_cpfs_duplicados', 0), 'numero')} CPFs com múltiplas ocorrências")
+    
+    st.info("""
+    **Escolha o formato do relatório:**
+    - **📄 PDF Executivo**: Relatório visual e profissional para apresentações
+    - **📊 Excel Completo**: Dados detalhados para análise técnica
+    """)
+    
+    tipo_relatorio = st.selectbox(
+        "Selecione o tipo de relatório:",
+        [
+            "Relatório Geral Completo",
+            "Relatório de Pagamentos", 
+            "Relatório de Abertura de Contas",
+            "Relatório por Projeto",
+            "Dashboard Executivo"
+        ]
+    )
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if st.button("📄 Gerar PDF Executivo", type="primary", use_container_width=True):
+            st.info("📄 Funcionalidade de PDF em desenvolvimento...")
+    
+    with col2:
+        if st.button("📊 Gerar Excel Completo", type="secondary", use_container_width=True):
+            st.info("📊 Funcionalidade de Excel em desenvolvimento...")
+
+def mostrar_rodape():
+    st.markdown("---")
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown("**SMDET**")
+        st.markdown("Secretaria Municipal do Desenvolvimento Econômico e Trabalho")
+    
+    with col2:
+        st.markdown("**Suporte Técnico**")
+        st.markdown("rolivatto@prefeitura.sp.gov.br")
+    
+    with col3:
+        st.markdown("**Versão**")
+        st.markdown("2.0 - Corrigido para CPFs de todos os estados")
 
 def main():
     email = autenticar()
@@ -509,7 +891,7 @@ def main():
     dados = carregar_dados()
     
     st.title("🏛️ Sistema POT - Programa Operação Trabalho")
-    st.markdown("Desenvolvido para Secretaria Municipal do Desenvolvimento Econômico e Trabalho")
+    st.markdown("**✅ CORRIGIDO: Aceita CPFs de todos os estados, incluindo Nordeste**")
     st.markdown("---")
     
     tab1, tab2, tab3, tab4 = st.tabs([
