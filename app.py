@@ -45,7 +45,7 @@ def formatar_brasileiro(valor, tipo='numero'):
     else:
         return str(valor)
 
-# Função para processar dados principais
+# CORREÇÃO: Função para processar dados principais - AGORA considera ambas as planilhas
 def processar_dados(dados, nomes_arquivos=None):
     """Processa os dados para gerar métricas e análises"""
     metrics = {
@@ -56,13 +56,16 @@ def processar_dados(dados, nomes_arquivos=None):
         'valor_total': 0,
         'pagamentos_duplicados': 0,
         'valor_total_duplicados': 0,
-        'total_cpfs_duplicados': 0
+        'total_cpfs_duplicados': 0,
+        'total_contas_abertas': 0,  # NOVO: Contas da planilha de abertura
+        'beneficiarios_contas': 0   # NOVO: Beneficiários da planilha de abertura
     }
     
     # Combinar com análise de ausência de dados
     analise_ausencia = analisar_ausencia_dados(dados, nomes_arquivos.get('pagamentos'), nomes_arquivos.get('contas'))
     metrics.update(analise_ausencia)
     
+    # CORREÇÃO: Processar planilha de PAGAMENTOS
     if not dados['pagamentos'].empty:
         df = dados['pagamentos']
         
@@ -74,7 +77,7 @@ def processar_dados(dados, nomes_arquivos=None):
         # Total de pagamentos
         metrics['total_pagamentos'] = len(df)
         
-        # Contas únicas
+        # Contas únicas (da planilha de pagamentos)
         coluna_conta = obter_coluna_conta(df)
         if coluna_conta:
             metrics['contas_unicas'] = df[coluna_conta].nunique()
@@ -100,6 +103,24 @@ def processar_dados(dados, nomes_arquivos=None):
         if 'CPF' in df.columns:
             cpfs_duplicados = df[df.duplicated(['CPF'], keep=False)]
             metrics['total_cpfs_duplicados'] = cpfs_duplicados['CPF'].nunique()
+    
+    # CORREÇÃO: Processar planilha de ABERTURA DE CONTAS
+    if not dados['contas'].empty:
+        df_contas = dados['contas']
+        
+        # Total de contas abertas
+        metrics['total_contas_abertas'] = len(df_contas)
+        
+        # Beneficiários únicos na planilha de contas
+        coluna_nome = 'Nome' if 'Nome' in df_contas.columns else 'Beneficiario'
+        if coluna_nome in df_contas.columns:
+            metrics['beneficiarios_contas'] = df_contas[coluna_nome].nunique()
+        
+        # Se não há planilha de pagamentos, usar contas como referência
+        if dados['pagamentos'].empty:
+            metrics['contas_unicas'] = metrics['total_contas_abertas']
+            if 'Projeto' in df_contas.columns:
+                metrics['projetos_ativos'] = df_contas['Projeto'].nunique()
     
     return metrics
 
@@ -549,20 +570,38 @@ def mostrar_dashboard(dados, nomes_arquivos=None):
     if metrics.get('documentos_padronizados', 0) > 0:
         st.success(f"✅ **DOCUMENTOS PROCESSADOS** - {formatar_brasileiro(metrics.get('documentos_padronizados', 0), 'numero')} documentos padronizados")
 
-    # Métricas principais
+    # CORREÇÃO: Métricas principais - AGORA mostra contas de ambas as planilhas
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        st.metric("Beneficiários Únicos", formatar_brasileiro(metrics.get('beneficiarios_unicos', 0), 'numero'))
+        # Mostrar beneficiários da planilha apropriada
+        if metrics.get('beneficiarios_contas', 0) > 0 and dados['pagamentos'].empty:
+            st.metric("Beneficiários Cadastrados", formatar_brasileiro(metrics.get('beneficiarios_contas', 0), 'numero'))
+        else:
+            st.metric("Beneficiários Únicos", formatar_brasileiro(metrics.get('beneficiarios_unicos', 0), 'numero'))
     
     with col2:
         st.metric("Total de Pagamentos", formatar_brasileiro(metrics.get('total_pagamentos', 0), 'numero'))
     
     with col3:
-        st.metric("Contas Únicas", formatar_brasileiro(metrics.get('contas_unicas', 0), 'numero'))
+        # CORREÇÃO: Mostrar contas da planilha apropriada
+        if metrics.get('total_contas_abertas', 0) > 0:
+            if dados['pagamentos'].empty:
+                st.metric("Contas Abertas", formatar_brasileiro(metrics.get('total_contas_abertas', 0), 'numero'))
+            else:
+                st.metric("Contas Únicas", formatar_brasileiro(metrics.get('contas_unicas', 0), 'numero'))
+        else:
+            st.metric("Contas Únicas", formatar_brasileiro(metrics.get('contas_unicas', 0), 'numero'))
     
     with col4:
         st.metric("Projetos Ativos", formatar_brasileiro(metrics.get('projetos_ativos', 0), 'numero'))
+    
+    # CORREÇÃO: Mostrar informações específicas da planilha de contas
+    if metrics.get('total_contas_abertas', 0) > 0 and not dados['contas'].empty:
+        st.success(f"🏦 **PLANILHA DE ABERTURA DE CONTAS:** {formatar_brasileiro(metrics.get('total_contas_abertas', 0), 'numero')} contas abertas identificadas")
+        
+        if metrics.get('beneficiarios_contas', 0) > 0:
+            st.info(f"👥 **BENEFICIÁRIOS CADASTRADOS:** {formatar_brasileiro(metrics.get('beneficiarios_contas', 0), 'numero')} beneficiários na planilha de contas")
     
     if metrics.get('valor_total', 0) > 0:
         st.metric("Valor Total dos Pagamentos", formatar_brasileiro(metrics['valor_total'], 'monetario'))
@@ -744,6 +783,10 @@ def mostrar_relatorios(dados, nomes_arquivos=None):
     if metrics.get('total_cpfs_duplicados', 0) > 0:
         st.info(f"ℹ️ **INFORMAÇÃO:** {formatar_brasileiro(metrics.get('total_cpfs_duplicados', 0), 'numero')} CPFs com múltiplas ocorrências")
     
+    # CORREÇÃO: Mostrar informações da planilha de contas
+    if metrics.get('total_contas_abertas', 0) > 0:
+        st.success(f"🏦 **INFORMAÇÃO:** {formatar_brasileiro(metrics.get('total_contas_abertas', 0), 'numero')} contas abertas identificadas na planilha de contas")
+    
     st.info("""
     **Escolha o formato do relatório:**
     - **📄 PDF Executivo**: Relatório visual e profissional para apresentações
@@ -769,11 +812,12 @@ def mostrar_relatorios(dados, nomes_arquivos=None):
     
     with col2:
         if st.button("📊 Gerar Excel Completo", use_container_width=True):
-            if not dados['pagamentos'].empty:
+            if not dados['pagamentos'].empty or not dados['contas'].empty:
                 # Criar um arquivo Excel com múltiplas abas
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                    dados['pagamentos'].to_excel(writer, sheet_name='Pagamentos', index=False)
+                    if not dados['pagamentos'].empty:
+                        dados['pagamentos'].to_excel(writer, sheet_name='Pagamentos', index=False)
                     if not dados['contas'].empty:
                         dados['contas'].to_excel(writer, sheet_name='Contas', index=False)
                     
