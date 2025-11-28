@@ -26,58 +26,21 @@ def autenticar():
 def carregar_dados():
     st.sidebar.header("📤 Carregar Dados Reais")
     
-    # Upload para projetos
-    upload_projetos = st.sidebar.file_uploader(
-        "Planilha de Projetos", 
-        type=['xlsx', 'csv'],
-        key="projetos"
-    )
-    
-    # Upload para evolução mensal
-    upload_evolucao = st.sidebar.file_uploader(
-        "Planilha de Evolução Mensal", 
-        type=['xlsx', 'csv'],
-        key="evolucao"
-    )
-    
-    # Upload para pagamentos recentes
+    # Upload para pagamentos
     upload_pagamentos = st.sidebar.file_uploader(
-        "Planilha de Pagamentos Recentes", 
+        "Planilha de Pagamentos", 
         type=['xlsx', 'csv'],
         key="pagamentos"
     )
     
+    # Upload para abertura de contas
+    upload_contas = st.sidebar.file_uploader(
+        "Planilha de Abertura de Contas", 
+        type=['xlsx', 'csv'],
+        key="contas"
+    )
+    
     dados = {}
-    
-    # Carregar dados de projetos
-    if upload_projetos is not None:
-        try:
-            if upload_projetos.name.endswith('.xlsx'):
-                dados['projetos'] = pd.read_excel(upload_projetos)
-            else:
-                dados['projetos'] = pd.read_csv(upload_projetos)
-            st.sidebar.success(f"✅ Projetos: {len(dados['projetos'])} registros")
-        except Exception as e:
-            st.sidebar.error(f"❌ Erro ao carregar projetos: {str(e)}")
-            dados['projetos'] = pd.DataFrame()
-    else:
-        dados['projetos'] = pd.DataFrame()
-        st.sidebar.info("📁 Aguardando planilha de projetos")
-    
-    # Carregar dados de evolução
-    if upload_evolucao is not None:
-        try:
-            if upload_evolucao.name.endswith('.xlsx'):
-                dados['evolucao'] = pd.read_excel(upload_evolucao)
-            else:
-                dados['evolucao'] = pd.read_csv(upload_evolucao)
-            st.sidebar.success(f"✅ Evolução: {len(dados['evolucao'])} registros")
-        except Exception as e:
-            st.sidebar.error(f"❌ Erro ao carregar evolução: {str(e)}")
-            dados['evolucao'] = pd.DataFrame()
-    else:
-        dados['evolucao'] = pd.DataFrame()
-        st.sidebar.info("📁 Aguardando planilha de evolução")
     
     # Carregar dados de pagamentos
     if upload_pagamentos is not None:
@@ -94,7 +57,53 @@ def carregar_dados():
         dados['pagamentos'] = pd.DataFrame()
         st.sidebar.info("📁 Aguardando planilha de pagamentos")
     
+    # Carregar dados de abertura de contas
+    if upload_contas is not None:
+        try:
+            if upload_contas.name.endswith('.xlsx'):
+                dados['contas'] = pd.read_excel(upload_contas)
+            else:
+                dados['contas'] = pd.read_csv(upload_contas)
+            st.sidebar.success(f"✅ Contas: {len(dados['contas'])} registros")
+        except Exception as e:
+            st.sidebar.error(f"❌ Erro ao carregar contas: {str(e)}")
+            dados['contas'] = pd.DataFrame()
+    else:
+        dados['contas'] = pd.DataFrame()
+        st.sidebar.info("📁 Aguardando planilha de abertura de contas")
+    
     return dados
+
+def processar_dados(dados):
+    """Processa os dados para o dashboard"""
+    metrics = {}
+    
+    # Métricas básicas
+    if not dados['pagamentos'].empty:
+        metrics['total_pagamentos'] = len(dados['pagamentos'])
+        if 'Valor' in dados['pagamentos'].columns:
+            metrics['valor_total'] = dados['pagamentos']['Valor'].sum()
+        else:
+            metrics['valor_total'] = 0
+        
+        if 'Projeto' in dados['pagamentos'].columns:
+            metrics['projetos_ativos'] = dados['pagamentos']['Projeto'].nunique()
+        else:
+            metrics['projetos_ativos'] = 0
+            
+        if 'CPF' in dados['pagamentos'].columns:
+            metrics['beneficiarios_unicos'] = dados['pagamentos']['CPF'].nunique()
+        else:
+            metrics['beneficiarios_unicos'] = 0
+    
+    if not dados['contas'].empty:
+        metrics['total_contas'] = len(dados['contas'])
+        if 'CPF' in dados['contas'].columns:
+            metrics['contas_unicas'] = dados['contas']['CPF'].nunique()
+        else:
+            metrics['contas_unicas'] = 0
+    
+    return metrics
 
 def main():
     email = autenticar()
@@ -128,13 +137,16 @@ def main():
         mostrar_importacao()
     
     with tab3:
-        mostrar_consultas()
+        mostrar_consultas(dados)
     
     with tab4:
-        mostrar_relatorios()
+        mostrar_relatorios(dados)
 
 def mostrar_dashboard(dados):
     st.header("📊 Dashboard Executivo - POT")
+    
+    # Processar dados
+    metrics = processar_dados(dados)
     
     # Verificar se há dados carregados
     dados_carregados = any([not df.empty for df in dados.values()])
@@ -143,117 +155,133 @@ def mostrar_dashboard(dados):
         st.warning("📁 **Nenhum dado carregado ainda**")
         st.info("""
         **Para ver o dashboard:**
-        1. Use o menu lateral para carregar as planilhas
+        1. Use o menu lateral para carregar as planilhas de Pagamentos e Abertura de Contas
         2. Formato suportado: XLSX ou CSV
         3. Os gráficos serão atualizados automaticamente
         """)
         return
     
-    # Métricas (agora dinâmicas)
+    # Métricas
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        if not dados['projetos'].empty and 'Beneficiários' in dados['projetos'].columns:
-            total_benef = dados['projetos']['Beneficiários'].sum()
-            st.metric("Beneficiários Ativos", f"{total_benef:,}")
-        else:
-            st.metric("Beneficiários Ativos", "0")
+        st.metric("Beneficiários Únicos", metrics.get('beneficiarios_unicos', 0))
     
     with col2:
-        if not dados['pagamentos'].empty:
-            total_pagamentos = len(dados['pagamentos'])
-            st.metric("Pagamentos Registrados", total_pagamentos)
-        else:
-            st.metric("Pagamentos Registrados", "0")
+        st.metric("Total de Pagamentos", metrics.get('total_pagamentos', 0))
     
     with col3:
-        if not dados['projetos'].empty:
-            total_projetos = len(dados['projetos'])
-            st.metric("Projetos Ativos", total_projetos)
-        else:
-            st.metric("Projetos Ativos", "0")
+        st.metric("Contas Abertas", metrics.get('total_contas', 0))
     
     with col4:
-        st.metric("Taxa de Sucesso", "97,8%", "+0,2%")
+        st.metric("Projetos Ativos", metrics.get('projetos_ativos', 0))
     
     # Gráficos
     col1, col2 = st.columns(2)
     
     with col1:
-        st.subheader("Evolução de Beneficiários")
-        if not dados['evolucao'].empty:
-            fig = px.line(dados['evolucao'], x='Mês', y='Beneficiários', 
-                         markers=True, line_shape='spline')
+        st.subheader("Distribuição por Projeto (Pagamentos)")
+        if not dados['pagamentos'].empty and 'Projeto' in dados['pagamentos'].columns:
+            projetos_count = dados['pagamentos']['Projeto'].value_counts().reset_index()
+            projetos_count.columns = ['Projeto', 'Quantidade']
+            
+            fig = px.pie(projetos_count, values='Quantidade', names='Projeto',
+                        title="Pagamentos por Projeto")
             st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("📊 Gráfico de projetos aparecerá aqui após carregar os dados de pagamentos")
+    
+    with col2:
+        st.subheader("Evolução Mensal de Pagamentos")
+        if not dados['pagamentos'].empty and 'Data' in dados['pagamentos'].columns:
+            try:
+                # Tentar converter para data
+                dados_pagamentos = dados['pagamentos'].copy()
+                dados_pagamentos['Data'] = pd.to_datetime(dados_pagamentos['Data'])
+                dados_pagamentos['Mês'] = dados_pagamentos['Data'].dt.to_period('M').astype(str)
+                
+                evolucao = dados_pagamentos.groupby('Mês').size().reset_index()
+                evolucao.columns = ['Mês', 'Pagamentos']
+                
+                fig = px.line(evolucao, x='Mês', y='Pagamentos', 
+                             markers=True, line_shape='spline',
+                             title="Evolução de Pagamentos por Mês")
+                st.plotly_chart(fig, use_container_width=True)
+            except:
+                st.info("📊 Formato de data não reconhecido. Ajuste a coluna 'Data'")
         else:
             st.info("📊 Gráfico de evolução aparecerá aqui após carregar os dados")
     
-    with col2:
-        st.subheader("Distribuição por Projeto")
-        if not dados['projetos'].empty and 'Beneficiários' in dados['projetos'].columns:
-            fig = px.pie(dados['projetos'], values='Beneficiários', names='Projeto')
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("📊 Gráfico de projetos aparecerá aqui após carregar os dados")
+    # Tabelas recentes
+    col1, col2 = st.columns(2)
     
-    # Tabela recente
-    st.subheader("Últimos Pagamentos Registrados")
-    if not dados['pagamentos'].empty:
-        st.dataframe(dados['pagamentos'].head(), use_container_width=True)
-    else:
-        st.info("📋 Tabela de pagamentos aparecerá aqui após carregar os dados")
+    with col1:
+        st.subheader("Últimos Pagamentos")
+        if not dados['pagamentos'].empty:
+            # Mostrar colunas mais relevantes
+            colunas_pagamentos = [col for col in ['Data', 'Beneficiário', 'CPF', 'Projeto', 'Valor', 'Status'] 
+                                if col in dados['pagamentos'].columns]
+            if colunas_pagamentos:
+                st.dataframe(dados['pagamentos'][colunas_pagamentos].head(10), use_container_width=True)
+            else:
+                st.dataframe(dados['pagamentos'].head(10), use_container_width=True)
+        else:
+            st.info("📋 Tabela de pagamentos aparecerá aqui")
+    
+    with col2:
+        st.subheader("Últimas Contas Abertas")
+        if not dados['contas'].empty:
+            # Mostrar colunas mais relevantes
+            colunas_contas = [col for col in ['Data', 'Nome', 'CPF', 'Projeto', 'Agência'] 
+                            if col in dados['contas'].columns]
+            if colunas_contas:
+                st.dataframe(dados['contas'][colunas_contas].head(10), use_container_width=True)
+            else:
+                st.dataframe(dados['contas'].head(10), use_container_width=True)
+        else:
+            st.info("📋 Tabela de contas aparecerá aqui")
 
 def mostrar_importacao():
-    st.header("📥 Importação de Dados")
+    st.header("📥 Estrutura das Planilhas")
     
     st.info("""
-    **💡 AGORA USE O MENU LATERAL!**
-    
-    **Instruções para importação:**
-    - Acesse o menu lateral "📤 Carregar Dados Reais" 
-    - Faça upload das planilhas nos formatos XLSX ou CSV
-    - O dashboard será atualizado automaticamente
+    **💡 USE O MENU LATERAL PARA CARREGAR AS PLANILHAS!**
     """)
     
     # Estrutura esperada das planilhas
-    with st.expander("📋 Estrutura Esperada das Planilhas"):
-        col1, col2, col3 = st.columns(3)
+    with st.expander("📋 Estrutura das Planilhas Necessárias"):
+        col1, col2 = st.columns(2)
         
         with col1:
-            st.markdown("**Planilha de Projetos:**")
+            st.markdown("**📋 Planilha de Pagamentos:**")
             st.code("""
-Projeto
-Beneficiários
-Status
-Cor (opcional)
+Data (dd/mm/aaaa)
+Beneficiário (texto)
+CPF (número)
+Projeto (texto)
+Valor (número)
+Status (texto)
+*Outras colunas opcionais*
             """)
         
         with col2:
-            st.markdown("**Planilha de Evolução:**")
+            st.markdown("**🏦 Planilha de Abertura de Contas:**")
             st.code("""
-Mês
-Beneficiários
-Pagamentos (opcional)
-            """)
-        
-        with col3:
-            st.markdown("**Planilha de Pagamentos:**")
-            st.code("""
-Data
-Beneficiário
-CPF
-Projeto
-Valor
-Status
+Data (dd/mm/aaaa)
+Nome (texto)
+CPF (número)
+Projeto (texto)
+Agência (texto/número)
+*Outras colunas opcionais*
             """)
 
-def mostrar_consultas():
-    st.header("🔍 Consultas de Pagamentos")
+def mostrar_consultas(dados):
+    st.header("🔍 Consultas de Dados")
     
     # Opções de consulta
     opcao_consulta = st.radio(
         "Tipo de consulta:",
-        ["Por CPF", "Por Mês/Ano", "Por Projeto", "Por Nome"],
+        ["Por CPF", "Por Projeto", "Por Período"],
         horizontal=True
     )
     
@@ -264,40 +292,63 @@ def mostrar_consultas():
         with col2:
             if st.button("🔍 Buscar CPF", use_container_width=True):
                 if cpf:
-                    st.info(f"Buscando pagamentos para CPF: {cpf}")
+                    resultados = {}
+                    if not dados['pagamentos'].empty and 'CPF' in dados['pagamentos'].columns:
+                        resultados['pagamentos'] = dados['pagamentos'][dados['pagamentos']['CPF'].astype(str).str.contains(cpf)]
+                    if not dados['contas'].empty and 'CPF' in dados['contas'].columns:
+                        resultados['contas'] = dados['contas'][dados['contas']['CPF'].astype(str).str.contains(cpf)]
+                    
+                    st.session_state.resultados_consulta = resultados
                 else:
                     st.warning("Por favor, digite um CPF para buscar")
     
-    elif opcao_consulta == "Por Mês/Ano":
+    elif opcao_consulta == "Por Projeto":
+        projeto = st.text_input("Digite o nome do projeto:")
+        if st.button("🏢 Buscar por Projeto"):
+            if projeto:
+                resultados = {}
+                if not dados['pagamentos'].empty and 'Projeto' in dados['pagamentos'].columns:
+                    resultados['pagamentos'] = dados['pagamentos'][dados['pagamentos']['Projeto'].str.contains(projeto, case=False, na=False)]
+                if not dados['contas'].empty and 'Projeto' in dados['contas'].columns:
+                    resultados['contas'] = dados['contas'][dados['contas']['Projeto'].str.contains(projeto, case=False, na=False)]
+                
+                st.session_state.resultados_consulta = resultados
+            else:
+                st.warning("Por favor, digite um projeto para buscar")
+    
+    else:  # Por Período
         col1, col2 = st.columns(2)
         with col1:
-            mes = st.selectbox("Mês:", list(range(1, 13)))
+            data_inicio = st.date_input("Data início:")
         with col2:
-            ano = st.selectbox("Ano:", [2024, 2023, 2022])
+            data_fim = st.date_input("Data fim:")
         
         if st.button("📅 Buscar por Período"):
-            st.info(f"Buscando pagamentos para {mes}/{ano}")
-    
-    elif opcao_consulta == "Por Projeto":
-        projeto = st.selectbox("Selecione o projeto:", 
-                              ["Operação Trabalho", "Emprega SP", "Jovem Aprendiz", "Capacitação Profissional"])
-        if st.button("🏢 Buscar por Projeto"):
-            st.info(f"Buscando pagamentos do projeto: {projeto}")
-    
-    else:  # Por Nome
-        nome = st.text_input("Digite o nome do beneficiário:")
-        if st.button("👤 Buscar por Nome"):
-            if nome:
-                st.info(f"Buscando pagamentos para: {nome}")
-            else:
-                st.warning("Por favor, digite um nome para buscar")
+            if data_inicio and data_fim:
+                st.info(f"Buscando dados de {data_inicio} a {data_fim}")
+                # Implementar busca por período quando os dados estiverem disponíveis
     
     # Área de resultados
     st.markdown("---")
     st.subheader("Resultados da Consulta")
-    st.info("Os resultados aparecerão aqui após a busca")
+    
+    if 'resultados_consulta' in st.session_state:
+        resultados = st.session_state.resultados_consulta
+        
+        if resultados.get('pagamentos') is not None and not resultados['pagamentos'].empty:
+            st.markdown("**📋 Pagamentos Encontrados:**")
+            st.dataframe(resultados['pagamentos'], use_container_width=True)
+        
+        if resultados.get('contas') is not None and not resultados['contas'].empty:
+            st.markdown("**🏦 Contas Encontradas:**")
+            st.dataframe(resultados['contas'], use_container_width=True)
+        
+        if not any([not df.empty if df is not None else False for df in resultados.values()]):
+            st.info("Nenhum resultado encontrado para a consulta.")
+    else:
+        st.info("Os resultados aparecerão aqui após a busca")
 
-def mostrar_relatorios():
+def mostrar_relatorios(dados):
     st.header("📋 Gerar Relatórios")
     
     st.info("""
@@ -312,50 +363,46 @@ def mostrar_relatorios():
         "Selecione o tipo de relatório:",
         [
             "Relatório Geral Completo",
-            "Relatório por Período Mensal", 
+            "Relatório de Pagamentos", 
+            "Relatório de Abertura de Contas",
             "Relatório por Projeto",
-            "Relatório de Beneficiários",
             "Dashboard Executivo"
         ]
     )
     
-    # Parâmetros adicionais
-    col1, col2 = st.columns(2)
-    with col1:
-        if "Período" in tipo_relatorio:
-            mes = st.selectbox("Mês:", list(range(1, 13)))
-    with col2:
-        if "Período" in tipo_relatorio:
-            ano = st.selectbox("Ano:", [2024, 2023])
-    
     # Botão de geração
     if st.button("📊 Gerar Relatório", type="primary"):
         with st.spinner("Gerando relatório..."):
-            # Simular geração
-            import time
-            time.sleep(2)
-            
-            # Criar dados de exemplo para download
-            dados_exemplo = pd.DataFrame({
-                'Data': pd.date_range('2024-01-01', periods=50),
-                'Beneficiário': [f'Beneficiário {i}' for i in range(1, 51)],
-                'CPF': [f'123.456.78{str(i).zfill(2)}-00' for i in range(1, 51)],
-                'Projeto': ['Operação Trabalho'] * 25 + ['Emprega SP'] * 15 + ['Jovem Aprendiz'] * 10,
-                'Valor': [1200] * 50,
-                'Status': ['Pago'] * 45 + ['Pendente'] * 5
-            })
-            
             # Criar arquivo Excel em memória
             output = io.BytesIO()
+            
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                dados_exemplo.to_excel(writer, sheet_name='Pagamentos', index=False)
-                
-                # Adicionar sheet de resumo
+                # Sheet de resumo
+                metrics = processar_dados(dados)
                 resumo = pd.DataFrame({
-                    'Métrica': ['Total de Pagamentos', 'Valor Total', 'Beneficiários Únicos', 'Projetos'],
-                    'Valor': [len(dados_exemplo), len(dados_exemplo) * 1200, 50, 3]
+                    'Métrica': [
+                        'Total de Pagamentos',
+                        'Beneficiários Únicos (Pagamentos)',
+                        'Projetos Ativos',
+                        'Contas Abertas',
+                        'Contas Únicas'
+                    ],
+                    'Valor': [
+                        metrics.get('total_pagamentos', 0),
+                        metrics.get('beneficiarios_unicos', 0),
+                        metrics.get('projetos_ativos', 0),
+                        metrics.get('total_contas', 0),
+                        metrics.get('contas_unicas', 0)
+                    ]
                 })
                 resumo.to_excel(writer, sheet_name='Resumo', index=False)
+                
+                # Sheets com dados
+                if not dados['pagamentos'].empty:
+                    dados['pagamentos'].to_excel(writer, sheet_name='Pagamentos', index=False)
+                
+                if not dados['contas'].empty:
+                    dados['contas'].to_excel(writer, sheet_name='Abertura_Contas', index=False)
             
             # Botão de download
             st.success("✅ Relatório gerado com sucesso!")
