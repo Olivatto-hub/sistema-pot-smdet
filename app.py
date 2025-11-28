@@ -958,6 +958,12 @@ if metrics.get('total_registros_incompletos', 0) > 0:
         if not colunas_base:
             colunas_base = dados['pagamentos'].columns[:6].tolist()
         
+        d    # NOVA CORREÇÃO: Ordenar por data antes de exibir
+    coluna_data_ordenacao = obter_coluna_data_ordenacao(dados['pagamentos'])
+    if coluna_data_ordenacao:
+        dados_ordenados = ordenar_por_data(dados['pagamentos'], coluna_data_ordenacao)
+        dados_exibir = dados_ordenados[colunas_base].head(15)
+    else:
         dados_exibir = dados['pagamentos'][colunas_base].head(15)
         
         # CORREÇÃO: Ajustar larguras considerando tipos de conteúdo
