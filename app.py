@@ -95,7 +95,7 @@ def mostrar_dashboard():
         })
         
         fig = px.pie(dados_projetos, values='Beneficiários', names='Projeto',
-                    color='Cor', color_discrete_map='identity')
+            color='Cor')
         st.plotly_chart(fig, use_container_width=True)
     
     # Tabela recente
