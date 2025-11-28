@@ -529,42 +529,6 @@ class PDFReport(FPDF):
         safe_text = safe_text.encode('latin-1', 'replace').decode('latin-1')
         
         return safe_text
-        
-        # Só faz ln() se não estamos no meio de uma quebra de linha múltipla
-        if not hasattr(self, '_in_multiline') or not self._in_multiline:
-            self.ln()
-    
-      def safe_text(self, text):
-        """Remove caracteres problemáticos para Latin-1 incluindo emojis"""
-        # Primeiro, converter para string se não for
-        safe_text = str(text)
-        
-        # Dicionário de substituições
-        substitutions = {
-            '•': '-', '´': "'", '`': "'", '“': '"', '”': '"', 
-            '‘': "'", ' ': ' ', '–': '-', '—': '-', '…': '...',
-            '🚨': '[ALERTA]', '✅': '[OK]', '📊': '[DASHBOARD]',
-            '⚠️': '[ATENCAO]', '❌': '[ERRO]', '📁': '[ARQUIVO]',
-            '🔍': '[LUPAR]', '👆': '[SETA_ACIMA]', '🏛️': '[PREFEITURA]'
-        }
-        
-        # Aplicar substituições
-        for char, replacement in substitutions.items():
-            safe_text = safe_text.replace(char, replacement)
-        
-        # Remover qualquer outro caractere Unicode problemático
-        safe_text = safe_text.encode('latin-1', 'replace').decode('latin-1')
-        
-        return safe_text
-    
-    # Aplicar substituições
-    for char, replacement in substitutions.items():
-        safe_text = safe_text.replace(char, replacement)
-    
-    # Remover qualquer outro caractere Unicode problemático
-    safe_text = safe_text.encode('latin-1', 'replace').decode('latin-1')
-    
-    return safe_text
 
 def obter_coluna_beneficiario(df):
     """Detecta automaticamente a coluna do beneficiário"""
@@ -586,7 +550,6 @@ def obter_coluna_conta(df):
         if col in df.columns:
             return col
     return None
-
 
 def obter_coluna_data_ordenacao(df):
     """Detecta automaticamente a coluna de data para ordenação, considerando múltiplos formatos"""
@@ -682,8 +645,6 @@ def gerar_pdf_executivo(dados, tipo_relatorio):
         pdf.metric_card('Valor Total Investido:', formatar_brasileiro(metrics.get('valor_total', 0), 'monetario'))
     
     # NOVO: Alertas de ausência de dados
-    # ALERTA MELHORADO: Ausência de dados com opção de download
-    # NOVO: Alertas de ausência de dados
     if metrics.get('total_registros_incompletos', 0) > 0:
         pdf.ln(5)
         pdf.set_font('Arial', 'B', 12)
@@ -696,6 +657,7 @@ def gerar_pdf_executivo(dados, tipo_relatorio):
             for coluna, qtd in metrics['colunas_com_ausencia'].items():
                 if qtd > 0:
                     pdf.cell(0, 6, f'- {formatar_brasileiro(qtd, "numero")} registros sem {coluna}', 0, 1)
+    
     # Análise de Duplicidades
     if metrics.get('pagamentos_duplicados', 0) > 0:
         pdf.chapter_title('ANALISE DE DUPLICIDADES - ALERTA')
@@ -796,9 +758,9 @@ def gerar_pdf_executivo(dados, tipo_relatorio):
             for _, row in metrics['resumo_ausencias'].head(15).iterrows():
                 row_data = [
                     str(row['Indice_Registro']),
-                    str(row['Nome_Disponivel']),
-                    str(row['Projeto']),
-                    str(row['Valor'])
+                    str(row.get('Nome', 'N/A')),
+                    str(row.get('Projeto', 'N/A')),
+                    str(row.get('Valor', 'N/A'))
                 ]
                 pdf.table_row(row_data, col_widths)
     
@@ -954,7 +916,7 @@ def gerar_pdf_executivo(dados, tipo_relatorio):
         if not colunas_base:
             colunas_base = dados['pagamentos'].columns[:6].tolist()
         
-              # NOVA CORREÇÃO: Ordenar por data antes de exibir
+        # NOVA CORREÇÃO: Ordenar por data antes de exibir
         coluna_data_ordenacao = obter_coluna_data_ordenacao(dados['pagamentos'])
         if coluna_data_ordenacao:
             dados_ordenados = ordenar_por_data(dados['pagamentos'], coluna_data_ordenacao)
@@ -1085,7 +1047,7 @@ def gerar_pdf_executivo(dados, tipo_relatorio):
     
     # Salvar PDF em buffer
     pdf_output = io.BytesIO()
-    pdf_bytes = pdf.output(dest='S').encode('latin1', 'replace')
+    pdf_bytes = pdf.output(dest='S').encode('latin-1', 'replace')
     pdf_output.write(pdf_bytes)
     pdf_output.seek(0)
     
@@ -1218,7 +1180,7 @@ def mostrar_dashboard(dados):
         """)
         return
     
-      # ALERTA MELHORADO: Ausência de dados com opção de download
+    # ALERTA MELHORADO: Ausência de dados com opção de download
     if metrics.get('total_registros_incompletos', 0) > 0:
         st.error(f"🚨 **ALERTA: AUSÊNCIA DE DADOS IDENTIFICADA** - {formatar_brasileiro(metrics.get('total_registros_incompletos', 0), 'numero')} registros com CPF ausente ou inválido")
         
@@ -1449,7 +1411,6 @@ def mostrar_dashboard(dados):
         else:
             st.info("📋 Tabela de contas aparecerá aqui")
 
-# FUNÇÃO: mostrar_importacao
 def mostrar_importacao():
     st.header("📥 Estrutura das Planilhas")
     
@@ -1485,7 +1446,6 @@ Agência (texto/número)
 *Outras colunas opcionais*
             """)
 
-# FUNÇÃO: mostrar_consultas
 def mostrar_consultas(dados):
     st.header("🔍 Consultas de Dados")
     
@@ -1572,7 +1532,6 @@ def mostrar_consultas(dados):
     else:
         st.info("Os resultados aparecerão aqui após a busca")
 
-# FUNÇÃO: mostrar_relatorios
 def mostrar_relatorios(dados):
     st.header("📋 Gerar Relatórios")
     
@@ -1647,7 +1606,6 @@ def mostrar_relatorios(dados):
                 except Exception as e:
                     st.error(f"❌ Erro ao gerar Excel: {str(e)}")
 
-# FUNÇÃO: mostrar_rodape
 def mostrar_rodape():
     st.markdown("---")
     col1, col2, col3 = st.columns(3)
