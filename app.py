@@ -1,5 +1,4 @@
-[file name]: app.py
-[file content begin]
+# app.py
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -828,4 +827,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-[file content end]
