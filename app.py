@@ -974,7 +974,113 @@ def gerar_pdf_executivo(dados, tipo_relatorio):
     
     return pdf_output
 
-# ... (as outras funções permanecem as mesmas, apenas atualizando para incluir os alertas de ausência de dados)
+def gerar_relatorio_excel(dados, tipo_relatorio):
+    """Gera relatório em Excel"""
+    output = io.BytesIO()
+    
+    metrics = processar_dados(dados)
+    
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        # Sheet de resumo - CORREÇÃO: Formatação brasileira
+        resumo = pd.DataFrame({
+            'Metrica': [
+                'Total de Pagamentos',
+                'Beneficiarios Unicos (Pagamentos)',
+                'Diferenca (Pagamentos - Beneficiarios)',
+                'CPFs com Pagamentos Duplicados',
+                'Valor Total em Duplicidades',
+                'Projetos Ativos',
+                'Contas Abertas',
+                'Contas Unicas',
+                'Valor Total Investido',
+                'Data de Emissao'
+            ],
+            'Valor': [
+                formatar_brasileiro(metrics.get('total_pagamentos', 0), 'numero'),
+                formatar_brasileiro(metrics.get('beneficiarios_unicos', 0), 'numero'),
+                formatar_brasileiro(metrics.get('total_pagamentos', 0) - metrics.get('beneficiarios_unicos', 0), 'numero'),
+                formatar_brasileiro(metrics.get('pagamentos_duplicados', 0), 'numero'),
+                formatar_brasileiro(metrics.get('valor_total_duplicados', 0), 'monetario') if metrics.get('valor_total_duplicados', 0) > 0 else "R$ 0,00",
+                formatar_brasileiro(metrics.get('projetos_ativos', 0), 'numero'),
+                formatar_brasileiro(metrics.get('total_contas', 0), 'numero'),
+                formatar_brasileiro(metrics.get('contas_unicas', 0), 'numero'),
+                formatar_brasileiro(metrics.get('valor_total', 0), 'monetario') if metrics.get('valor_total', 0) > 0 else "N/A",
+                datetime.now().strftime('%d/%m/%Y %H:%M')
+            ]
+        })
+        resumo.to_excel(writer, sheet_name='Resumo Executivo', index=False)
+        
+        # Sheet de análise de duplicidades
+        if not metrics['resumo_duplicidades'].empty:
+            # CORREÇÃO: Formatar valores monetários no resumo
+            df_duplicidades = metrics['resumo_duplicidades'].copy()
+            if 'Valor_Total' in df_duplicidades.columns:
+                df_duplicidades['Valor_Total_Formatado'] = df_duplicidades['Valor_Total'].apply(
+                    lambda x: formatar_brasileiro(x, 'monetario') if pd.notna(x) else 'R$ 0,00'
+                )
+            df_duplicidades.to_excel(writer, sheet_name='Resumo_Duplicidades', index=False)
+        
+        # Sheet com detalhes completos dos duplicados
+        if not metrics['detalhes_duplicados'].empty:
+            metrics['detalhes_duplicados'].to_excel(writer, sheet_name='Detalhes_Duplicados', index=False)
+        
+        # Sheets com dados completos de pagamentos
+        if not dados['pagamentos'].empty:
+            dados['pagamentos'].to_excel(writer, sheet_name='Pagamentos_Completo', index=False)
+            
+            # Sheet adicional com colunas principais
+            colunas_principais = []
+            # Adicionar colunas base
+            for col in ['CPF', 'Projeto', 'Valor', 'Status']:
+                if col in dados['pagamentos'].columns:
+                    colunas_principais.append(col)
+            
+            # Adicionar beneficiário
+            coluna_benef = obter_coluna_beneficiario(dados['pagamentos'])
+            if coluna_benef:
+                colunas_principais.append(coluna_benef)
+            
+            # Adicionar data
+            coluna_data = obter_coluna_data(dados['pagamentos'])
+            if coluna_data:
+                colunas_principais.append(coluna_data)
+            
+            # Adicionar número da conta
+            coluna_conta = obter_coluna_conta(dados['pagamentos'])
+            if coluna_conta:
+                colunas_principais.append(coluna_conta)
+            
+            if colunas_principais:
+                dados['pagamentos'][colunas_principais].to_excel(writer, sheet_name='Pagamentos_Principais', index=False)
+        
+        if not dados['contas'].empty:
+            dados['contas'].to_excel(writer, sheet_name='Abertura_Contas_Completo', index=False)
+        
+        # Sheet de estatísticas detalhadas - CORREÇÃO: Formatação brasileira
+        estatisticas = pd.DataFrame({
+            'Estatistica': [
+                'Tipo de Relatorio',
+                'Total de Registros Processados',
+                'Valor Total dos Pagamentos',
+                'Media por Beneficiario',
+                'Taxa de Duplicidade',
+                'Data de Geracao',
+                'Status do Relatorio'
+            ],
+            'Valor': [
+                tipo_relatorio,
+                formatar_brasileiro(metrics.get('total_pagamentos', 0) + metrics.get('total_contas', 0), 'numero'),
+                formatar_brasileiro(metrics.get('valor_total', 0), 'monetario') if metrics.get('valor_total', 0) > 0 else "N/A",
+                formatar_brasileiro(metrics.get('valor_total', 0)/metrics.get('beneficiarios_unicos', 1), 'monetario') if metrics.get('valor_total', 0) > 0 else "N/A",
+                f"{(metrics.get('pagamentos_duplicados', 0)/metrics.get('beneficiarios_unicos', 1)*100 if metrics.get('beneficiarios_unicos', 0) > 0 else 0):.1f}%" if metrics.get('pagamentos_duplicados', 0) > 0 else "0%",
+                datetime.now().strftime('%d/%m/%Y %H:%M'),
+                'CONCLUIDO'
+            ]
+        })
+        estatisticas.to_excel(writer, sheet_name='Estatisticas_Detalhadas', index=False)
+    
+    output.seek(0)
+    return output
 
 def mostrar_dashboard(dados):
     st.header("📊 Dashboard Executivo - POT")
@@ -1029,9 +1135,382 @@ def mostrar_dashboard(dados):
     with col4:
         st.metric("Projetos Ativos", formatar_brasileiro(metrics.get('projetos_ativos', 0), 'numero'))
     
-    # ... (restante do código da função mostrar_dashboard permanece igual)
+    # Valor total se disponível - CORREÇÃO: Formatação brasileira
+    if metrics.get('valor_total', 0) > 0:
+        st.metric("Valor Total dos Pagamentos", formatar_brasileiro(metrics['valor_total'], 'monetario'))
+    
+    # Análise de Duplicidades - DESTAQUE
+    if metrics.get('pagamentos_duplicados', 0) > 0:
+        st.error("🚨 **ALERTA: PAGAMENTOS DUPLICADOS IDENTIFICADOS**")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.metric(
+                "CPFs com Duplicidade", 
+                formatar_brasileiro(metrics.get('pagamentos_duplicados', 0), 'numero'),
+                delta=f"{formatar_brasileiro(metrics.get('pagamentos_duplicados', 0), 'numero')} casos"
+            )
+        
+        with col2:
+            diff = metrics.get('total_pagamentos', 0) - metrics.get('beneficiarios_unicos', 0)
+            st.metric(
+                "Diferença Identificada", 
+                formatar_brasileiro(diff, 'numero'),
+                delta=f"{formatar_brasileiro(diff, 'numero')} pagamentos extras"
+            )
+        
+        with col3:
+            if metrics.get('valor_total_duplicados', 0) > 0:
+                st.metric(
+                    "Valor em Duplicidades", 
+                    formatar_brasileiro(metrics.get('valor_total_duplicados', 0), 'monetario'),
+                    delta="Valor a investigar"
+                )
+        
+        # Mostrar resumo dos casos de duplicidade
+        with st.expander("🔍 **Ver Detalhes dos Pagamentos Duplicados**", expanded=False):
+            if not metrics['resumo_duplicidades'].empty:
+                # Adicionar número da conta ao display se disponível
+                colunas_display = ['CPF', 'Quantidade_Pagamentos', 'Beneficiario', 'Projeto']
+                if 'Num_Cartao' in metrics['resumo_duplicidades'].columns:
+                    colunas_display.append('Num_Cartao')
+                
+                # CORREÇÃO: Formatar valores no dataframe de exibição
+                df_display = metrics['resumo_duplicidades'][colunas_display].copy()
+                if 'Valor_Total' in metrics['resumo_duplicidades'].columns:
+                    df_display['Valor_Total'] = metrics['resumo_duplicidades']['Valor_Total'].apply(
+                        lambda x: formatar_brasileiro(x, 'monetario') if pd.notna(x) else 'R$ 0,00'
+                    )
+                    colunas_display.append('Valor_Total')
+                
+                st.dataframe(
+                    df_display,
+                    use_container_width=True,
+                    hide_index=True
+                )
+                
+                # Botão para download dos detalhes
+                if not metrics['detalhes_duplicados'].empty:
+                    csv = metrics['detalhes_duplicados'].to_csv(index=False, sep=';')
+                    st.download_button(
+                        label="📥 Baixar Detalhes Completos (CSV)",
+                        data=csv,
+                        file_name=f"pagamentos_duplicados_{datetime.now().strftime('%Y%m%d')}.csv",
+                        mime="text/csv"
+                    )
+    
+    # Gráficos
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("Distribuição por Projeto (Pagamentos)")
+        if not dados['pagamentos'].empty and 'Projeto' in dados['pagamentos'].columns:
+            # Usar value_counts() para agrupar por projeto único
+            projetos_count = dados['pagamentos']['Projeto'].value_counts().reset_index()
+            projetos_count.columns = ['Projeto', 'Quantidade']
+            
+            fig = px.pie(projetos_count, values='Quantidade', names='Projeto',
+                        title="Pagamentos por Projeto")
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("📊 Gráfico de projetos aparecerá aqui após carregar os dados de pagamentos")
+    
+    with col2:
+        st.subheader("Evolução Mensal de Pagamentos")
+        if not dados['pagamentos'].empty and 'Data' in dados['pagamentos'].columns:
+            try:
+                # CORREÇÃO: Usar datas já processadas
+                dados_pagamentos = dados['pagamentos'].copy()
+                
+                # Tentar converter para data (já deve estar processada)
+                dados_pagamentos['Data_Processada'] = pd.to_datetime(
+                    dados_pagamentos['Data'], 
+                    format='%d/%m/%Y', 
+                    errors='coerce'
+                )
+                
+                # Se não conseguir, tentar formato original
+                if dados_pagamentos['Data_Processada'].isna().all():
+                    dados_pagamentos['Data_Processada'] = pd.to_datetime(
+                        dados_pagamentos['Data'], 
+                        errors='coerce'
+                    )
+                
+                dados_pagamentos = dados_pagamentos.dropna(subset=['Data_Processada'])
+                dados_pagamentos['Mês'] = dados_pagamentos['Data_Processada'].dt.to_period('M').astype(str)
+                
+                evolucao = dados_pagamentos.groupby('Mês').size().reset_index()
+                evolucao.columns = ['Mês', 'Pagamentos']
+                
+                fig = px.line(evolucao, x='Mês', y='Pagamentos', 
+                             markers=True, line_shape='spline',
+                             title="Evolução de Pagamentos por Mês")
+                st.plotly_chart(fig, use_container_width=True)
+            except Exception as e:
+                st.info(f"📊 Formato de data não reconhecido. Erro: {str(e)}")
+        else:
+            st.info("📊 Gráfico de evolução aparecerá aqui após carregar os dados")
+    
+    # Tabelas recentes
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("Últimos Pagamentos")
+        if not dados['pagamentos'].empty:
+            # Mostrar colunas mais relevantes incluindo número da conta e data
+            colunas_pagamentos = [col for col in ['Data', 'Data Pagto', 'Beneficiário', 'CPF', 'Projeto', 'Valor', 'Status'] 
+                                if col in dados['pagamentos'].columns]
+            
+            # Adicionar número da conta se disponível
+            for col_conta in ['Num Cartao', 'Num_Cartao', 'Conta', 'Numero Conta']:
+                if col_conta in dados['pagamentos'].columns:
+                    colunas_pagamentos.append(col_conta)
+                    break
+            
+            if colunas_pagamentos:
+                # CORREÇÃO: Formatar valores monetários na exibição
+                df_display = dados['pagamentos'][colunas_pagamentos].head(10).copy()
+                if 'Valor' in df_display.columns and 'Valor_Limpo' in dados['pagamentos'].columns:
+                    # Usar os índices para mapear os valores limpos
+                    for idx in df_display.index:
+                        if idx in dados['pagamentos'].index:
+                            valor_limpo = dados['pagamentos'].loc[idx, 'Valor_Limpo']
+                            df_display.loc[idx, 'Valor'] = formatar_brasileiro(valor_limpo, 'monetario')
+                
+                st.dataframe(df_display, use_container_width=True)
+            else:
+                st.dataframe(dados['pagamentos'].head(10), use_container_width=True)
+        else:
+            st.info("📋 Tabela de pagamentos aparecerá aqui")
+    
+    with col2:
+        st.subheader("Últimas Contas Abertas")
+        if not dados['contas'].empty:
+            # Mostrar colunas mais relevantes
+            colunas_contas = [col for col in ['Data', 'Nome', 'CPF', 'Projeto', 'Agência'] 
+                            if col in dados['contas'].columns]
+            if colunas_contas:
+                st.dataframe(dados['contas'][colunas_contas].head(10), use_container_width=True)
+            else:
+                st.dataframe(dados['contas'].head(10), use_container_width=True)
+        else:
+            st.info("📋 Tabela de contas aparecerá aqui")
 
-# ... (as outras funções mostrar_importacao, mostrar_consultas, mostrar_relatorios, mostrar_rodape permanecem iguais)
+# FUNÇÃO: mostrar_importacao
+def mostrar_importacao():
+    st.header("📥 Estrutura das Planilhas")
+    
+    st.info("""
+    **💡 USE O MENU LATERAL PARA CARREGAR AS PLANILHAS!**
+    """)
+    
+    # Estrutura esperada das planilhas
+    with st.expander("📋 Estrutura das Planilhas Necessárias"):
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("**📋 Planilha de Pagamentos:**")
+            st.code("""
+Data ou Data Pagto (dd/mm/aaaa)
+Beneficiário (texto)
+CPF (número)
+Projeto (texto)
+Valor (número)
+Num Cartao (número da conta)
+Status (texto)
+*Outras colunas opcionais*
+            """)
+        
+        with col2:
+            st.markdown("**🏦 Planilha de Abertura de Contas:**")
+            st.code("""
+Data (dd/mm/aaaa)
+Nome (texto)
+CPF (número)
+Projeto (texto)
+Agência (texto/número)
+*Outras colunas opcionais*
+            """)
+
+# FUNÇÃO: mostrar_consultas
+def mostrar_consultas(dados):
+    st.header("🔍 Consultas de Dados")
+    
+    # Opções de consulta
+    opcao_consulta = st.radio(
+        "Tipo de consulta:",
+        ["Por CPF", "Por Projeto", "Por Período"],
+        horizontal=True
+    )
+    
+    if opcao_consulta == "Por CPF":
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            cpf = st.text_input("Digite o CPF (apenas números):", placeholder="12345678900")
+        with col2:
+            if st.button("🔍 Buscar CPF", use_container_width=True):
+                if cpf:
+                    resultados = {}
+                    if not dados['pagamentos'].empty and 'CPF' in dados['pagamentos'].columns:
+                        resultados['pagamentos'] = dados['pagamentos'][dados['pagamentos']['CPF'].astype(str).str.contains(cpf)]
+                    if not dados['contas'].empty and 'CPF' in dados['contas'].columns:
+                        resultados['contas'] = dados['contas'][dados['contas']['CPF'].astype(str).str.contains(cpf)]
+                    
+                    st.session_state.resultados_consulta = resultados
+                else:
+                    st.warning("Por favor, digite um CPF para buscar")
+    
+    elif opcao_consulta == "Por Projeto":
+        projeto = st.text_input("Digite o nome do projeto:")
+        if st.button("🏢 Buscar por Projeto"):
+            if projeto:
+                resultados = {}
+                if not dados['pagamentos'].empty and 'Projeto' in dados['pagamentos'].columns:
+                    resultados['pagamentos'] = dados['pagamentos'][dados['pagamentos']['Projeto'].str.contains(projeto, case=False, na=False)]
+                if not dados['contas'].empty and 'Projeto' in dados['contas'].columns:
+                    resultados['contas'] = dados['contas'][dados['contas']['Projeto'].str.contains(projeto, case=False, na=False)]
+                
+                st.session_state.resultados_consulta = resultados
+            else:
+                st.warning("Por favor, digite um projeto para buscar")
+    
+    else:  # Por Período
+        col1, col2 = st.columns(2)
+        with col1:
+            data_inicio = st.date_input("Data início:")
+        with col2:
+            data_fim = st.date_input("Data fim:")
+        
+        if st.button("📅 Buscar por Período"):
+            if data_inicio and data_fim:
+                st.info(f"Buscando dados de {data_inicio} a {data_fim}")
+    
+    # Área de resultados
+    st.markdown("---")
+    st.subheader("Resultados da Consulta")
+    
+    if 'resultados_consulta' in st.session_state:
+        resultados = st.session_state.resultados_consulta
+        
+        if resultados.get('pagamentos') is not None and not resultados['pagamentos'].empty:
+            st.markdown("**📋 Pagamentos Encontrados:**")
+            
+            # Mostrar colunas incluindo número da conta e data
+            colunas_display = [col for col in ['Data', 'Data Pagto', 'Beneficiário', 'CPF', 'Projeto', 'Valor', 'Status'] 
+                             if col in resultados['pagamentos'].columns]
+            
+            # Adicionar número da conta se disponível
+            for col_conta in ['Num Cartao', 'Num_Cartao', 'Conta', 'Numero Conta']:
+                if col_conta in resultados['pagamentos'].columns:
+                    colunas_display.append(col_conta)
+                    break
+            
+            if colunas_display:
+                st.dataframe(resultados['pagamentos'][colunas_display], use_container_width=True)
+            else:
+                st.dataframe(resultados['pagamentos'], use_container_width=True)
+        
+        if resultados.get('contas') is not None and not resultados['contas'].empty:
+            st.markdown("**🏦 Contas Encontradas:**")
+            st.dataframe(resultados['contas'], use_container_width=True)
+        
+        if not any([not df.empty if df is not None else False for df in resultados.values()]):
+            st.info("Nenhum resultado encontrado para a consulta.")
+    else:
+        st.info("Os resultados aparecerão aqui após a busca")
+
+# FUNÇÃO: mostrar_relatorios
+def mostrar_relatorios(dados):
+    st.header("📋 Gerar Relatórios")
+    
+    # Análise preliminar para mostrar alertas
+    metrics = processar_dados(dados)
+    
+    if metrics.get('pagamentos_duplicados', 0) > 0:
+        st.warning(f"🚨 **ALERTA:** Foram identificados {formatar_brasileiro(metrics.get('pagamentos_duplicados', 0), 'numero')} CPFs com pagamentos duplicados")
+        st.info(f"📊 **Diferença:** {formatar_brasileiro(metrics.get('total_pagamentos', 0), 'numero')} pagamentos para {formatar_brasileiro(metrics.get('beneficiarios_unicos', 0), 'numero')} beneficiários")
+    
+    # NOVO: Alerta de ausência de dados
+    if metrics.get('total_registros_incompletos', 0) > 0:
+        st.error(f"🚨 **ALERTA:** {formatar_brasileiro(metrics.get('total_registros_incompletos', 0), 'numero')} registros com dados incompletos identificados")
+    
+    st.info("""
+    **Escolha o formato do relatório:**
+    - **📄 PDF Executivo**: Relatório visual e profissional para apresentações
+    - **📊 Excel Completo**: Dados detalhados para análise técnica
+    """)
+    
+    # Opções de relatório
+    tipo_relatorio = st.selectbox(
+        "Selecione o tipo de relatório:",
+        [
+            "Relatório Geral Completo",
+            "Relatório de Pagamentos", 
+            "Relatório de Abertura de Contas",
+            "Relatório por Projeto",
+            "Dashboard Executivo"
+        ]
+    )
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Botão para gerar PDF Executivo
+        if st.button("📄 Gerar PDF Executivo", type="primary", use_container_width=True):
+            with st.spinner("Gerando relatório PDF executivo..."):
+                try:
+                    pdf_buffer = gerar_pdf_executivo(dados, tipo_relatorio)
+                    
+                    st.success("✅ PDF Executivo gerado com sucesso!")
+                    st.info("💡 **Ideal para:** Apresentações, reuniões e análise executiva")
+                    
+                    st.download_button(
+                        label="📥 Baixar PDF Executivo",
+                        data=pdf_buffer.getvalue(),
+                        file_name=f"relatorio_executivo_pot_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
+                        mime="application/pdf",
+                        type="primary"
+                    )
+                except Exception as e:
+                    st.error(f"❌ Erro ao gerar PDF: {str(e)}")
+    
+    with col2:
+        # Botão para gerar Excel
+        if st.button("📊 Gerar Excel Completo", type="secondary", use_container_width=True):
+            with st.spinner("Gerando relatório Excel completo..."):
+                try:
+                    excel_buffer = gerar_relatorio_excel(dados, tipo_relatorio)
+                    
+                    st.success("✅ Excel Completo gerado com sucesso!")
+                    st.info("💡 **Ideal para:** Análise detalhada e processamento de dados")
+                    
+                    st.download_button(
+                        label="📥 Baixar Excel Completo",
+                        data=excel_buffer.getvalue(),
+                        file_name=f"relatorio_completo_pot_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        type="primary"
+                    )
+                except Exception as e:
+                    st.error(f"❌ Erro ao gerar Excel: {str(e)}")
+
+# FUNÇÃO: mostrar_rodape
+def mostrar_rodape():
+    st.markdown("---")
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown("**SMDET**")
+        st.markdown("Secretaria Municipal do Desenvolvimento Econômico e Trabalho")
+    
+    with col2:
+        st.markdown("**Suporte Técnico**")
+        st.markdown("rolivatto@prefeitura.sp.gov.br")
+    
+    with col3:
+        st.markdown("**Versão**")
+        st.markdown("1.0 - Novembro 2024")
 
 def main():
     email = autenticar()
