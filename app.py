@@ -386,16 +386,19 @@ def processar_colunas_valor(df):
 def carregar_dados():
     st.sidebar.header("📤 Carregar Dados Reais")
     
+    # CORREÇÃO: File uploaders em português
     upload_pagamentos = st.sidebar.file_uploader(
         "Planilha de Pagamentos", 
         type=['xlsx', 'csv'],
-        key="pagamentos"
+        key="pagamentos",
+        help="Arraste e solte o arquivo aqui ou clique para procurar"
     )
     
     upload_contas = st.sidebar.file_uploader(
         "Planilha de Abertura de Contas", 
         type=['xlsx', 'csv'],
-        key="contas"
+        key="contas",
+        help="Arraste e solte o arquivo aqui ou clique para procurar"
     )
     
     dados = {}
@@ -407,7 +410,7 @@ def carregar_dados():
             if upload_pagamentos.name.endswith('.xlsx'):
                 df_pagamentos = pd.read_excel(upload_pagamentos)
             else:
-                df_pagamentos = pd.read_csv(upload_pagamentos)
+                df_pagamentos = pd.read_csv(upload_pagamentos, encoding='utf-8', sep=';')
             
             nomes_arquivos['pagamentos'] = upload_pagamentos.name
             
@@ -430,7 +433,7 @@ def carregar_dados():
             if upload_contas.name.endswith('.xlsx'):
                 df_contas = pd.read_excel(upload_contas)
             else:
-                df_contas = pd.read_csv(upload_contas)
+                df_contas = pd.read_csv(upload_contas, encoding='utf-8', sep=';')
             
             nomes_arquivos['contas'] = upload_contas.name
             
