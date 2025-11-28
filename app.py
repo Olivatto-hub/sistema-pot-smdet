@@ -3,10 +3,7 @@ import pandas as pd
 import plotly.express as px
 from datetime import datetime
 import io
-import base64
 from fpdf import FPDF
-import tempfile
-import os
 
 # Configuração da página
 st.set_page_config(
@@ -130,15 +127,15 @@ class PDFReport(FPDF):
     def header(self):
         # Logo ou título
         self.set_font('Arial', 'B', 16)
-        self.cell(0, 10, 'RELATÓRIO EXECUTIVO - PROGRAMA OPERAÇÃO TRABALHO', 0, 1, 'C')
+        self.cell(0, 10, 'RELATORIO EXECUTIVO - PROGRAMA OPERACAO TRABALHO', 0, 1, 'C')
         self.set_font('Arial', 'I', 10)
-        self.cell(0, 5, f'Data de emissão: {datetime.now().strftime("%d/%m/%Y %H:%M")}', 0, 1, 'C')
+        self.cell(0, 5, f'Data de emissao: {datetime.now().strftime("%d/%m/%Y %H:%M")}', 0, 1, 'C')
         self.ln(10)
     
     def footer(self):
         self.set_y(-15)
         self.set_font('Arial', 'I', 8)
-        self.cell(0, 10, f'Página {self.page_no()}', 0, 0, 'C')
+        self.cell(0, 10, f'Pagina {self.page_no()}', 0, 0, 'C')
     
     def chapter_title(self, title):
         self.set_font('Arial', 'B', 14)
@@ -162,8 +159,21 @@ class PDFReport(FPDF):
     def table_row(self, data, col_widths):
         self.set_font('Arial', '', 9)
         for i, cell in enumerate(data):
-            self.cell(col_widths[i], 8, str(cell), 1, 0, 'C')
+            # Limpar caracteres especiais
+            cell_text = str(cell).replace('•', '-').replace('´', "'").replace('`', "'")
+            self.cell(col_widths[i], 8, cell_text, 1, 0, 'C')
         self.ln()
+    
+    def safe_text(self, text):
+        """Remove caracteres problemáticos para Latin-1"""
+        problematic_chars = {
+            '•': '-', '´': "'", '`': "'", '“': '"', '”': '"', 
+            '‘': "'", '’': "'", '–': '-', '—': '-', '…': '...'
+        }
+        safe_text = str(text)
+        for char, replacement in problematic_chars.items():
+            safe_text = safe_text.replace(char, replacement)
+        return safe_text
 
 def gerar_pdf_executivo(dados, tipo_relatorio):
     """Gera PDF executivo profissional"""
@@ -175,13 +185,13 @@ def gerar_pdf_executivo(dados, tipo_relatorio):
     # Capa
     pdf.set_font('Arial', 'B', 20)
     pdf.cell(0, 40, '', 0, 1, 'C')
-    pdf.cell(0, 15, 'RELATÓRIO EXECUTIVO', 0, 1, 'C')
+    pdf.cell(0, 15, 'RELATORIO EXECUTIVO', 0, 1, 'C')
     pdf.set_font('Arial', 'B', 16)
-    pdf.cell(0, 10, 'PROGRAMA OPERAÇÃO TRABALHO', 0, 1, 'C')
+    pdf.cell(0, 10, 'PROGRAMA OPERACAO TRABALHO', 0, 1, 'C')
     pdf.set_font('Arial', '', 12)
     pdf.cell(0, 10, f'Tipo: {tipo_relatorio}', 0, 1, 'C')
     pdf.cell(0, 10, f'Data: {datetime.now().strftime("%d/%m/%Y")}', 0, 1, 'C')
-    pdf.cell(0, 10, 'Secretaria Municipal de Desenvolvimento Econômico, Trabalho e Turismo', 0, 1, 'C')
+    pdf.cell(0, 10, 'Secretaria Municipal de Desenvolvimento Economico, Trabalho e Turismo', 0, 1, 'C')
     
     pdf.add_page()
     
@@ -191,7 +201,7 @@ def gerar_pdf_executivo(dados, tipo_relatorio):
     # Métricas principais
     col_width = 60
     pdf.metric_card('Total de Pagamentos:', f"{metrics.get('total_pagamentos', 0):,}")
-    pdf.metric_card('Beneficiários Únicos:', f"{metrics.get('beneficiarios_unicos', 0):,}")
+    pdf.metric_card('Beneficiarios Unicos:', f"{metrics.get('beneficiarios_unicos', 0):,}")
     pdf.metric_card('Projetos Ativos:', f"{metrics.get('projetos_ativos', 0):,}")
     pdf.metric_card('Contas Abertas:', f"{metrics.get('total_contas', 0):,}")
     
@@ -202,7 +212,7 @@ def gerar_pdf_executivo(dados, tipo_relatorio):
     
     # Análise de Projetos
     if not dados['pagamentos'].empty and 'Projeto' in dados['pagamentos'].columns:
-        pdf.chapter_title('DISTRIBUIÇÃO POR PROJETO')
+        pdf.chapter_title('DISTRIBUICAO POR PROJETO')
         
         projetos_count = dados['pagamentos']['Projeto'].value_counts().head(10)
         
@@ -220,83 +230,94 @@ def gerar_pdf_executivo(dados, tipo_relatorio):
     # Últimos Pagamentos
     if not dados['pagamentos'].empty:
         pdf.add_page()
-        pdf.chapter_title('ÚLTIMOS PAGAMENTOS REGISTRADOS')
+        pdf.chapter_title('ULTIMOS PAGAMENTOS REGISTRADOS')
         
         # Selecionar colunas relevantes
-        colunas_relevantes = [col for col in ['Data', 'Beneficiário', 'Projeto', 'Valor', 'Status'] 
+        colunas_relevantes = [col for col in ['Data', 'Beneficiario', 'Projeto', 'Valor', 'Status'] 
                              if col in dados['pagamentos'].columns]
         
-        if colunas_relevantes:
-            dados_exibir = dados['pagamentos'][colunas_relevantes].head(15)
-            
-            # Ajustar larguras das colunas
-            num_cols = len(colunas_relevantes)
-            col_widths = [180 // num_cols] * num_cols
-            
-            # Cabeçalho
-            pdf.table_header(colunas_relevantes, col_widths)
-            
-            # Dados
-            for _, row in dados_exibir.iterrows():
-                pdf.table_row([str(row[col]) for col in colunas_relevantes], col_widths)
+        if not colunas_relevantes:
+            colunas_relevantes = dados['pagamentos'].columns[:4].tolist()
+        
+        dados_exibir = dados['pagamentos'][colunas_relevantes].head(15)
+        
+        # Ajustar larguras das colunas
+        num_cols = len(colunas_relevantes)
+        col_width = 180 // num_cols
+        col_widths = [col_width] * num_cols
+        
+        # Cabeçalho
+        pdf.table_header(colunas_relevantes, col_widths)
+        
+        # Dados
+        for _, row in dados_exibir.iterrows():
+            row_data = []
+            for col in colunas_relevantes:
+                cell_value = str(row[col]) if pd.notna(row[col]) else ""
+                # Limpar caracteres especiais
+                cell_value = pdf.safe_text(cell_value)
+                row_data.append(cell_value)
+            pdf.table_row(row_data, col_widths)
     
     # Análise Temporal
     if not dados['pagamentos'].empty and 'Data' in dados['pagamentos'].columns:
         try:
             pdf.add_page()
-            pdf.chapter_title('ANÁLISE TEMPORAL')
+            pdf.chapter_title('ANALISE TEMPORAL')
             
             dados_pagamentos = dados['pagamentos'].copy()
             dados_pagamentos['Data'] = pd.to_datetime(dados_pagamentos['Data'])
-            dados_pagamentos['Mês/Ano'] = dados_pagamentos['Data'].dt.strftime('%m/%Y')
+            dados_pagamentos['Mes/Ano'] = dados_pagamentos['Data'].dt.strftime('%m/%Y')
             
-            evolucao = dados_pagamentos.groupby('Mês/Ano').size().tail(6)
+            evolucao = dados_pagamentos.groupby('Mes/Ano').size().tail(6)
             
-            headers = ['Mês/Ano', 'Pagamentos']
+            headers = ['Mes/Ano', 'Pagamentos']
             col_widths = [60, 60]
             pdf.table_header(headers, col_widths)
             
             for mes_ano, quantidade in evolucao.items():
                 pdf.table_row([mes_ano, f"{quantidade:,}"], col_widths)
                 
-        except:
+        except Exception as e:
+            # Ignora erro na análise temporal
             pass
     
     # Conclusão
     pdf.add_page()
-    pdf.chapter_title('CONCLUSÕES E RECOMENDAÇÕES')
+    pdf.chapter_title('CONCLUSOES E RECOMENDACOES')
     
     pdf.set_font('Arial', '', 12)
     conclusoes = [
-        f"• O programa atendeu {metrics.get('beneficiarios_unicos', 0):,} beneficiários únicos",
-        f"• Foram realizados {metrics.get('total_pagamentos', 0):,} pagamentos",
-        f"• {metrics.get('projetos_ativos', 0)} projetos em operação",
-        f"• {metrics.get('total_contas', 0):,} contas bancárias abertas"
+        f"- O programa atendeu {metrics.get('beneficiarios_unicos', 0):,} beneficiarios unicos",
+        f"- Foram realizados {metrics.get('total_pagamentos', 0):,} pagamentos",
+        f"- {metrics.get('projetos_ativos', 0)} projetos em operacao",
+        f"- {metrics.get('total_contas', 0):,} contas bancarias abertas"
     ]
     
     if metrics.get('valor_total', 0) > 0:
-        conclusoes.append(f"• Investimento total de R$ {metrics.get('valor_total', 0):,.2f}")
+        conclusoes.append(f"- Investimento total de R$ {metrics.get('valor_total', 0):,.2f}")
     
     for conclusao in conclusoes:
-        pdf.cell(0, 8, conclusao, 0, 1)
+        pdf.cell(0, 8, pdf.safe_text(conclusao), 0, 1)
     
     pdf.ln(10)
     pdf.set_font('Arial', 'B', 12)
-    pdf.cell(0, 8, 'Recomendações:', 0, 1)
+    pdf.cell(0, 8, 'Recomendacoes:', 0, 1)
     pdf.set_font('Arial', '', 11)
     recomendacoes = [
-        "• Manter monitoramento contínuo dos projetos",
-        "• Expandir para novas regiões da cidade",
-        "• Avaliar impacto social do programa",
-        "• Otimizar processos de pagamento"
+        "- Manter monitoramento continuo dos projetos",
+        "- Expandir para novas regioes da cidade",
+        "- Avaliar impacto social do programa",
+        "- Otimizar processos de pagamento"
     ]
     
     for recomendacao in recomendacoes:
-        pdf.cell(0, 7, recomendacao, 0, 1)
+        pdf.cell(0, 7, pdf.safe_text(recomendacao), 0, 1)
     
     # Salvar PDF em buffer
     pdf_output = io.BytesIO()
-    pdf_output.write(pdf.output(dest='S').encode('latin1'))
+    pdf_bytes = pdf.output(dest='S').encode('latin1', 'replace')
+    pdf_output.write(pdf_bytes)
     pdf_output.seek(0)
     
     return pdf_output
@@ -309,14 +330,14 @@ def gerar_relatorio_excel(dados, tipo_relatorio):
         # Sheet de resumo
         metrics = processar_dados(dados)
         resumo = pd.DataFrame({
-            'Métrica': [
+            'Metrica': [
                 'Total de Pagamentos',
-                'Beneficiários Únicos (Pagamentos)',
+                'Beneficiarios Unicos (Pagamentos)',
                 'Projetos Ativos',
                 'Contas Abertas',
-                'Contas Únicas',
+                'Contas Unicas',
                 'Valor Total Investido',
-                'Data de Emissão'
+                'Data de Emissao'
             ],
             'Valor': [
                 metrics.get('total_pagamentos', 0),
@@ -339,13 +360,13 @@ def gerar_relatorio_excel(dados, tipo_relatorio):
         
         # Sheet de estatísticas detalhadas
         estatisticas = pd.DataFrame({
-            'Estatística': [
-                'Tipo de Relatório',
+            'Estatistica': [
+                'Tipo de Relatorio',
                 'Total de Registros Processados',
                 'Valor Total dos Pagamentos',
-                'Média por Beneficiário',
-                'Data de Geração',
-                'Status do Relatório'
+                'Media por Beneficiario',
+                'Data de Geracao',
+                'Status do Relatorio'
             ],
             'Valor': [
                 tipo_relatorio,
@@ -353,10 +374,10 @@ def gerar_relatorio_excel(dados, tipo_relatorio):
                 f"R$ {metrics.get('valor_total', 0):,.2f}" if metrics.get('valor_total', 0) > 0 else "N/A",
                 f"R$ {metrics.get('valor_total', 0)/metrics.get('beneficiarios_unicos', 1):,.2f}" if metrics.get('valor_total', 0) > 0 else "N/A",
                 datetime.now().strftime('%d/%m/%Y %H:%M'),
-                'CONCLUÍDO'
+                'CONCLUIDO'
             ]
         })
-        estatisticas.to_excel(writer, sheet_name='Estatísticas_Detalhadas', index=False)
+        estatisticas.to_excel(writer, sheet_name='Estatisticas_Detalhadas', index=False)
     
     output.seek(0)
     return output
@@ -586,7 +607,6 @@ def mostrar_consultas(dados):
         if st.button("📅 Buscar por Período"):
             if data_inicio and data_fim:
                 st.info(f"Buscando dados de {data_inicio} a {data_fim}")
-                # Implementar busca por período quando os dados estiverem disponíveis
     
     # Área de resultados
     st.markdown("---")
