@@ -19,6 +19,10 @@ st.set_page_config(
 # Sistema de autenticação simples
 def autenticar():
     st.sidebar.title("Sistema POT - SMDET")
+    st.sidebar.markdown("**Prefeitura de São Paulo**")
+    st.sidebar.markdown("**Secretaria Municipal do Desenvolvimento Econômico e Trabalho**")
+    st.sidebar.markdown("---")
+    
     email = st.sidebar.text_input("Email @prefeitura.sp.gov.br")
     
     if email and not email.endswith('@prefeitura.sp.gov.br'):
@@ -404,75 +408,138 @@ def processar_colunas_valor(df):
     
     return df_processed
 
-# NOVA FUNÇÃO: Gerar PDF Executivo
+# NOVA FUNÇÃO: Gerar PDF Executivo MELHORADO
 def gerar_pdf_executivo(dados, metrics, nomes_arquivos):
-    """Gera relatório PDF executivo"""
+    """Gera relatório PDF executivo profissional"""
     try:
         pdf = FPDF()
         pdf.add_page()
         
-        # Cabeçalho
+        # Configurações de fonte
         pdf.set_font('Arial', 'B', 16)
-        pdf.cell(0, 10, 'RELATÓRIO EXECUTIVO - SISTEMA POT', 0, 1, 'C')
-        pdf.ln(5)
         
-        # Informações gerais
+        # CABEÇALHO OFICIAL
+        # Logo/Texto da Prefeitura
+        pdf.cell(0, 10, 'PREFEITURA DE SÃO PAULO', 0, 1, 'C')
+        pdf.set_font('Arial', 'B', 14)
+        pdf.cell(0, 10, 'SECRETARIA MUNICIPAL DO DESENVOLVIMENTO ECONÔMICO E TRABALHO', 0, 1, 'C')
+        pdf.set_font('Arial', 'B', 16)
+        pdf.cell(0, 10, 'PROGRAMA DE OPERAÇÕES DO TRABALHO - POT', 0, 1, 'C')
+        pdf.cell(0, 10, 'RELATÓRIO DE MONITORAMENTO DE PAGAMENTOS', 0, 1, 'C')
+        
+        # Linha divisória
+        pdf.line(10, pdf.get_y(), 200, pdf.get_y())
+        pdf.ln(10)
+        
+        # Informações do relatório
         pdf.set_font('Arial', 'B', 12)
-        pdf.cell(0, 10, 'Informações Gerais', 0, 1)
+        pdf.cell(0, 8, 'INFORMAÇÕES DO RELATÓRIO', 0, 1)
         pdf.set_font('Arial', '', 10)
         
-        pdf.cell(0, 8, f'Data do Relatório: {datetime.now().strftime("%d/%m/%Y %H:%M")}', 0, 1)
+        pdf.cell(0, 6, f'Data de emissão: {datetime.now().strftime("%d/%m/%Y às %H:%M")}', 0, 1)
         if nomes_arquivos.get('pagamentos'):
-            pdf.cell(0, 8, f'Planilha de Pagamentos: {nomes_arquivos["pagamentos"]}', 0, 1)
+            pdf.cell(0, 6, f'Planilha de Pagamentos: {nomes_arquivos["pagamentos"]}', 0, 1)
         if nomes_arquivos.get('contas'):
-            pdf.cell(0, 8, f'Planilha de Contas: {nomes_arquivos["contas"]}', 0, 1)
+            pdf.cell(0, 6, f'Planilha de Abertura de Contas: {nomes_arquivos["contas"]}', 0, 1)
         
-        pdf.ln(5)
+        pdf.ln(8)
         
-        # Métricas principais
+        # MÉTRICAS PRINCIPAIS - COM DESTAQUE
         pdf.set_font('Arial', 'B', 12)
-        pdf.cell(0, 10, 'Métricas Principais', 0, 1)
+        pdf.cell(0, 8, 'MÉTRICAS PRINCIPAIS', 0, 1)
         pdf.set_font('Arial', '', 10)
+        
+        # Criar tabela de métricas
+        linha_alt = False
+        metrics_data = []
         
         if metrics.get('beneficiarios_unicos', 0) > 0:
-            pdf.cell(0, 8, f'Beneficiários Únicos: {formatar_brasileiro(metrics["beneficiarios_unicos"], "numero")}', 0, 1)
+            metrics_data.append(('Beneficiários Únicos', formatar_brasileiro(metrics["beneficiarios_unicos"], "numero")))
         
         if metrics.get('total_pagamentos', 0) > 0:
-            pdf.cell(0, 8, f'Total de Pagamentos: {formatar_brasileiro(metrics["total_pagamentos"], "numero")}', 0, 1)
+            metrics_data.append(('Total de Pagamentos', formatar_brasileiro(metrics["total_pagamentos"], "numero")))
         
         if metrics.get('contas_unicas', 0) > 0:
-            pdf.cell(0, 8, f'Contas Únicas: {formatar_brasileiro(metrics["contas_unicas"], "numero")}', 0, 1)
+            metrics_data.append(('Contas Únicas', formatar_brasileiro(metrics["contas_unicas"], "numero")))
         
         if metrics.get('total_contas_abertas', 0) > 0:
-            pdf.cell(0, 8, f'Contas Abertas: {formatar_brasileiro(metrics["total_contas_abertas"], "numero")}', 0, 1)
+            metrics_data.append(('Contas Abertas', formatar_brasileiro(metrics["total_contas_abertas"], "numero")))
         
         if metrics.get('projetos_ativos', 0) > 0:
-            pdf.cell(0, 8, f'Projetos Ativos: {formatar_brasileiro(metrics["projetos_ativos"], "numero")}', 0, 1)
+            metrics_data.append(('Projetos Ativos', formatar_brasileiro(metrics["projetos_ativos"], "numero")))
         
         if metrics.get('valor_total', 0) > 0:
-            pdf.cell(0, 8, f'Valor Total: {formatar_brasileiro(metrics["valor_total"], "monetario")}', 0, 1)
+            metrics_data.append(('Valor Total dos Pagamentos', formatar_brasileiro(metrics["valor_total"], "monetario")))
         
-        pdf.ln(5)
+        # Adicionar métricas em formato de tabela
+        for metric, value in metrics_data:
+            if linha_alt:
+                pdf.set_fill_color(240, 240, 240)
+                pdf.cell(0, 6, f'{metric}: {value}', 0, 1, 'L', 1)
+            else:
+                pdf.cell(0, 6, f'{metric}: {value}', 0, 1)
+            linha_alt = not linha_alt
         
-        # Alertas e problemas
+        pdf.ln(8)
+        
+        # ANÁLISE DE DADOS E ALERTAS
+        tem_alertas = False
+        
         if metrics.get('total_registros_criticos', 0) > 0:
+            tem_alertas = True
             pdf.set_font('Arial', 'B', 12)
-            pdf.cell(0, 10, 'Alertas Críticos', 0, 1)
+            pdf.set_text_color(255, 0, 0)  # Vermelho para alertas
+            pdf.cell(0, 8, 'ALERTAS CRÍTICOS IDENTIFICADOS', 0, 1)
+            pdf.set_text_color(0, 0, 0)  # Voltar para preto
             pdf.set_font('Arial', '', 10)
-            pdf.cell(0, 8, f'Registros com dados críticos ausentes: {formatar_brasileiro(metrics["total_registros_criticos"], "numero")}', 0, 1)
+            pdf.cell(0, 6, f'• Registros com dados críticos ausentes: {formatar_brasileiro(metrics["total_registros_criticos"], "numero")}', 0, 1)
+            pdf.cell(0, 6, '  (CPF, número da conta ou valor ausentes/zerados)', 0, 1)
+            pdf.ln(4)
         
         if metrics.get('pagamentos_duplicados', 0) > 0:
+            tem_alertas = True
             pdf.set_font('Arial', 'B', 12)
-            pdf.cell(0, 10, 'Duplicidades Identificadas', 0, 1)
+            pdf.set_text_color(255, 0, 0)
+            pdf.cell(0, 8, 'DUPLICIDADES IDENTIFICADAS', 0, 1)
+            pdf.set_text_color(0, 0, 0)
             pdf.set_font('Arial', '', 10)
-            pdf.cell(0, 8, f'Contas com pagamentos duplicados: {formatar_brasileiro(metrics["pagamentos_duplicados"], "numero")}', 0, 1)
+            pdf.cell(0, 6, f'• Contas com pagamentos duplicados: {formatar_brasileiro(metrics["pagamentos_duplicados"], "numero")}', 0, 1)
             if metrics.get('valor_total_duplicados', 0) > 0:
-                pdf.cell(0, 8, f'Valor em duplicidades: {formatar_brasileiro(metrics["valor_total_duplicados"], "monetario")}', 0, 1)
+                pdf.cell(0, 6, f'• Valor total em duplicidades: {formatar_brasileiro(metrics["valor_total_duplicados"], "monetario")}', 0, 1)
+            pdf.ln(4)
         
-        # Rodapé
+        if not tem_alertas:
+            pdf.set_font('Arial', 'B', 12)
+            pdf.set_text_color(0, 128, 0)  # Verde para OK
+            pdf.cell(0, 8, '✓ NENHUM ALERTA CRÍTICO IDENTIFICADO', 0, 1)
+            pdf.set_text_color(0, 0, 0)
+        
+        pdf.ln(8)
+        
+        # INFORMAÇÕES DE PROCESSAMENTO
+        pdf.set_font('Arial', 'B', 12)
+        pdf.cell(0, 8, 'INFORMAÇÕES DE PROCESSAMENTO', 0, 1)
+        pdf.set_font('Arial', '', 10)
+        
+        if metrics.get('documentos_padronizados', 0) > 0:
+            pdf.cell(0, 6, f'• Documentos processados: {formatar_brasileiro(metrics["documentos_padronizados"], "numero")}', 0, 1)
+        
+        if metrics.get('registros_validos_com_letras', 0) > 0:
+            pdf.cell(0, 6, f'• RGs com letras válidas processados: {formatar_brasileiro(metrics["registros_validos_com_letras"], "numero")}', 0, 1)
+        
+        if metrics.get('cpfs_com_zeros_adicional', 0) > 0:
+            pdf.cell(0, 6, f'• CPFs normalizados com zeros: {formatar_brasileiro(metrics["cpfs_com_zeros_adicional"], "numero")}', 0, 1)
+        
+        if metrics.get('cpfs_formatos_diferentes', 0) > 0:
+            pdf.cell(0, 6, f'• CPFs de outros estados processados: {formatar_brasileiro(metrics["cpfs_formatos_diferentes"], "numero")}', 0, 1)
+        
         pdf.ln(10)
+        
+        # RODAPÉ OFICIAL
         pdf.set_font('Arial', 'I', 8)
-        pdf.cell(0, 10, f'Gerado pelo Sistema POT - SMDET em {datetime.now().strftime("%d/%m/%Y")}', 0, 0, 'C')
+        pdf.cell(0, 10, 'Secretaria Municipal do Desenvolvimento Econômico e Trabalho - SMDET', 0, 0, 'C')
+        pdf.ln(4)
+        pdf.cell(0, 10, f'Relatório gerado automaticamente pelo Sistema de Monitoramento do POT em {datetime.now().strftime("%d/%m/%Y")}', 0, 0, 'C')
         
         return pdf.output(dest='S').encode('latin1')
     
@@ -590,7 +657,12 @@ def carregar_dados():
     return dados, nomes_arquivos
 
 def mostrar_dashboard(dados, nomes_arquivos=None):
-    st.header("📊 Dashboard Executivo - POT")
+    # CABEÇALHO PRINCIPAL CORRETO
+    st.markdown("<h1 style='text-align: center;'>🏛️ PREFEITURA DE SÃO PAULO</h1>", unsafe_allow_html=True)
+    st.markdown("<h2 style='text-align: center;'>Secretaria Municipal do Desenvolvimento Econômico e Trabalho - SMDET</h2>", unsafe_allow_html=True)
+    st.markdown("<h3 style='text-align: center;'>Programa de Operações do Trabalho - POT</h3>", unsafe_allow_html=True)
+    st.markdown("<h4 style='text-align: center;'>Sistema de Monitoramento de Pagamentos</h4>", unsafe_allow_html=True)
+    st.markdown("---")
     
     metrics = processar_dados(dados, nomes_arquivos)
     
@@ -752,6 +824,12 @@ def mostrar_dashboard(dados, nomes_arquivos=None):
                 )
 
 def mostrar_importacao():
+    st.markdown("<h1 style='text-align: center;'>🏛️ PREFEITURA DE SÃO PAULO</h1>", unsafe_allow_html=True)
+    st.markdown("<h2 style='text-align: center;'>Secretaria Municipal do Desenvolvimento Econômico e Trabalho - SMDET</h2>", unsafe_allow_html=True)
+    st.markdown("<h3 style='text-align: center;'>Programa de Operações do Trabalho - POT</h3>", unsafe_allow_html=True)
+    st.markdown("<h4 style='text-align: center;'>Sistema de Monitoramento de Pagamentos</h4>", unsafe_allow_html=True)
+    st.markdown("---")
+    
     st.header("📥 Estrutura das Planilhas")
     
     st.info("""
@@ -792,6 +870,12 @@ Agência (texto/número)
             """)
 
 def mostrar_consultas(dados):
+    st.markdown("<h1 style='text-align: center;'>🏛️ PREFEITURA DE SÃO PAULO</h1>", unsafe_allow_html=True)
+    st.markdown("<h2 style='text-align: center;'>Secretaria Municipal do Desenvolvimento Econômico e Trabalho - SMDET</h2>", unsafe_allow_html=True)
+    st.markdown("<h3 style='text-align: center;'>Programa de Operações do Trabalho - POT</h3>", unsafe_allow_html=True)
+    st.markdown("<h4 style='text-align: center;'>Sistema de Monitoramento de Pagamentos</h4>", unsafe_allow_html=True)
+    st.markdown("---")
+    
     st.header("🔍 Consultas de Dados")
     
     opcao_consulta = st.radio(
@@ -880,6 +964,12 @@ def mostrar_consultas(dados):
         st.info("Os resultados aparecerão aqui após a busca")
 
 def mostrar_relatorios(dados, nomes_arquivos=None):
+    st.markdown("<h1 style='text-align: center;'>🏛️ PREFEITURA DE SÃO PAULO</h1>", unsafe_allow_html=True)
+    st.markdown("<h2 style='text-align: center;'>Secretaria Municipal do Desenvolvimento Econômico e Trabalho - SMDET</h2>", unsafe_allow_html=True)
+    st.markdown("<h3 style='text-align: center;'>Programa de Operações do Trabalho - POT</h3>", unsafe_allow_html=True)
+    st.markdown("<h4 style='text-align: center;'>Sistema de Monitoramento de Pagamentos</h4>", unsafe_allow_html=True)
+    st.markdown("---")
+    
     st.header("📋 Gerar Relatórios")
     
     metrics = processar_dados(dados, nomes_arquivos)
@@ -980,6 +1070,7 @@ def main():
     st.sidebar.markdown(
         "**Sistema POT - SMDET**  \n"
         "Prefeitura de São Paulo  \n"
+        "Secretaria Municipal do Desenvolvimento Econômico e Trabalho  \n"
         f"© {datetime.now().year} - Versão 2.0"
     )
 
