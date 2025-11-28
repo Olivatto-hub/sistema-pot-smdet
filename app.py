@@ -399,7 +399,6 @@ def main():
         mostrar_relatorios(dados)
 
 def mostrar_dashboard(dados):
-    # ... (mantenha o mesmo código do dashboard que já funciona)
     st.header("📊 Dashboard Executivo - POT")
     
     # Processar dados
@@ -433,13 +432,181 @@ def mostrar_dashboard(dados):
     with col4:
         st.metric("Projetos Ativos", metrics.get('projetos_ativos', 0))
     
-    # ... (restante do dashboard mantido igual)
+    # Valor total se disponível
+    if metrics.get('valor_total', 0) > 0:
+        st.metric("Valor Total dos Pagamentos", f"R$ {metrics['valor_total']:,.2f}")
+    
+    # Gráficos
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("Distribuição por Projeto (Pagamentos)")
+        if not dados['pagamentos'].empty and 'Projeto' in dados['pagamentos'].columns:
+            projetos_count = dados['pagamentos']['Projeto'].value_counts().reset_index()
+            projetos_count.columns = ['Projeto', 'Quantidade']
+            
+            fig = px.pie(projetos_count, values='Quantidade', names='Projeto',
+                        title="Pagamentos por Projeto")
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("📊 Gráfico de projetos aparecerá aqui após carregar os dados de pagamentos")
+    
+    with col2:
+        st.subheader("Evolução Mensal de Pagamentos")
+        if not dados['pagamentos'].empty and 'Data' in dados['pagamentos'].columns:
+            try:
+                # Tentar converter para data
+                dados_pagamentos = dados['pagamentos'].copy()
+                dados_pagamentos['Data'] = pd.to_datetime(dados_pagamentos['Data'])
+                dados_pagamentos['Mês'] = dados_pagamentos['Data'].dt.to_period('M').astype(str)
+                
+                evolucao = dados_pagamentos.groupby('Mês').size().reset_index()
+                evolucao.columns = ['Mês', 'Pagamentos']
+                
+                fig = px.line(evolucao, x='Mês', y='Pagamentos', 
+                             markers=True, line_shape='spline',
+                             title="Evolução de Pagamentos por Mês")
+                st.plotly_chart(fig, use_container_width=True)
+            except:
+                st.info("📊 Formato de data não reconhecido. Ajuste a coluna 'Data'")
+        else:
+            st.info("📊 Gráfico de evolução aparecerá aqui após carregar os dados")
+    
+    # Tabelas recentes
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("Últimos Pagamentos")
+        if not dados['pagamentos'].empty:
+            # Mostrar colunas mais relevantes
+            colunas_pagamentos = [col for col in ['Data', 'Beneficiário', 'CPF', 'Projeto', 'Valor', 'Status'] 
+                                if col in dados['pagamentos'].columns]
+            if colunas_pagamentos:
+                st.dataframe(dados['pagamentos'][colunas_pagamentos].head(10), use_container_width=True)
+            else:
+                st.dataframe(dados['pagamentos'].head(10), use_container_width=True)
+        else:
+            st.info("📋 Tabela de pagamentos aparecerá aqui")
+    
+    with col2:
+        st.subheader("Últimas Contas Abertas")
+        if not dados['contas'].empty:
+            # Mostrar colunas mais relevantes
+            colunas_contas = [col for col in ['Data', 'Nome', 'CPF', 'Projeto', 'Agência'] 
+                            if col in dados['contas'].columns]
+            if colunas_contas:
+                st.dataframe(dados['contas'][colunas_contas].head(10), use_container_width=True)
+            else:
+                st.dataframe(dados['contas'].head(10), use_container_width=True)
+        else:
+            st.info("📋 Tabela de contas aparecerá aqui")
 
 def mostrar_importacao():
-    # ... (código mantido igual)
+    st.header("📥 Estrutura das Planilhas")
+    
+    st.info("""
+    **💡 USE O MENU LATERAL PARA CARREGAR AS PLANILHAS!**
+    """)
+    
+    # Estrutura esperada das planilhas
+    with st.expander("📋 Estrutura das Planilhas Necessárias"):
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("**📋 Planilha de Pagamentos:**")
+            st.code("""
+Data (dd/mm/aaaa)
+Beneficiário (texto)
+CPF (número)
+Projeto (texto)
+Valor (número)
+Status (texto)
+*Outras colunas opcionais*
+            """)
+        
+        with col2:
+            st.markdown("**🏦 Planilha de Abertura de Contas:**")
+            st.code("""
+Data (dd/mm/aaaa)
+Nome (texto)
+CPF (número)
+Projeto (texto)
+Agência (texto/número)
+*Outras colunas opcionais*
+            """)
 
 def mostrar_consultas(dados):
-    # ... (código mantido igual)
+    st.header("🔍 Consultas de Dados")
+    
+    # Opções de consulta
+    opcao_consulta = st.radio(
+        "Tipo de consulta:",
+        ["Por CPF", "Por Projeto", "Por Período"],
+        horizontal=True
+    )
+    
+    if opcao_consulta == "Por CPF":
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            cpf = st.text_input("Digite o CPF (apenas números):", placeholder="12345678900")
+        with col2:
+            if st.button("🔍 Buscar CPF", use_container_width=True):
+                if cpf:
+                    resultados = {}
+                    if not dados['pagamentos'].empty and 'CPF' in dados['pagamentos'].columns:
+                        resultados['pagamentos'] = dados['pagamentos'][dados['pagamentos']['CPF'].astype(str).str.contains(cpf)]
+                    if not dados['contas'].empty and 'CPF' in dados['contas'].columns:
+                        resultados['contas'] = dados['contas'][dados['contas']['CPF'].astype(str).str.contains(cpf)]
+                    
+                    st.session_state.resultados_consulta = resultados
+                else:
+                    st.warning("Por favor, digite um CPF para buscar")
+    
+    elif opcao_consulta == "Por Projeto":
+        projeto = st.text_input("Digite o nome do projeto:")
+        if st.button("🏢 Buscar por Projeto"):
+            if projeto:
+                resultados = {}
+                if not dados['pagamentos'].empty and 'Projeto' in dados['pagamentos'].columns:
+                    resultados['pagamentos'] = dados['pagamentos'][dados['pagamentos']['Projeto'].str.contains(projeto, case=False, na=False)]
+                if not dados['contas'].empty and 'Projeto' in dados['contas'].columns:
+                    resultados['contas'] = dados['contas'][dados['contas']['Projeto'].str.contains(projeto, case=False, na=False)]
+                
+                st.session_state.resultados_consulta = resultados
+            else:
+                st.warning("Por favor, digite um projeto para buscar")
+    
+    else:  # Por Período
+        col1, col2 = st.columns(2)
+        with col1:
+            data_inicio = st.date_input("Data início:")
+        with col2:
+            data_fim = st.date_input("Data fim:")
+        
+        if st.button("📅 Buscar por Período"):
+            if data_inicio and data_fim:
+                st.info(f"Buscando dados de {data_inicio} a {data_fim}")
+                # Implementar busca por período quando os dados estiverem disponíveis
+    
+    # Área de resultados
+    st.markdown("---")
+    st.subheader("Resultados da Consulta")
+    
+    if 'resultados_consulta' in st.session_state:
+        resultados = st.session_state.resultados_consulta
+        
+        if resultados.get('pagamentos') is not None and not resultados['pagamentos'].empty:
+            st.markdown("**📋 Pagamentos Encontrados:**")
+            st.dataframe(resultados['pagamentos'], use_container_width=True)
+        
+        if resultados.get('contas') is not None and not resultados['contas'].empty:
+            st.markdown("**🏦 Contas Encontradas:**")
+            st.dataframe(resultados['contas'], use_container_width=True)
+        
+        if not any([not df.empty if df is not None else False for df in resultados.values()]):
+            st.info("Nenhum resultado encontrado para a consulta.")
+    else:
+        st.info("Os resultados aparecerão aqui após a busca")
 
 def mostrar_relatorios(dados):
     st.header("📋 Gerar Relatórios")
