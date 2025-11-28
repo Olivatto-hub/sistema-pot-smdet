@@ -927,13 +927,13 @@ def gerar_pdf_executivo(dados, tipo_relatorio):
         if not colunas_base:
             colunas_base = dados['pagamentos'].columns[:6].tolist()
         
-        d    # NOVA CORREÇÃO: Ordenar por data antes de exibir
-    coluna_data_ordenacao = obter_coluna_data_ordenacao(dados['pagamentos'])
-    if coluna_data_ordenacao:
-        dados_ordenados = ordenar_por_data(dados['pagamentos'], coluna_data_ordenacao)
-        dados_exibir = dados_ordenados[colunas_base].head(15)
-    else:
-        dados_exibir = dados['pagamentos'][colunas_base].head(15)
+              # NOVA CORREÇÃO: Ordenar por data antes de exibir
+        coluna_data_ordenacao = obter_coluna_data_ordenacao(dados['pagamentos'])
+        if coluna_data_ordenacao:
+            dados_ordenados = ordenar_por_data(dados['pagamentos'], coluna_data_ordenacao)
+            dados_exibir = dados_ordenados[colunas_base].head(15)
+        else:
+            dados_exibir = dados['pagamentos'][colunas_base].head(15)
         
         # CORREÇÃO: Ajustar larguras considerando tipos de conteúdo
         num_cols = len(colunas_base)
@@ -1191,24 +1191,59 @@ def mostrar_dashboard(dados):
         """)
         return
     
-    # NOVO: Alertas de ausência de dados
+      # ALERTA MELHORADO: Ausência de dados com opção de download
     if metrics.get('total_registros_incompletos', 0) > 0:
         st.error(f"🚨 **ALERTA: AUSÊNCIA DE DADOS IDENTIFICADA** - {formatar_brasileiro(metrics.get('total_registros_incompletos', 0), 'numero')} registros com CPF ausente ou inválido")
         
+        col_alert1, col_alert2 = st.columns([3, 1])
+        
+        with col_alert1:
+            st.warning("**Estes registros precisam ser corrigidos para análise completa dos dados**")
+            
+        with col_alert2:
+            # Botão para exportar registros problemáticos
+            if not metrics['registros_problema_detalhados'].empty:
+                csv_problemas = metrics['registros_problema_detalhados'].to_csv(index=False, sep=';')
+                st.download_button(
+                    label="📥 Exportar Registros Problemáticos",
+                    data=csv_problemas,
+                    file_name=f"registros_problema_{datetime.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv",
+                    help="Baixe esta lista para corrigir os dados ausentes"
+                )
+        
         with st.expander("🔍 **Ver Detalhes dos Dados Ausentes**", expanded=False):
-            st.warning("**Registros com dados incompletos:**")
+            st.subheader("Resumo de Ausências por Campo")
             
             if metrics.get('colunas_com_ausencia'):
-                for coluna, qtd in metrics['colunas_com_ausencia'].items():
+                col_aus1, col_aus2, col_aus3 = st.columns(3)
+                colunas_ausencia = list(metrics['colunas_com_ausencia'].items())
+                
+                for i, (coluna, qtd) in enumerate(colunas_ausencia):
                     if qtd > 0:
-                        st.write(f"- {formatar_brasileiro(qtd, 'numero')} registros sem {coluna}")
+                        with [col_aus1, col_aus2, col_aus3][i % 3]:
+                            st.metric(
+                                label=f"Sem {coluna}",
+                                value=formatar_brasileiro(qtd, 'numero'),
+                                delta=f"{qtd/len(dados['pagamentos'])*100:.1f}% do total"
+                            )
             
+            st.subheader("Exemplos de Registros com Problemas")
             if not metrics['resumo_ausencias'].empty:
+                # Mostrar colunas mais relevantes primeiro
+                colunas_prioridade = ['Indice_Registro', 'CPF', 'Nome', 'Beneficiario', 'Beneficiário', 'Projeto', 'Valor']
+                colunas_exibir = [col for col in colunas_prioridade if col in metrics['resumo_ausencias'].columns]
+                colunas_restantes = [col for col in metrics['resumo_ausencias'].columns if col not in colunas_exibir]
+                colunas_exibir.extend(colunas_restantes)
+                
                 st.dataframe(
-                    metrics['resumo_ausencias'],
+                    metrics['resumo_ausencias'][colunas_exibir],
                     use_container_width=True,
-                    hide_index=True
+                    hide_index=True,
+                    height=400
                 )
+                
+                st.info(f"Mostrando {len(metrics['resumo_ausencias'])} de {metrics['total_registros_incompletos']} registros com problemas. Use o botão de exportação acima para baixar a lista completa.")
     
     # Métricas principais - CORREÇÃO: Formatação brasileira
     col1, col2, col3, col4 = st.columns(4)
