@@ -4,11 +4,6 @@ import plotly.express as px
 from datetime import datetime
 import io
 import base64
-from reportlab.pdfgen import canvas
-from reportlab.lib.pagesizes import letter, A4
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.lib import colors
 
 # Configuração da página
 st.set_page_config(
@@ -117,96 +112,59 @@ def processar_dados(dados):
     
     return metrics
 
-def gerar_pdf(dados, tipo_relatorio):
-    """Gera relatório em PDF"""
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4)
-    styles = getSampleStyleSheet()
-    story = []
+def gerar_relatorio_excel(dados, tipo_relatorio):
+    """Gera relatório em Excel"""
+    output = io.BytesIO()
     
-    # Título
-    title_style = styles['Heading1']
-    title_style.alignment = 1  # Centralizado
-    title = Paragraph(f"RELATÓRIO POT - {tipo_relatorio.upper()}", title_style)
-    story.append(title)
-    story.append(Spacer(1, 20))
-    
-    # Data de emissão
-    data_emissao = Paragraph(f"Data de emissão: {datetime.now().strftime('%d/%m/%Y %H:%M')}", styles['Normal'])
-    story.append(data_emissao)
-    story.append(Spacer(1, 20))
-    
-    # Métricas
-    metrics = processar_dados(dados)
-    story.append(Paragraph("RESUMO EXECUTIVO", styles['Heading2']))
-    
-    dados_metricas = [
-        ['Métrica', 'Valor'],
-        ['Total de Pagamentos', str(metrics.get('total_pagamentos', 0))],
-        ['Beneficiários Únicos', str(metrics.get('beneficiarios_unicos', 0))],
-        ['Projetos Ativos', str(metrics.get('projetos_ativos', 0))],
-        ['Contas Abertas', str(metrics.get('total_contas', 0))],
-        ['Contas Únicas', str(metrics.get('contas_unicas', 0))],
-    ]
-    
-    if metrics.get('valor_total', 0) > 0:
-        dados_metricas.insert(2, ['Valor Total', f"R$ {metrics['valor_total']:,.2f}"])
-    
-    tabela_metricas = Table(dados_metricas)
-    tabela_metricas.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, 0), 12),
-        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-        ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
-        ('GRID', (0, 0), (-1, -1), 1, colors.black)
-    ]))
-    story.append(tabela_metricas)
-    story.append(Spacer(1, 30))
-    
-    # Dados de pagamentos (apenas primeiras 20 linhas)
-    if not dados['pagamentos'].empty:
-        story.append(Paragraph("ÚLTIMOS PAGAMENTOS", styles['Heading2']))
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        # Sheet de resumo
+        metrics = processar_dados(dados)
+        resumo = pd.DataFrame({
+            'Métrica': [
+                'Total de Pagamentos',
+                'Beneficiários Únicos (Pagamentos)',
+                'Projetos Ativos',
+                'Contas Abertas',
+                'Contas Únicas',
+                'Data de Emissão'
+            ],
+            'Valor': [
+                metrics.get('total_pagamentos', 0),
+                metrics.get('beneficiarios_unicos', 0),
+                metrics.get('projetos_ativos', 0),
+                metrics.get('total_contas', 0),
+                metrics.get('contas_unicas', 0),
+                datetime.now().strftime('%d/%m/%Y %H:%M')
+            ]
+        })
+        resumo.to_excel(writer, sheet_name='Resumo Executivo', index=False)
         
-        # Selecionar colunas mais importantes
-        colunas_pagamentos = [col for col in ['Data', 'Beneficiário', 'CPF', 'Projeto', 'Valor', 'Status'] 
-                             if col in dados['pagamentos'].columns]
-        if not colunas_pagamentos:
-            colunas_pagamentos = dados['pagamentos'].columns[:5].tolist()
+        # Sheets com dados
+        if not dados['pagamentos'].empty:
+            dados['pagamentos'].to_excel(writer, sheet_name='Pagamentos', index=False)
         
-        dados_tabela = dados['pagamentos'][colunas_pagamentos].head(20)
+        if not dados['contas'].empty:
+            dados['contas'].to_excel(writer, sheet_name='Abertura_Contas', index=False)
         
-        # Preparar dados para tabela
-        tabela_dados = [colunas_pagamentos]  # Cabeçalho
-        for _, row in dados_tabela.iterrows():
-            tabela_dados.append([str(row[col]) for col in colunas_pagamentos])
-        
-        tabela = Table(tabela_dados, repeatRows=1)
-        tabela.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, 0), 10),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-            ('BACKGROUND', (0, 1), (-1, -1), colors.whitesmoke),
-            ('GRID', (0, 0), (-1, -1), 1, colors.black),
-            ('FONTSIZE', (0, 1), (-1, -1), 8),
-        ]))
-        story.append(tabela)
-        story.append(Spacer(1, 20))
+        # Sheet de estatísticas
+        estatisticas = pd.DataFrame({
+            'Estatística': [
+                'Tipo de Relatório',
+                'Total de Registros Processados',
+                'Valor Total dos Pagamentos',
+                'Data de Geração'
+            ],
+            'Valor': [
+                tipo_relatorio,
+                metrics.get('total_pagamentos', 0) + metrics.get('total_contas', 0),
+                f"R$ {metrics.get('valor_total', 0):,.2f}" if metrics.get('valor_total', 0) > 0 else "N/A",
+                datetime.now().strftime('%d/%m/%Y %H:%M')
+            ]
+        })
+        estatisticas.to_excel(writer, sheet_name='Estatísticas', index=False)
     
-    # Rodapé
-    story.append(Spacer(1, 30))
-    rodape = Paragraph(f"Relatório gerado pelo Sistema POT - SMDET - Página 1", styles['Normal'])
-    story.append(rodape)
-    
-    # Gerar PDF
-    doc.build(story)
-    buffer.seek(0)
-    return buffer
+    output.seek(0)
+    return output
 
 def main():
     email = autenticar()
@@ -278,6 +236,10 @@ def mostrar_dashboard(dados):
     
     with col4:
         st.metric("Projetos Ativos", metrics.get('projetos_ativos', 0))
+    
+    # Valor total se disponível
+    if metrics.get('valor_total', 0) > 0:
+        st.metric("Valor Total dos Pagamentos", f"R$ {metrics['valor_total']:,.2f}")
     
     # Gráficos
     col1, col2 = st.columns(2)
@@ -457,9 +419,9 @@ def mostrar_relatorios(dados):
     st.info("""
     **Recursos disponíveis:**
     - Relatórios em Excel para análise detalhada
-    - Relatórios em PDF para apresentações
     - Dados consolidados por período
     - Estatísticas e métricas do programa
+    - **Em breve:** Relatórios em PDF
     """)
     
     # Opções de relatório
@@ -474,73 +436,23 @@ def mostrar_relatorios(dados):
         ]
     )
     
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        # Botão para gerar Excel
-        if st.button("📊 Gerar Relatório Excel", type="primary", use_container_width=True):
-            with st.spinner("Gerando relatório Excel..."):
-                # Criar arquivo Excel em memória
-                output = io.BytesIO()
+    # Botão para gerar Excel
+    if st.button("📊 Gerar Relatório Excel", type="primary", use_container_width=True):
+        with st.spinner("Gerando relatório Excel..."):
+            try:
+                excel_buffer = gerar_relatorio_excel(dados, tipo_relatorio)
                 
-                with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                    # Sheet de resumo
-                    metrics = processar_dados(dados)
-                    resumo = pd.DataFrame({
-                        'Métrica': [
-                            'Total de Pagamentos',
-                            'Beneficiários Únicos (Pagamentos)',
-                            'Projetos Ativos',
-                            'Contas Abertas',
-                            'Contas Únicas'
-                        ],
-                        'Valor': [
-                            metrics.get('total_pagamentos', 0),
-                            metrics.get('beneficiarios_unicos', 0),
-                            metrics.get('projetos_ativos', 0),
-                            metrics.get('total_contas', 0),
-                            metrics.get('contas_unicas', 0)
-                        ]
-                    })
-                    resumo.to_excel(writer, sheet_name='Resumo', index=False)
-                    
-                    # Sheets com dados
-                    if not dados['pagamentos'].empty:
-                        dados['pagamentos'].to_excel(writer, sheet_name='Pagamentos', index=False)
-                    
-                    if not dados['contas'].empty:
-                        dados['contas'].to_excel(writer, sheet_name='Abertura_Contas', index=False)
-                
-                # Botão de download Excel
                 st.success("✅ Relatório Excel gerado com sucesso!")
                 
                 st.download_button(
                     label="📥 Baixar Relatório Excel",
-                    data=output.getvalue(),
-                    file_name=f"relatorio_pot_excel_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                    data=excel_buffer.getvalue(),
+                    file_name=f"relatorio_pot_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     type="primary"
                 )
-    
-    with col2:
-        # Botão para gerar PDF
-        if st.button("📄 Gerar Relatório PDF", type="secondary", use_container_width=True):
-            with st.spinner("Gerando relatório PDF..."):
-                try:
-                    pdf_buffer = gerar_pdf(dados, tipo_relatorio)
-                    
-                    st.success("✅ Relatório PDF gerado com sucesso!")
-                    
-                    st.download_button(
-                        label="📥 Baixar Relatório PDF",
-                        data=pdf_buffer.getvalue(),
-                        file_name=f"relatorio_pot_pdf_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
-                        mime="application/pdf",
-                        type="primary"
-                    )
-                except Exception as e:
-                    st.error(f"❌ Erro ao gerar PDF: {str(e)}")
-                    st.info("💡 **Dica:** Certifique-se de que as bibliotecas PDF estão instaladas")
+            except Exception as e:
+                st.error(f"❌ Erro ao gerar relatório: {str(e)}")
 
 # Rodapé
 def mostrar_rodape():
