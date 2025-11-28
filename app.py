@@ -507,6 +507,33 @@ class PDFReport(FPDF):
         if not hasattr(self, '_in_multiline') or not self._in_multiline:
             self.ln()
     
+    def safe_text(self, text):
+        """Remove caracteres problemáticos para Latin-1 incluindo emojis"""
+        # Primeiro, converter para string se não for
+        safe_text = str(text)
+        
+        # Dicionário de substituições
+        substitutions = {
+            '•': '-', '´': "'", '`': "'", '“': '"', '”': '"', 
+            '‘': "'", ' ': ' ', '–': '-', '—': '-', '…': '...',
+            '🚨': '[ALERTA]', '✅': '[OK]', '📊': '[DASHBOARD]',
+            '⚠️': '[ATENCAO]', '❌': '[ERRO]', '📁': '[ARQUIVO]',
+            '🔍': '[LUPAR]', '👆': '[SETA_ACIMA]', '🏛️': '[PREFEITURA]'
+        }
+        
+        # Aplicar substituições
+        for char, replacement in substitutions.items():
+            safe_text = safe_text.replace(char, replacement)
+        
+        # Remover qualquer outro caractere Unicode problemático
+        safe_text = safe_text.encode('latin-1', 'replace').decode('latin-1')
+        
+        return safe_text
+        
+        # Só faz ln() se não estamos no meio de uma quebra de linha múltipla
+        if not hasattr(self, '_in_multiline') or not self._in_multiline:
+            self.ln()
+    
       def safe_text(self, text):
         """Remove caracteres problemáticos para Latin-1 incluindo emojis"""
         # Primeiro, converter para string se não for
