@@ -23,69 +23,6 @@ def autenticar():
     
     return email
 
-# Sistema de upload de dados
-def carregar_dados():
-    st.sidebar.header("📤 Carregar Dados Reais")
-    
-    # Upload para pagamentos
-    upload_pagamentos = st.sidebar.file_uploader(
-        "Planilha de Pagamentos", 
-        type=['xlsx', 'csv'],
-        key="pagamentos"
-    )
-    
-    # Upload para abertura de contas
-    upload_contas = st.sidebar.file_uploader(
-        "Planilha de Abertura de Contas", 
-        type=['xlsx', 'csv'],
-        key="contas"
-    )
-    
-    dados = {}
-    
-    # Carregar dados de pagamentos
-    if upload_pagamentos is not None:
-        try:
-            if upload_pagamentos.name.endswith('.xlsx'):
-                df_pagamentos = pd.read_excel(upload_pagamentos)
-            else:
-                df_pagamentos = pd.read_csv(upload_pagamentos)
-            
-            # CORREÇÃO: Processar datas e valores
-            df_pagamentos = processar_colunas_data(df_pagamentos)
-            df_pagamentos = processar_colunas_valor(df_pagamentos)
-            
-            dados['pagamentos'] = df_pagamentos
-            st.sidebar.success(f"✅ Pagamentos: {len(dados['pagamentos'])} registros")
-        except Exception as e:
-            st.sidebar.error(f"❌ Erro ao carregar pagamentos: {str(e)}")
-            dados['pagamentos'] = pd.DataFrame()
-    else:
-        dados['pagamentos'] = pd.DataFrame()
-        st.sidebar.info("📁 Aguardando planilha de pagamentos")
-    
-    # Carregar dados de abertura de contas
-    if upload_contas is not None:
-        try:
-            if upload_contas.name.endswith('.xlsx'):
-                df_contas = pd.read_excel(upload_contas)
-            else:
-                df_contas = pd.read_csv(upload_contas)
-            
-            # CORREÇÃO: Processar datas
-            df_contas = processar_colunas_data(df_contas)
-            
-            dados['contas'] = df_contas
-            st.sidebar.success(f"✅ Contas: {len(dados['contas'])} registros")
-        except Exception as e:
-            st.sidebar.error(f"❌ Erro ao carregar contas: {str(e)}")
-            dados['contas'] = pd.DataFrame()
-    else:
-        dados['contas'] = pd.DataFrame()
-        st.sidebar.info("📁 Aguardando planilha de abertura de contas")
-    
-    return dados
-
 # CORREÇÃO: Nova função para processar colunas de data
 def processar_colunas_data(df):
     """Converte colunas de data de formato numérico do Excel para datas legíveis"""
@@ -148,6 +85,69 @@ def processar_colunas_valor(df):
             df_processed['Valor_Limpo'] = 0.0
     
     return df_processed
+
+# Sistema de upload de dados
+def carregar_dados():
+    st.sidebar.header("📤 Carregar Dados Reais")
+    
+    # Upload para pagamentos
+    upload_pagamentos = st.sidebar.file_uploader(
+        "Planilha de Pagamentos", 
+        type=['xlsx', 'csv'],
+        key="pagamentos"
+    )
+    
+    # Upload para abertura de contas
+    upload_contas = st.sidebar.file_uploader(
+        "Planilha de Abertura de Contas", 
+        type=['xlsx', 'csv'],
+        key="contas"
+    )
+    
+    dados = {}
+    
+    # Carregar dados de pagamentos
+    if upload_pagamentos is not None:
+        try:
+            if upload_pagamentos.name.endswith('.xlsx'):
+                df_pagamentos = pd.read_excel(upload_pagamentos)
+            else:
+                df_pagamentos = pd.read_csv(upload_pagamentos)
+            
+            # CORREÇÃO: Processar datas e valores
+            df_pagamentos = processar_colunas_data(df_pagamentos)
+            df_pagamentos = processar_colunas_valor(df_pagamentos)
+            
+            dados['pagamentos'] = df_pagamentos
+            st.sidebar.success(f"✅ Pagamentos: {len(dados['pagamentos'])} registros")
+        except Exception as e:
+            st.sidebar.error(f"❌ Erro ao carregar pagamentos: {str(e)}")
+            dados['pagamentos'] = pd.DataFrame()
+    else:
+        dados['pagamentos'] = pd.DataFrame()
+        st.sidebar.info("📁 Aguardando planilha de pagamentos")
+    
+    # Carregar dados de abertura de contas
+    if upload_contas is not None:
+        try:
+            if upload_contas.name.endswith('.xlsx'):
+                df_contas = pd.read_excel(upload_contas)
+            else:
+                df_contas = pd.read_csv(upload_contas)
+            
+            # CORREÇÃO: Processar datas
+            df_contas = processar_colunas_data(df_contas)
+            
+            dados['contas'] = df_contas
+            st.sidebar.success(f"✅ Contas: {len(dados['contas'])} registros")
+        except Exception as e:
+            st.sidebar.error(f"❌ Erro ao carregar contas: {str(e)}")
+            dados['contas'] = pd.DataFrame()
+    else:
+        dados['contas'] = pd.DataFrame()
+        st.sidebar.info("📁 Aguardando planilha de abertura de contas")
+    
+    return dados
 
 def analisar_duplicidades(dados):
     """Analisa pagamentos duplicados e retorna estatísticas"""
@@ -416,6 +416,7 @@ def obter_coluna_conta(df):
 def formatar_brasileiro(valor, tipo='monetario'):
     """Formata números no padrão brasileiro"""
     try:
+        valor = float(valor)
         if tipo == 'monetario':
             return f"R$ {valor:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
         else:
@@ -1070,7 +1071,216 @@ def mostrar_dashboard(dados):
         else:
             st.info("📋 Tabela de contas aparecerá aqui")
 
-# ... (as funções restantes manter_se-iam iguais, apenas incluindo as correções de formatação onde necessário)
+# CORREÇÃO: Adicionando a função mostrar_importacao() que estava faltando
+def mostrar_importacao():
+    st.header("📥 Estrutura das Planilhas")
+    
+    st.info("""
+    **💡 USE O MENU LATERAL PARA CARREGAR AS PLANILHAS!**
+    """)
+    
+    # Estrutura esperada das planilhas
+    with st.expander("📋 Estrutura das Planilhas Necessárias"):
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("**📋 Planilha de Pagamentos:**")
+            st.code("""
+Data ou Data Pagto (dd/mm/aaaa)
+Beneficiário (texto)
+CPF (número)
+Projeto (texto)
+Valor (número)
+Num Cartao (número da conta)
+Status (texto)
+*Outras colunas opcionais*
+            """)
+        
+        with col2:
+            st.markdown("**🏦 Planilha de Abertura de Contas:**")
+            st.code("""
+Data (dd/mm/aaaa)
+Nome (texto)
+CPF (número)
+Projeto (texto)
+Agência (texto/número)
+*Outras colunas opcionais*
+            """)
+
+# CORREÇÃO: Adicionando a função mostrar_consultas() que estava faltando
+def mostrar_consultas(dados):
+    st.header("🔍 Consultas de Dados")
+    
+    # Opções de consulta
+    opcao_consulta = st.radio(
+        "Tipo de consulta:",
+        ["Por CPF", "Por Projeto", "Por Período"],
+        horizontal=True
+    )
+    
+    if opcao_consulta == "Por CPF":
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            cpf = st.text_input("Digite o CPF (apenas números):", placeholder="12345678900")
+        with col2:
+            if st.button("🔍 Buscar CPF", use_container_width=True):
+                if cpf:
+                    resultados = {}
+                    if not dados['pagamentos'].empty and 'CPF' in dados['pagamentos'].columns:
+                        resultados['pagamentos'] = dados['pagamentos'][dados['pagamentos']['CPF'].astype(str).str.contains(cpf)]
+                    if not dados['contas'].empty and 'CPF' in dados['contas'].columns:
+                        resultados['contas'] = dados['contas'][dados['contas']['CPF'].astype(str).str.contains(cpf)]
+                    
+                    st.session_state.resultados_consulta = resultados
+                else:
+                    st.warning("Por favor, digite um CPF para buscar")
+    
+    elif opcao_consulta == "Por Projeto":
+        projeto = st.text_input("Digite o nome do projeto:")
+        if st.button("🏢 Buscar por Projeto"):
+            if projeto:
+                resultados = {}
+                if not dados['pagamentos'].empty and 'Projeto' in dados['pagamentos'].columns:
+                    resultados['pagamentos'] = dados['pagamentos'][dados['pagamentos']['Projeto'].str.contains(projeto, case=False, na=False)]
+                if not dados['contas'].empty and 'Projeto' in dados['contas'].columns:
+                    resultados['contas'] = dados['contas'][dados['contas']['Projeto'].str.contains(projeto, case=False, na=False)]
+                
+                st.session_state.resultados_consulta = resultados
+            else:
+                st.warning("Por favor, digite um projeto para buscar")
+    
+    else:  # Por Período
+        col1, col2 = st.columns(2)
+        with col1:
+            data_inicio = st.date_input("Data início:")
+        with col2:
+            data_fim = st.date_input("Data fim:")
+        
+        if st.button("📅 Buscar por Período"):
+            if data_inicio and data_fim:
+                st.info(f"Buscando dados de {data_inicio} a {data_fim}")
+    
+    # Área de resultados
+    st.markdown("---")
+    st.subheader("Resultados da Consulta")
+    
+    if 'resultados_consulta' in st.session_state:
+        resultados = st.session_state.resultados_consulta
+        
+        if resultados.get('pagamentos') is not None and not resultados['pagamentos'].empty:
+            st.markdown("**📋 Pagamentos Encontrados:**")
+            
+            # Mostrar colunas incluindo número da conta e data
+            colunas_display = [col for col in ['Data', 'Data Pagto', 'Beneficiário', 'CPF', 'Projeto', 'Valor', 'Status'] 
+                             if col in resultados['pagamentos'].columns]
+            
+            # Adicionar número da conta se disponível
+            for col_conta in ['Num Cartao', 'Num_Cartao', 'Conta', 'Numero Conta']:
+                if col_conta in resultados['pagamentos'].columns:
+                    colunas_display.append(col_conta)
+                    break
+            
+            if colunas_display:
+                st.dataframe(resultados['pagamentos'][colunas_display], use_container_width=True)
+            else:
+                st.dataframe(resultados['pagamentos'], use_container_width=True)
+        
+        if resultados.get('contas') is not None and not resultados['contas'].empty:
+            st.markdown("**🏦 Contas Encontradas:**")
+            st.dataframe(resultados['contas'], use_container_width=True)
+        
+        if not any([not df.empty if df is not None else False for df in resultados.values()]):
+            st.info("Nenhum resultado encontrado para a consulta.")
+    else:
+        st.info("Os resultados aparecerão aqui após a busca")
+
+# CORREÇÃO: Adicionando a função mostrar_relatorios() que estava faltando
+def mostrar_relatorios(dados):
+    st.header("📋 Gerar Relatórios")
+    
+    # Análise preliminar para mostrar alertas
+    metrics = processar_dados(dados)
+    
+    if metrics.get('pagamentos_duplicados', 0) > 0:
+        st.warning(f"🚨 **ALERTA:** Foram identificados {formatar_brasileiro(metrics.get('pagamentos_duplicados', 0), 'numero')} CPFs com pagamentos duplicados")
+        st.info(f"📊 **Diferença:** {formatar_brasileiro(metrics.get('total_pagamentos', 0), 'numero')} pagamentos para {formatar_brasileiro(metrics.get('beneficiarios_unicos', 0), 'numero')} beneficiários")
+    
+    st.info("""
+    **Escolha o formato do relatório:**
+    - **📄 PDF Executivo**: Relatório visual e profissional para apresentações
+    - **📊 Excel Completo**: Dados detalhados para análise técnica
+    """)
+    
+    # Opções de relatório
+    tipo_relatorio = st.selectbox(
+        "Selecione o tipo de relatório:",
+        [
+            "Relatório Geral Completo",
+            "Relatório de Pagamentos", 
+            "Relatório de Abertura de Contas",
+            "Relatório por Projeto",
+            "Dashboard Executivo"
+        ]
+    )
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Botão para gerar PDF Executivo
+        if st.button("📄 Gerar PDF Executivo", type="primary", use_container_width=True):
+            with st.spinner("Gerando relatório PDF executivo..."):
+                try:
+                    pdf_buffer = gerar_pdf_executivo(dados, tipo_relatorio)
+                    
+                    st.success("✅ PDF Executivo gerado com sucesso!")
+                    st.info("💡 **Ideal para:** Apresentações, reuniões e análise executiva")
+                    
+                    st.download_button(
+                        label="📥 Baixar PDF Executivo",
+                        data=pdf_buffer.getvalue(),
+                        file_name=f"relatorio_executivo_pot_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
+                        mime="application/pdf",
+                        type="primary"
+                    )
+                except Exception as e:
+                    st.error(f"❌ Erro ao gerar PDF: {str(e)}")
+    
+    with col2:
+        # Botão para gerar Excel
+        if st.button("📊 Gerar Excel Completo", type="secondary", use_container_width=True):
+            with st.spinner("Gerando relatório Excel completo..."):
+                try:
+                    excel_buffer = gerar_relatorio_excel(dados, tipo_relatorio)
+                    
+                    st.success("✅ Excel Completo gerado com sucesso!")
+                    st.info("💡 **Ideal para:** Análise detalhada e processamento de dados")
+                    
+                    st.download_button(
+                        label="📥 Baixar Excel Completo",
+                        data=excel_buffer.getvalue(),
+                        file_name=f"relatorio_completo_pot_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        type="primary"
+                    )
+                except Exception as e:
+                    st.error(f"❌ Erro ao gerar Excel: {str(e)}")
+
+# CORREÇÃO: Adicionando a função mostrar_rodape() que estava faltando
+def mostrar_rodape():
+    st.markdown("---")
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown("**SMDET**")
+        st.markdown("Secretaria Municipal do Desenvolvimento Econômico e Trabalho")
+    
+    with col2:
+        st.markdown("**Suporte Técnico**")
+        st.markdown("rolivatto@prefeitura.sp.gov.br")
+    
+    with col3:
+        st.markdown("**Versão**")
+        st.markdown("1.0 - Novembro 2024")
 
 def main():
     email = autenticar()
@@ -1110,8 +1320,6 @@ def main():
         mostrar_relatorios(dados)
     
     mostrar_rodape()
-
-# ... (funções auxiliares restantes)
 
 if __name__ == "__main__":
     main()
