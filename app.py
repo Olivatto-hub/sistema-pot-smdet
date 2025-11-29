@@ -608,7 +608,8 @@ def identificar_cpfs_problematicos(df):
                             info_inconsistencia['Projeto'] = registro['Projeto']
                         
                         if 'Valor_Limpo' in registro:
-                            info_inconsistencia['Valor'] = registro['Valor_Limpo']
+                            # CORREÇÃO: Formatar valor com R$
+                            info_inconsistencia['Valor'] = formatar_brasileiro(registro['Valor_Limpo'], 'monetario')
                         
                         # Marcar inconsistências específicas
                         problemas_inconsistencia = ['CPF DUPLICADO']
@@ -835,7 +836,7 @@ def detectar_pagamentos_pendentes(dados):
 def processar_cpf(cpf):
     """Processa CPF, mantendo apenas números e completando com zeros à esquerda"""
     if pd.isna(cpf) or cpf in ['', 'NaN', 'None', 'nan', 'None', 'NULL']:
-        return ''  # Manter como string vazia para campos em branco
+        return ''  # Manver como string vazia para campos em branco
     
     cpf_str = str(cpf).strip()
     
@@ -1428,7 +1429,7 @@ def gerar_relatorio_comparativo(conn, periodo):
         'periodo': periodo
     }
 
-# FUNÇÃO RESTAURADA: Gerar PDF Executivo
+# FUNÇÃO RESTAURADA E MELHORADA: Gerar PDF Executivo
 def gerar_pdf_executivo(metrics, dados, nomes_arquivos, tipo_relatorio='pagamentos'):
     """Gera relatório executivo em PDF"""
     pdf = FPDF()
@@ -1517,6 +1518,62 @@ def gerar_pdf_executivo(metrics, dados, nomes_arquivos, tipo_relatorio='pagament
                     pdf.cell(0, 10, f"    * {len(problemas_cpf['cpfs_com_contas_diferentes'])} CPFs com contas diferentes", 0, 1)
             
             pdf.set_text_color(0, 0, 0)
+            
+            # NOVO: Adicionar tabelas de CPFs problemáticos ao PDF
+            pdf.add_page()
+            pdf.set_font("Arial", 'B', 14)
+            pdf.cell(0, 10, "Detalhamento dos CPFs Problemáticos", 0, 1)
+            pdf.ln(5)
+            
+            # CPFs com Inconsistências Críticas
+            if not problemas_cpf['detalhes_inconsistencias'].empty:
+                pdf.set_font("Arial", 'B', 12)
+                pdf.cell(0, 10, "CPFs com Inconsistências Críticas:", 0, 1)
+                pdf.set_font("Arial", '', 10)
+                
+                # Adicionar tabela de inconsistências
+                colunas = ['CPF', 'Nome', 'Conta', 'Valor', 'Problemas']
+                larguras = [30, 40, 30, 25, 65]
+                
+                # Cabeçalho da tabela
+                for i, coluna in enumerate(colunas):
+                    pdf.cell(larguras[i], 10, coluna, 1, 0, 'C')
+                pdf.ln()
+                
+                # Dados da tabela
+                for _, row in problemas_cpf['detalhes_inconsistencias'].iterrows():
+                    pdf.cell(larguras[0], 10, str(row.get('CPF', '')), 1)
+                    pdf.cell(larguras[1], 10, str(row.get('Nome', ''))[:20], 1)
+                    pdf.cell(larguras[2], 10, str(row.get('Numero_Conta', ''))[:15], 1)
+                    pdf.cell(larguras[3], 10, str(row.get('Valor', '')), 1)
+                    pdf.cell(larguras[4], 10, str(row.get('Problemas_Inconsistencia', ''))[:40], 1)
+                    pdf.ln()
+                
+                pdf.ln(10)
+            
+            # CPFs com Problemas de Formatação
+            if not problemas_cpf['detalhes_cpfs_problematicos'].empty:
+                pdf.set_font("Arial", 'B', 12)
+                pdf.cell(0, 10, "CPFs com Problemas de Formatação:", 0, 1)
+                pdf.set_font("Arial", '', 10)
+                
+                # Adicionar tabela de formatação
+                colunas = ['CPF Original', 'CPF Processado', 'Nome', 'Conta', 'Problemas']
+                larguras = [30, 30, 40, 30, 60]
+                
+                # Cabeçalho da tabela
+                for i, coluna in enumerate(colunas):
+                    pdf.cell(larguras[i], 10, coluna, 1, 0, 'C')
+                pdf.ln()
+                
+                # Dados da tabela
+                for _, row in problemas_cpf['detalhes_cpfs_problematicos'].iterrows():
+                    pdf.cell(larguras[0], 10, str(row.get('CPF_Original', ''))[:15], 1)
+                    pdf.cell(larguras[1], 10, str(row.get('CPF_Processado', ''))[:15], 1)
+                    pdf.cell(larguras[2], 10, str(row.get('Nome', ''))[:20], 1)
+                    pdf.cell(larguras[3], 10, str(row.get('Numero_Conta', ''))[:15], 1)
+                    pdf.cell(larguras[4], 10, str(row.get('Problemas_Formatacao', ''))[:35], 1)
+                    pdf.ln()
         
         if metrics['total_registros_criticos'] > 0:
             pdf.set_font("Arial", 'B', 12)
@@ -1715,18 +1772,24 @@ def carregar_dados(conn):
             ano_ref_detectado = ano_contas
             st.sidebar.info(f"📅 Mês/ano detectado: {mes_ref_detectado}/{ano_ref_detectado}")
     
-    # Seleção de mês e ano de referência com valores detectados como padrão
-    col1, col2 = st.sidebar.columns(2)
-    with col1:
-        meses = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
-                'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro']
-        mes_ref_padrao = mes_ref_detectado if mes_ref_detectado else 'Outubro'
-        mes_ref = st.selectbox("Mês de Referência", meses, index=meses.index(mes_ref_padrao) if mes_ref_padrao in meses else 9)
-    with col2:
-        ano_atual = datetime.now().year
-        anos = [ano_atual, ano_atual-1, ano_atual-2]
-        ano_ref_padrao = ano_ref_detectado if ano_ref_detectado else ano_atual
-        ano_ref = st.selectbox("Ano de Referência", anos, index=anos.index(ano_ref_padrao) if ano_ref_padrao in anos else 0)
+    # CORREÇÃO: Só mostrar seleção de mês/ano se algum arquivo foi carregado
+    if upload_pagamentos is not None or upload_contas is not None:
+        # Seleção de mês e ano de referência com valores detectados como padrão
+        col1, col2 = st.sidebar.columns(2)
+        with col1:
+            meses = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
+                    'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro']
+            mes_ref_padrao = mes_ref_detectado if mes_ref_detectado else 'Outubro'
+            mes_ref = st.selectbox("Mês de Referência", meses, index=meses.index(mes_ref_padrao) if mes_ref_padrao in meses else 9)
+        with col2:
+            ano_atual = datetime.now().year
+            anos = [ano_atual, ano_atual-1, ano_atual-2]
+            ano_ref_padrao = ano_ref_detectado if ano_ref_detectado else ano_atual
+            ano_ref = st.selectbox("Ano de Referência", anos, index=anos.index(ano_ref_padrao) if ano_ref_padrao in anos else 0)
+    else:
+        # Se nenhum arquivo foi carregado, usar valores padrão temporários
+        mes_ref = 'Outubro'
+        ano_ref = datetime.now().year
     
     st.sidebar.markdown("---")
     
@@ -1853,7 +1916,9 @@ def main():
             # Mostrar exemplo de interface mesmo sem dados
             st.title("🏛️ Sistema POT - SMDET")
             st.markdown("### Análise de Pagamentos e Inscrições")
-            st.markdown(f"**Mês de referência:** {mes_ref}/{ano_ref}")
+            # CORREÇÃO: Só mostrar mês/ano se arquivos foram carregados
+            if 'upload_pagamentos' in st.session_state or 'upload_contas' in st.session_state:
+                st.markdown(f"**Mês de referência:** {mes_ref}/{ano_ref}")
             st.markdown("---")
             
             col1, col2, col3 = st.columns(3)
@@ -1879,6 +1944,7 @@ def main():
             # Interface principal
             st.title("🏛️ Sistema POT - SMDET")
             st.markdown("### Análise de Pagamentos e Inscrições")
+            # CORREÇÃO: Só mostrar mês/ano se arquivos foram carregados
             st.markdown(f"**Mês de referência:** {mes_ref}/{ano_ref}")
             st.markdown(f"**Data da análise:** {data_hora_atual_brasilia()}")
             
