@@ -133,71 +133,17 @@ def formatar_brasileiro(valor, tipo='numero'):
     else:
         return str(valor)
 
-# NOVA FUNÇÃO: Identificar e remover linha de totais
+# FUNÇÃO CORRIGIDA: Identificar e remover linha de totais - SEMPRE REMOVE A ÚLTIMA LINHA
 def remover_linha_totais(df):
     """Identifica e remove a linha de totais da planilha (última linha com valores somados)"""
-    if df.empty:
+    if df.empty or len(df) <= 1:
         return df
     
     df_limpo = df.copy()
     
-    # Padrões que indicam linha de totais
-    padroes_totais = [
-        'total', 'Total', 'TOTAL', 'soma', 'Soma', 'SOMA',
-        'geral', 'Geral', 'GERAL', 'resultado', 'Resultado', 'RESULTADO'
-    ]
-    
-    # Verificar a última linha
-    ultima_linha = df_limpo.iloc[-1]
-    
-    # Critérios para identificar linha de totais:
-    linha_eh_total = False
-    
-    # 1. Verificar se há texto indicando total em qualquer coluna
-    for coluna in df_limpo.columns:
-        if df_limpo[coluna].dtype == 'object':
-            valor = str(ultima_linha[coluna]) if pd.notna(ultima_linha[coluna]) else ''
-            if any(padrao in valor for padrao in padroes_totais):
-                linha_eh_total = True
-                break
-    
-    # 2. Verificar se a linha tem muitos campos vazios mas valores numéricos altos
-    if not linha_eh_total:
-        campos_vazios = 0
-        campos_preenchidos = 0
-        valor_total_linha = 0
-        
-        for coluna in df_limpo.columns:
-            valor = ultima_linha[coluna]
-            if pd.isna(valor) or str(valor).strip() in ['', 'NaN', 'None']:
-                campos_vazios += 1
-            else:
-                campos_preenchidos += 1
-                # Verificar se é valor monetário alto
-                if coluna in ['Valor', 'Valor_Limpo'] and pd.notna(valor):
-                    try:
-                        valor_num = float(valor)
-                        valor_total_linha = valor_num
-                    except:
-                        pass
-        
-        # Se tem muitos campos vazios mas um valor alto, provavelmente é linha de total
-        if campos_vazios > campos_preenchidos and valor_total_linha > 1000:
-            linha_eh_total = True
-    
-    # 3. Verificar se a linha tem número de conta vazio mas valor preenchido
-    coluna_conta = obter_coluna_conta(df_limpo)
-    if not linha_eh_total and coluna_conta:
-        conta_vazia = pd.isna(ultima_linha[coluna_conta]) or str(ultima_linha[coluna_conta]).strip() == ''
-        valor_preenchido = 'Valor' in df_limpo.columns and pd.notna(ultima_linha['Valor'])
-        
-        if conta_vazia and valor_preenchido:
-            linha_eh_total = True
-    
-    # Remover a linha se for identificada como total
-    if linha_eh_total:
-        df_limpo = df_limpo.iloc[:-1].copy()
-        st.sidebar.info(f"📝 Linha de totais identificada e removida: {len(df)} → {len(df_limpo)} registros")
+    # SEMPRE remover a última linha (linha de totais)
+    df_limpo = df_limpo.iloc[:-1].copy()
+    st.sidebar.info(f"📝 Linha de totais removida automaticamente: {len(df)} → {len(df_limpo)} registros")
     
     return df_limpo
 
@@ -892,6 +838,183 @@ def processar_dados(dados, nomes_arquivos=None):
     
     return metrics
 
+# FUNÇÃO RESTAURADA: Gerar PDF Executivo
+def gerar_pdf_executivo(metrics, dados, nomes_arquivos):
+    """Gera relatório executivo em PDF"""
+    pdf = FPDF()
+    pdf.add_page()
+    
+    # Configurar fonte
+    pdf.set_font("Arial", 'B', 16)
+    
+    # Cabeçalho
+    pdf.cell(0, 10, "Prefeitura de São Paulo", 0, 1, 'C')
+    pdf.cell(0, 10, "Secretaria Municipal do Desenvolvimento Econômico e Trabalho - SMDET", 0, 1, 'C')
+    pdf.cell(0, 10, "Relatório Executivo - Sistema POT", 0, 1, 'C')
+    pdf.ln(10)
+    
+    # Data da análise
+    pdf.set_font("Arial", '', 12)
+    pdf.cell(0, 10, f"Data da análise: {data_hora_atual_brasilia()}", 0, 1)
+    pdf.ln(5)
+    
+    # Informações das planilhas
+    if nomes_arquivos.get('pagamentos'):
+        pdf.cell(0, 10, f"Planilha de Pagamentos: {nomes_arquivos['pagamentos']}", 0, 1)
+    if nomes_arquivos.get('contas'):
+        pdf.cell(0, 10, f"Planilha de Contas: {nomes_arquivos['contas']}", 0, 1)
+    pdf.ln(10)
+    
+    # Métricas principais
+    pdf.set_font("Arial", 'B', 14)
+    pdf.cell(0, 10, "Métricas Principais", 0, 1)
+    pdf.set_font("Arial", '', 12)
+    
+    metricas = [
+        ("Total de Pagamentos", formatar_brasileiro(metrics['total_pagamentos'])),
+        ("Beneficiários Únicos", formatar_brasileiro(metrics['beneficiarios_unicos'])),
+        ("Contas Únicas", formatar_brasileiro(metrics['contas_unicas'])),
+        ("Valor Total", formatar_brasileiro(metrics['valor_total'], 'monetario')),
+        ("Pagamentos Duplicados", formatar_brasileiro(metrics['pagamentos_duplicados'])),
+        ("Valor em Duplicidades", formatar_brasileiro(metrics['valor_total_duplicados'], 'monetario')),
+        ("Contas Abertas", formatar_brasileiro(metrics['total_contas_abertas'])),
+        ("Projetos Ativos", formatar_brasileiro(metrics['projetos_ativos']))
+    ]
+    
+    for nome, valor in metricas:
+        pdf.cell(100, 10, nome, 0, 0)
+        pdf.cell(0, 10, str(valor), 0, 1)
+    
+    pdf.ln(10)
+    
+    # Alertas e problemas
+    if metrics['pagamentos_duplicados'] > 0:
+        pdf.set_font("Arial", 'B', 12)
+        pdf.set_text_color(255, 0, 0)
+        pdf.cell(0, 10, f"ALERTA: {metrics['pagamentos_duplicados']} contas com pagamentos duplicados", 0, 1)
+        pdf.set_text_color(0, 0, 0)
+    
+    if metrics['total_registros_criticos'] > 0:
+        pdf.set_font("Arial", 'B', 12)
+        pdf.set_text_color(255, 165, 0)
+        pdf.cell(0, 10, f"ATENÇÃO: {metrics['total_registros_criticos']} registros com problemas críticos", 0, 1)
+        pdf.set_text_color(0, 0, 0)
+    
+    return pdf.output(dest='S').encode('latin1')
+
+# FUNÇÃO RESTAURADA: Gerar Excel Completo
+def gerar_excel_completo(metrics, dados):
+    """Gera planilha Excel com todas as análises"""
+    output = io.BytesIO()
+    
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        # Resumo Executivo
+        resumo_data = {
+            'Métrica': [
+                'Data da Análise',
+                'Total de Pagamentos Válidos',
+                'Beneficiários Únicos',
+                'Contas Únicas', 
+                'Valor Total',
+                'Pagamentos Duplicados',
+                'Valor em Duplicidades',
+                'Contas Abertas',
+                'Projetos Ativos',
+                'Registros com Problemas'
+            ],
+            'Valor': [
+                data_hora_atual_brasilia(),
+                metrics['total_pagamentos'],
+                metrics['beneficiarios_unicos'],
+                metrics['contas_unicas'],
+                metrics['valor_total'],
+                metrics['pagamentos_duplicados'],
+                metrics['valor_total_duplicados'],
+                metrics['total_contas_abertas'],
+                metrics['projetos_ativos'],
+                metrics['total_registros_criticos']
+            ]
+        }
+        pd.DataFrame(resumo_data).to_excel(writer, sheet_name='Resumo Executivo', index=False)
+        
+        # Duplicidades detalhadas
+        if not metrics['duplicidades_detalhadas']['resumo_duplicidades'].empty:
+            metrics['duplicidades_detalhadas']['resumo_duplicidades'].to_excel(
+                writer, sheet_name='Duplicidades', index=False
+            )
+        
+        # Pagamentos pendentes
+        if not metrics['pagamentos_pendentes']['contas_sem_pagamento'].empty:
+            metrics['pagamentos_pendentes']['contas_sem_pagamento'].to_excel(
+                writer, sheet_name='Pagamentos Pendentes', index=False
+            )
+        
+        # Problemas de dados
+        if not metrics['resumo_ausencias'].empty:
+            metrics['resumo_ausencias'].to_excel(
+                writer, sheet_name='Problemas de Dados', index=False
+            )
+        
+        # CPFs problemáticos
+        if not metrics['problemas_cpf']['detalhes_cpfs_problematicos'].empty:
+            metrics['problemas_cpf']['detalhes_cpfs_problematicos'].to_excel(
+                writer, sheet_name='CPFs Problemáticos', index=False
+            )
+    
+    return output.getvalue()
+
+# FUNÇÃO RESTAURADA: Gerar Planilha de Ajustes
+def gerar_planilha_ajustes(metrics):
+    """Gera planilha com ações recomendadas"""
+    output = io.BytesIO()
+    
+    acoes = []
+    
+    # Ações para duplicidades
+    if metrics['pagamentos_duplicados'] > 0:
+        acoes.append({
+            'Tipo': 'Duplicidade',
+            'Descrição': f'Verificar {metrics["pagamentos_duplicados"]} contas com pagamentos duplicados',
+            'Ação Recomendada': 'Auditar pagamentos e ajustar contas duplicadas',
+            'Prioridade': 'Alta',
+            'Impacto Financeiro': formatar_brasileiro(metrics['valor_total_duplicados'], 'monetario')
+        })
+    
+    # Ações para pagamentos pendentes
+    if metrics['pagamentos_pendentes']['total_contas_sem_pagamento'] > 0:
+        acoes.append({
+            'Tipo': 'Pagamento Pendente',
+            'Descrição': f'{metrics["pagamentos_pendentes"]["total_contas_sem_pagamento"]} contas aguardando pagamento',
+            'Ação Recomendada': 'Regularizar pagamentos pendentes',
+            'Prioridade': 'Média',
+            'Impacto Financeiro': 'A definir'
+        })
+    
+    # Ações para problemas de dados
+    if metrics['total_registros_criticos'] > 0:
+        acoes.append({
+            'Tipo': 'Dados Incompletos',
+            'Descrição': f'{metrics["total_registros_criticos"]} registros com problemas críticos',
+            'Ação Recomendada': 'Completar informações faltantes',
+            'Prioridade': 'Alta',
+            'Impacto Financeiro': 'Risco operacional'
+        })
+    
+    # Ações para CPFs problemáticos
+    if metrics['problemas_cpf']['total_problemas_cpf'] > 0:
+        acoes.append({
+            'Tipo': 'CPF Inválido',
+            'Descrição': f'{metrics["problemas_cpf"]["total_problemas_cpf"]} CPFs com problemas de formatação',
+            'Ação Recomendada': 'Corrigir formatação dos CPFs',
+            'Prioridade': 'Média',
+            'Impacto Financeiro': 'Risco fiscal'
+        })
+    
+    df_acoes = pd.DataFrame(acoes)
+    df_acoes.to_excel(output, index=False)
+    
+    return output.getvalue()
+
 # Sistema de upload de dados MELHORADO: capturar nomes dos arquivos
 def carregar_dados():
     st.sidebar.header("📤 Carregar Dados Reais")
@@ -929,7 +1052,7 @@ def carregar_dados():
             # NOVO: Guardar versão original e versão sem totais
             dados['pagamentos_original'] = df_pagamentos.copy()
             
-            # Remover linha de totais antes do processamento
+            # Remover linha de totais antes do processamento - SEMPRE REMOVE
             df_pagamentos_sem_totais = remover_linha_totais(df_pagamentos)
             dados['pagamentos'] = df_pagamentos_sem_totais
             
@@ -1029,6 +1152,39 @@ def main():
     # NOVO: Mostrar informação sobre linha de totais removida
     if metrics.get('linha_totais_removida', False):
         st.info(f"📝 **Nota:** Linha de totais da planilha foi identificada e excluída da análise ({metrics['total_registros_originais']} → {metrics['total_registros_sem_totais']} registros)")
+    
+    # SEÇÃO RESTAURADA: Download de Relatórios
+    st.sidebar.markdown("---")
+    st.sidebar.header("📥 Exportar Relatórios")
+    
+    col1, col2, col3 = st.sidebar.columns(3)
+    
+    with col1:
+        pdf_bytes = gerar_pdf_executivo(metrics, dados, nomes_arquivos)
+        st.download_button(
+            label="📄 PDF",
+            data=pdf_bytes,
+            file_name=f"relatorio_executivo_pot_{data_hora_arquivo_brasilia()}.pdf",
+            mime="application/pdf"
+        )
+    
+    with col2:
+        excel_bytes = gerar_excel_completo(metrics, dados)
+        st.download_button(
+            label="📊 Excel",
+            data=excel_bytes,
+            file_name=f"analise_completa_pot_{data_hora_arquivo_brasilia()}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    
+    with col3:
+        ajustes_bytes = gerar_planilha_ajustes(metrics)
+        st.download_button(
+            label="🔧 Ajustes",
+            data=ajustes_bytes,
+            file_name=f"plano_ajustes_pot_{data_hora_arquivo_brasilia()}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
     
     st.markdown("---")
     
