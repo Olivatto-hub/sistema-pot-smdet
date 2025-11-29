@@ -53,7 +53,7 @@ def init_database():
         )
     ''')
     
-    # Tabela para métricas consolidadas
+    # Tabela para métricas consolidadas - VERIFICAR E ATUALIZAR SE NECESSÁRIO
     conn.execute('''
         CREATE TABLE IF NOT EXISTS metricas_mensais (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -72,6 +72,12 @@ def init_database():
             data_calculo TEXT NOT NULL
         )
     ''')
+    
+    # Verificar se a coluna cpfs_ajuste existe, se não, adicionar
+    try:
+        conn.execute("SELECT cpfs_ajuste FROM metricas_mensais LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.execute("ALTER TABLE metricas_mensais ADD COLUMN cpfs_ajuste INTEGER")
     
     conn.commit()
     return conn
@@ -191,24 +197,51 @@ def salvar_inscricoes_db(conn, mes_ref, ano_ref, nome_arquivo, dados_df, metadad
 
 def salvar_metricas_db(conn, tipo, mes_ref, ano_ref, metrics):
     """Salva métricas no banco de dados para relatórios comparativos"""
-    conn.execute('''
-        INSERT INTO metricas_mensais (tipo, mes_referencia, ano_referencia, total_registros, 
-                    beneficiarios_unicos, contas_unicas, valor_total, pagamentos_duplicados, 
-                    valor_duplicados, projetos_ativos, registros_problema, cpfs_ajuste, data_calculo)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (tipo, mes_ref, ano_ref, 
-          metrics.get('total_pagamentos', 0),
-          metrics.get('beneficiarios_unicos', 0),
-          metrics.get('contas_unicas', 0),
-          metrics.get('valor_total', 0),
-          metrics.get('pagamentos_duplicados', 0),
-          metrics.get('valor_total_duplicados', 0),
-          metrics.get('projetos_ativos', 0),
-          metrics.get('total_registros_criticos', 0),
-          metrics.get('total_cpfs_ajuste', 0),
-          data_hora_atual_brasilia()))
-    
-    conn.commit()
+    try:
+        conn.execute('''
+            INSERT INTO metricas_mensais (tipo, mes_referencia, ano_referencia, total_registros, 
+                        beneficiarios_unicos, contas_unicas, valor_total, pagamentos_duplicados, 
+                        valor_duplicados, projetos_ativos, registros_problema, cpfs_ajuste, data_calculo)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (tipo, mes_ref, ano_ref, 
+              metrics.get('total_pagamentos', 0),
+              metrics.get('beneficiarios_unicos', 0),
+              metrics.get('contas_unicas', 0),
+              metrics.get('valor_total', 0),
+              metrics.get('pagamentos_duplicados', 0),
+              metrics.get('valor_total_duplicados', 0),
+              metrics.get('projetos_ativos', 0),
+              metrics.get('total_registros_criticos', 0),
+              metrics.get('total_cpfs_ajuste', 0),
+              data_hora_atual_brasilia()))
+        
+        conn.commit()
+    except sqlite3.OperationalError as e:
+        # Se houver erro, tentar versão sem cpfs_ajuste
+        st.warning("⚠️ Atualizando estrutura do banco de dados...")
+        try:
+            conn.execute("ALTER TABLE metricas_mensais ADD COLUMN cpfs_ajuste INTEGER")
+            conn.commit()
+            # Tentar novamente
+            salvar_metricas_db(conn, tipo, mes_ref, ano_ref, metrics)
+        except:
+            # Versão alternativa sem a nova coluna
+            conn.execute('''
+                INSERT INTO metricas_mensais (tipo, mes_referencia, ano_referencia, total_registros, 
+                            beneficiarios_unicos, contas_unicas, valor_total, pagamentos_duplicados, 
+                            valor_duplicados, projetos_ativos, registros_problema, data_calculo)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (tipo, mes_ref, ano_ref, 
+                  metrics.get('total_pagamentos', 0),
+                  metrics.get('beneficiarios_unicos', 0),
+                  metrics.get('contas_unicas', 0),
+                  metrics.get('valor_total', 0),
+                  metrics.get('pagamentos_duplicados', 0),
+                  metrics.get('valor_total_duplicados', 0),
+                  metrics.get('projetos_ativos', 0),
+                  metrics.get('total_registros_criticos', 0),
+                  data_hora_atual_brasilia()))
+            conn.commit()
 
 def carregar_pagamentos_db(conn, mes_ref=None, ano_ref=None):
     """Carrega dados de pagamentos do banco de dados"""
@@ -1061,12 +1094,14 @@ def criar_dashboard_evolucao(conn, periodo='mensal'):
         marker_color='red'
     ))
     
-    fig_problemas.add_trace(go.Bar(
-        x=metricas['mes_referencia'] + '/' + metricas['ano_referencia'].astype(str),
-        y=metricas['cpfs_ajuste'],
-        name='CPFs p/ Ajuste',
-        marker_color='yellow'
-    ))
+    # Verificar se a coluna cpfs_ajuste existe
+    if 'cpfs_ajuste' in metricas.columns:
+        fig_problemas.add_trace(go.Bar(
+            x=metricas['mes_referencia'] + '/' + metricas['ano_referencia'].astype(str),
+            y=metricas['cpfs_ajuste'],
+            name='CPFs p/ Ajuste',
+            marker_color='yellow'
+        ))
     
     fig_problemas.update_layout(
         title='Evolução de Problemas Identificados',
@@ -1100,10 +1135,11 @@ def gerar_relatorio_comparativo(conn, periodo):
             'beneficiarios': ((ultimo['beneficiarios_unicos'] - anterior['beneficiarios_unicos']) / anterior['beneficiarios_unicos']) * 100,
             'valor_total': ((ultimo['valor_total'] - anterior['valor_total']) / anterior['valor_total']) * 100,
             'duplicidades': ((ultimo['pagamentos_duplicados'] - anterior['pagamentos_duplicados']) / anterior['pagamentos_duplicados']) * 100 if anterior['pagamentos_duplicados'] > 0 else 0,
-            'cpfs_ajuste': ((ultimo['cpfs_ajuste'] - anterior['cpfs_ajuste']) / anterior['cpfs_ajuste']) * 100 if anterior['cpfs_ajuste'] > 0 else 0
         }
-    else:
-        variacoes = {}
+        
+        # Adicionar variação de CPFs para ajuste se a coluna existir
+        if 'cpfs_ajuste' in ultimo and 'cpfs_ajuste' in anterior:
+            variacoes['cpfs_ajuste'] = ((ultimo['cpfs_ajuste'] - anterior['cpfs_ajuste']) / anterior['cpfs_ajuste']) * 100 if anterior['cpfs_ajuste'] > 0 else 0
     
     return {
         'metricas': metricas,
