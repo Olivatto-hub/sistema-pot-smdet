@@ -294,6 +294,81 @@ def carregar_metricas_db(conn, tipo=None, periodo=None):
     df_result = pd.read_sql_query(query, conn, params=params)
     return df_result
 
+# CORREÇÃO: Função para extrair mês e ano do nome do arquivo
+def extrair_mes_ano_arquivo(nome_arquivo):
+    """Extrai mês e ano do nome do arquivo automaticamente"""
+    if not nome_arquivo:
+        return None, None
+    
+    nome_upper = nome_arquivo.upper()
+    
+    # Mapeamento de meses
+    meses_map = {
+        'JAN': 'Janeiro', 'JANEIRO': 'Janeiro',
+        'FEV': 'Fevereiro', 'FEVEREIRO': 'Fevereiro',
+        'MAR': 'Março', 'MARCO': 'Março', 'MARÇO': 'Março',
+        'ABR': 'Abril', 'ABRIL': 'Abril',
+        'MAI': 'Maio', 'MAIO': 'Maio',
+        'JUN': 'Junho', 'JUNHO': 'Junho',
+        'JUL': 'Julho', 'JULHO': 'Julho',
+        'AGO': 'Agosto', 'AGOSTO': 'Agosto',
+        'SET': 'Setembro', 'SETEMBRO': 'Setembro',
+        'OUT': 'Outubro', 'OUTUBRO': 'Outubro',
+        'NOV': 'Novembro', 'NOVEMBRO': 'Novembro',
+        'DEZ': 'Dezembro', 'DEZEMBRO': 'Dezembro'
+    }
+    
+    # Procurar por padrões de data no nome do arquivo
+    padroes_data = [
+        r'(\d{1,2})[\.\-/](\d{1,2})[\.\-/](\d{4})',  # DD-MM-AAAA
+        r'(\d{4})[\.\-/](\d{1,2})[\.\-/](\d{1,2})',  # AAAA-MM-DD
+        r'(\w+)[\.\-/]?(\d{4})',  # MES-AAAA
+        r'(\d{4})[\.\-/]?(\w+)',  # AAAA-MES
+    ]
+    
+    for padrao in padroes_data:
+        match = re.search(padrao, nome_upper)
+        if match:
+            grupos = match.groups()
+            if len(grupos) == 3:
+                # Formato DD-MM-AAAA ou AAAA-MM-DD
+                if len(grupos[0]) == 4:  # AAAA-MM-DD
+                    ano = int(grupos[0])
+                    mes_num = int(grupos[1])
+                else:  # DD-MM-AAAA
+                    ano = int(grupos[2])
+                    mes_num = int(grupos[1])
+                
+                meses_numeros = {
+                    1: 'Janeiro', 2: 'Fevereiro', 3: 'Março', 4: 'Abril',
+                    5: 'Maio', 6: 'Junho', 7: 'Julho', 8: 'Agosto',
+                    9: 'Setembro', 10: 'Outubro', 11: 'Novembro', 12: 'Dezembro'
+                }
+                return meses_numeros.get(mes_num, 'Janeiro'), ano
+                
+            elif len(grupos) == 2:
+                # Formato MES-AAAA ou AAAA-MES
+                if grupos[0].isdigit():  # AAAA-MES
+                    ano = int(grupos[0])
+                    mes_str = grupos[1]
+                else:  # MES-AAAA
+                    mes_str = grupos[0]
+                    ano = int(grupos[1])
+                
+                for key, value in meses_map.items():
+                    if key in mes_str:
+                        return value, ano
+    
+    # Se não encontrou padrão específico, procurar por nomes de meses
+    for key, value in meses_map.items():
+        if key in nome_upper:
+            # Procurar ano (4 dígitos)
+            ano_match = re.search(r'(\d{4})', nome_upper)
+            ano = int(ano_match.group(1)) if ano_match else datetime.now().year
+            return value, ano
+    
+    return None, None
+
 # Função auxiliar para obter coluna de conta
 def obter_coluna_conta(df):
     """Identifica a coluna que contém o número da conta"""
@@ -765,13 +840,6 @@ def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_co
         df = df.reset_index(drop=True)
         df['Linha_Planilha_Original'] = df.index + 2
         
-        # Contar documentos padronizados
-        colunas_docs = ['RG', 'CPF']
-        for coluna in colunas_docs:
-            if coluna in df.columns:
-                docs_originais = len(df[df[coluna].notna() & (df[coluna].astype(str).str.strip() != '')])
-                analise_ausencia['documentos_padronizados'] += docs_originais
-        
         # CORREÇÃO CRÍTICA: Apenas dados REALMENTE críticos ausentes
         registros_problematicos = []
         
@@ -817,20 +885,6 @@ def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_co
         
         if registros_problematicos_filtrados:
             analise_ausencia['registros_problema_detalhados'] = df.loc[registros_problematicos_filtrados].copy()
-        
-        # Analisar ausência por coluna crítica
-        colunas_criticas = ['Num Cartao', 'Num_Cartao', 'Conta', 'Valor_Limpo']
-        for coluna in colunas_criticas:
-            if coluna in df.columns:
-                mask_ausente = (
-                    df[coluna].isna() | 
-                    (df[coluna].astype(str).str.strip() == '') |
-                    ((coluna == 'Valor_Limpo') & (df[coluna] == 0))
-                )
-                ausentes = df[mask_ausente]
-                if len(ausentes) > 0:
-                    analise_ausencia['colunas_com_ausencia_critica'][coluna] = len(ausentes)
-                    analise_ausencia['tipos_problemas'][f'Sem {coluna}'] = len(ausentes)
         
         # Criar resumo de ausências com informações da planilha original
         if registros_problematicos_filtrados:
@@ -1505,22 +1559,13 @@ def gerar_planilha_ajustes(metrics, tipo_relatorio='pagamentos'):
     
     return output.getvalue()
 
-# Sistema de upload de dados MELHORADO
+# CORREÇÃO: Sistema de upload de dados com detecção automática de mês/ano
 def carregar_dados(conn):
     st.sidebar.header("📤 Carregar Dados Mensais")
     
-    # Seleção de mês e ano de referência
-    col1, col2 = st.sidebar.columns(2)
-    with col1:
-        mes_ref = st.selectbox("Mês de Referência", 
-                             ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
-                              'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'])
-    with col2:
-        ano_atual = datetime.now().year
-        ano_ref = st.selectbox("Ano de Referência", 
-                             [ano_atual, ano_atual-1, ano_atual-2])
-    
-    st.sidebar.markdown("---")
+    # Inicializar variáveis de mês/ano
+    mes_ref_detectado = None
+    ano_ref_detectado = None
     
     upload_pagamentos = st.sidebar.file_uploader(
         "Planilha de Pagamentos", 
@@ -1535,6 +1580,34 @@ def carregar_dados(conn):
         key="contas",
         help="Arraste e solte o arquivo aqui ou clique para procurar"
     )
+    
+    # CORREÇÃO: Detectar mês/ano automaticamente dos nomes dos arquivos
+    if upload_pagamentos is not None:
+        mes_ref_detectado, ano_ref_detectado = extrair_mes_ano_arquivo(upload_pagamentos.name)
+        if mes_ref_detectado and ano_ref_detectado:
+            st.sidebar.info(f"📅 Mês/ano detectado: {mes_ref_detectado}/{ano_ref_detectado}")
+    
+    if upload_contas is not None and (not mes_ref_detectado or not ano_ref_detectado):
+        mes_contas, ano_contas = extrair_mes_ano_arquivo(upload_contas.name)
+        if mes_contas and ano_contas:
+            mes_ref_detectado = mes_contas
+            ano_ref_detectado = ano_contas
+            st.sidebar.info(f"📅 Mês/ano detectado: {mes_ref_detectado}/{ano_ref_detectado}")
+    
+    # Seleção de mês e ano de referência com valores detectados como padrão
+    col1, col2 = st.sidebar.columns(2)
+    with col1:
+        meses = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
+                'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro']
+        mes_ref_padrao = mes_ref_detectado if mes_ref_detectado else 'Outubro'
+        mes_ref = st.selectbox("Mês de Referência", meses, index=meses.index(mes_ref_padrao) if mes_ref_padrao in meses else 9)
+    with col2:
+        ano_atual = datetime.now().year
+        anos = [ano_atual, ano_atual-1, ano_atual-2]
+        ano_ref_padrao = ano_ref_detectado if ano_ref_detectado else ano_atual
+        ano_ref = st.selectbox("Ano de Referência", anos, index=anos.index(ano_ref_padrao) if ano_ref_padrao in anos else 0)
+    
+    st.sidebar.markdown("---")
     
     dados = {}
     nomes_arquivos = {}
