@@ -2109,4 +2109,166 @@ def main():
                         ])
                         
                         with tab_inconsistentes:
-                            if not problemas_cpf['d
+                            if not problemas_cpf['detalhes_inconsistencias'].empty:
+                                st.write("**CPFs com Inconsistências Críticas:**")
+                                st.dataframe(problemas_cpf['detalhes_inconsistencias'])
+                            else:
+                                st.info("ℹ️ Nenhum CPF com inconsistências críticas encontrado")
+                        
+                        with tab_formatacao:
+                            if not problemas_cpf['detalhes_cpfs_problematicos'].empty:
+                                st.write("**CPFs com Problemas de Formatação:**")
+                                st.dataframe(problemas_cpf['detalhes_cpfs_problematicos'])
+                            else:
+                                st.info("ℹ️ Nenhum CPF com problemas de formatação encontrado")
+                    else:
+                        st.success("✅ Nenhum CPF problemático encontrado")
+                else:
+                    st.info("ℹ️ Esta análise está disponível apenas para dados de pagamentos")
+            
+            with tab4:
+                if tem_dados_pagamentos and tem_dados_contas:
+                    st.subheader("Pagamentos Pendentes")
+                    
+                    if metrics['pagamentos_pendentes']['total_contas_sem_pagamento'] > 0:
+                        st.warning(f"⏳ {metrics['pagamentos_pendentes']['total_contas_sem_pagamento']} contas aguardando pagamento")
+                        
+                        if not metrics['pagamentos_pendentes']['contas_sem_pagamento'].empty:
+                            st.write("**Contas sem pagamento:**")
+                            st.dataframe(metrics['pagamentos_pendentes']['contas_sem_pagamento'])
+                    else:
+                        st.success("✅ Todas as contas abertas têm pagamentos registrados")
+                else:
+                    st.info("ℹ️ Esta análise requer ambas as planilhas (pagamentos e inscrições)")
+            
+            with tab5:
+                if tem_dados_pagamentos:
+                    st.subheader("Problemas Críticos de Dados")
+                    
+                    if metrics['total_registros_criticos'] > 0:
+                        st.error(f"🚨 {metrics['total_registros_criticos']} registros com problemas críticos")
+                        
+                        if not metrics['resumo_ausencias'].empty:
+                            st.write("**Registros com problemas críticos:**")
+                            st.dataframe(metrics['resumo_ausencias'])
+                    else:
+                        st.success("✅ Nenhum registro com problemas críticos encontrado")
+                else:
+                    st.info("ℹ️ Esta análise está disponível apenas para dados de pagamentos")
+    
+    with tab_dashboard:
+        st.header("📈 Dashboard Evolutivo")
+        
+        periodo = st.selectbox("Período", ['trimestral', 'semestral', 'anual'], key='dashboard_periodo')
+        
+        dashboard = criar_dashboard_evolucao(conn, periodo)
+        
+        if dashboard:
+            st.plotly_chart(dashboard['evolucao'], use_container_width=True)
+            st.plotly_chart(dashboard['valor'], use_container_width=True)
+            st.plotly_chart(dashboard['problemas'], use_container_width=True)
+        else:
+            st.info("ℹ️ Nenhum dado histórico disponível para o período selecionado")
+    
+    with tab_relatorios:
+        st.header("📋 Relatórios Comparativos")
+        
+        periodo_comparativo = st.selectbox("Período", ['trimestral', 'semestral', 'anual'], key='relatorio_periodo')
+        
+        relatorio = gerar_relatorio_comparativo(conn, periodo_comparativo)
+        
+        if relatorio:
+            st.subheader(f"Comparativo {periodo_comparativo.capitalize()}")
+            
+            # Mostrar métricas
+            st.dataframe(relatorio['metricas'])
+            
+            # Mostrar variações
+            if relatorio['variacoes']:
+                st.subheader("Variações em Relação ao Período Anterior")
+                
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    variacao_pagamentos = relatorio['variacoes'].get('total_pagamentos', 0)
+                    st.metric("Variação Pagamentos", f"{variacao_pagamentos:.1f}%")
+                
+                with col2:
+                    variacao_beneficiarios = relatorio['variacoes'].get('beneficiarios', 0)
+                    st.metric("Variação Beneficiários", f"{variacao_beneficiarios:.1f}%")
+                
+                with col3:
+                    variacao_valor = relatorio['variacoes'].get('valor_total', 0)
+                    st.metric("Variação Valor Total", f"{variacao_valor:.1f}%")
+                
+                with col4:
+                    variacao_cpfs = relatorio['variacoes'].get('cpfs_ajuste', 0)
+                    st.metric("Variação CPFs p/ Ajuste", f"{variacao_cpfs:.1f}%")
+        else:
+            st.info("ℹ️ Nenhum dado disponível para comparação")
+    
+    with tab_historico:
+        st.header("🗃️ Dados Históricos")
+        
+        tipo_dados = st.selectbox("Tipo de Dados", ['pagamentos', 'inscricoes'], key='historico_tipo')
+        
+        if tipo_dados == 'pagamentos':
+            dados_historicos = carregar_pagamentos_db(conn)
+        else:
+            dados_historicos = carregar_inscricoes_db(conn)
+        
+        if not dados_historicos.empty:
+            st.dataframe(dados_historicos)
+            
+            # Opção para baixar dados históricos
+            csv = dados_historicos.to_csv(index=False)
+            st.download_button(
+                label="📥 Baixar Dados Históricos (CSV)",
+                data=csv,
+                file_name=f"dados_historicos_{tipo_dados}_{data_hora_arquivo_brasilia()}.csv",
+                mime="text/csv"
+            )
+        else:
+            st.info("ℹ️ Nenhum dado histórico disponível")
+    
+    with tab_estatisticas:
+        st.header("📊 Estatísticas Detalhadas")
+        
+        if tem_dados_pagamentos:
+            dashboard_estatisticas = criar_dashboard_estatisticas(metrics, dados)
+            
+            if dashboard_estatisticas:
+                if 'valores' in dashboard_estatisticas:
+                    st.plotly_chart(dashboard_estatisticas['valores'], use_container_width=True)
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    if 'projetos' in dashboard_estatisticas:
+                        st.plotly_chart(dashboard_estatisticas['projetos'], use_container_width=True)
+                
+                with col2:
+                    if 'status' in dashboard_estatisticas:
+                        st.plotly_chart(dashboard_estatisticas['status'], use_container_width=True)
+                
+                if 'estatisticas' in dashboard_estatisticas:
+                    st.subheader("Estatísticas dos Valores")
+                    estatisticas = dashboard_estatisticas['estatisticas']
+                    
+                    col1, col2, col3, col4, col5 = st.columns(5)
+                    
+                    with col1:
+                        st.metric("Média", formatar_brasileiro(estatisticas['Média'], 'monetario'))
+                    with col2:
+                        st.metric("Mediana", formatar_brasileiro(estatisticas['Mediana'], 'monetario'))
+                    with col3:
+                        st.metric("Desvio Padrão", formatar_brasileiro(estatisticas['Desvio Padrão'], 'monetario'))
+                    with col4:
+                        st.metric("Mínimo", formatar_brasileiro(estatisticas['Valor Mínimo'], 'monetario'))
+                    with col5:
+                        st.metric("Máximo", formatar_brasileiro(estatisticas['Valor Máximo'], 'monetario'))
+        else:
+            st.info("ℹ️ Carregue dados de pagamentos para ver estatísticas detalhadas")
+
+if __name__ == "__main__":
+    main()
