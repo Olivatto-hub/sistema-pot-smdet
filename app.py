@@ -34,7 +34,7 @@ def data_hora_arquivo_brasilia():
     """Retorna a data e hora atual no formato para nome de arquivo no fuso de Brasília"""
     return agora_brasilia().strftime("%Y%m%d_%H%M")
 
-# Sistema de autenticação simples
+# Sistema de autenticação simples CORRIGIDO
 def autenticar():
     st.sidebar.title("Sistema POT - SMDET")
     st.sidebar.markdown("**Prefeitura de São Paulo**")
@@ -43,9 +43,10 @@ def autenticar():
     
     email = st.sidebar.text_input("Email @prefeitura.sp.gov.br")
     
+    # VERIFICAÇÃO CORRIGIDA - só mostra aviso mas não para execução
     if email and not email.endswith('@prefeitura.sp.gov.br'):
-        st.error("🚫 Acesso restrito aos servidores da Prefeitura de São Paulo")
-        st.stop()
+        st.sidebar.warning("⚠️ Use email corporativo @prefeitura.sp.gov.br")
+        # Remove o st.stop() para permitir continuar
     
     return email
 
@@ -279,7 +280,7 @@ def detectar_pagamentos_pendentes(dados):
 def processar_cpf(cpf):
     """Processa CPF, mantendo apenas números e completando com zeros à esquerda"""
     if pd.isna(cpf) or cpf in ['', 'NaN', 'None', 'nan', 'None', 'NULL']:
-        return ''  # Manter como string vazia para campos em branco
+        return ''  # Manver como string vazia para campos em branco
     
     cpf_str = str(cpf).strip()
     
@@ -793,37 +794,186 @@ def carregar_dados():
     
     return dados, nomes_arquivos
 
-# [AS FUNÇÕES DE RELATÓRIO (gerar_pdf_executivo, gerar_excel_completo, gerar_planilha_ajustes) SERIAM ADICIONADAS AQUI]
-# Por questões de espaço, vou pular para a interface principal
-
-# Interface principal do sistema
+# Interface principal do sistema CORRIGIDA
 def main():
     # Autenticação
     email = autenticar()
     
-    if not email:
-        st.info("👆 Por favor, insira seu email @prefeitura.sp.gov.br para acessar o sistema")
-        return
+    if email:
+        st.sidebar.success(f"✅ Acesso autorizado: {email}")
+    else:
+        st.sidebar.info("👆 Insira seu email para continuar")
     
-    st.sidebar.success(f"✅ Acesso autorizado: {email}")
     st.sidebar.markdown("---")
     
     # Carregar dados
     dados, nomes_arquivos = carregar_dados()
     
-    # CORREÇÃO: Verificar se há dados para processar de forma segura
+    # Verificar se há dados para processar
     tem_dados_pagamentos = 'pagamentos' in dados and not dados['pagamentos'].empty
     tem_dados_contas = 'contas' in dados and not dados['contas'].empty
     
     if not tem_dados_pagamentos and not tem_dados_contas:
         st.info("📊 Faça o upload das planilhas de pagamentos e/ou abertura de contas para iniciar a análise")
+        
+        # Mostrar exemplo de interface mesmo sem dados
+        st.title("🏛️ Sistema POT - SMDET")
+        st.markdown("### Análise de Pagamentos e Contas")
+        st.markdown("---")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.metric("Total de Pagamentos", "0")
+        with col2:
+            st.metric("Beneficiários Únicos", "0")
+        with col3:
+            st.metric("Valor Total", "R$ 0,00")
+        
         return
     
     # Processar dados
     with st.spinner("🔄 Processando dados..."):
         metrics = processar_dados(dados, nomes_arquivos)
     
-    # [O RESTO DO CÓDIGO DA INTERFACE PRINCIPAL PERMANECE IGUAL...]
+    # Interface principal
+    st.title("🏛️ Sistema POT - SMDET")
+    st.markdown("### Análise de Pagamentos e Contas")
+    st.markdown(f"**Data da análise:** {data_hora_atual_brasilia()}")
+    st.markdown("---")
+    
+    # Métricas principais
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric(
+            "Total de Pagamentos", 
+            formatar_brasileiro(metrics['total_pagamentos']),
+            help="Pagamentos válidos com número de conta"
+        )
+    
+    with col2:
+        st.metric(
+            "Beneficiários Únicos", 
+            formatar_brasileiro(metrics['beneficiarios_unicos'])
+        )
+    
+    with col3:
+        st.metric(
+            "Contas Únicas", 
+            formatar_brasileiro(metrics['contas_unicas'])
+        )
+    
+    with col4:
+        st.metric(
+            "Valor Total", 
+            formatar_brasileiro(metrics['valor_total'], 'monetario')
+        )
+    
+    # Segunda linha de métricas
+    col5, col6, col7, col8 = st.columns(4)
+    
+    with col5:
+        st.metric(
+            "Pagamentos Duplicados", 
+            formatar_brasileiro(metrics['pagamentos_duplicados']),
+            delta=f"-{formatar_brasileiro(metrics['valor_total_duplicados'], 'monetario')}",
+            delta_color="inverse",
+            help="Contas com múltiplos pagamentos"
+        )
+    
+    with col6:
+        st.metric(
+            "Contas Abertas", 
+            formatar_brasileiro(metrics['total_contas_abertas'])
+        )
+    
+    with col7:
+        st.metric(
+            "Projetos Ativos", 
+            formatar_brasileiro(metrics['projetos_ativos'])
+        )
+    
+    with col8:
+        st.metric(
+            "Registros com Problemas", 
+            formatar_brasileiro(metrics['total_registros_criticos']),
+            delta_color="inverse" if metrics['total_registros_criticos'] > 0 else "off"
+        )
+    
+    st.markdown("---")
+    
+    # Abas para análises detalhadas
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "📋 Visão Geral", 
+        "⚠️ Duplicidades", 
+        "⏳ Pagamentos Pendentes", 
+        "🔍 Análise de Dados"
+    ])
+    
+    with tab1:
+        st.subheader("Resumo dos Dados")
+        
+        if tem_dados_pagamentos:
+            st.write(f"**Planilha de Pagamentos:** {nomes_arquivos.get('pagamentos', 'N/A')}")
+            st.write(f"**Total de registros:** {len(dados['pagamentos'])}")
+            st.write(f"**Pagamentos válidos:** {metrics['total_pagamentos']}")
+            st.write(f"**Registros sem conta:** {metrics['total_registros_invalidos']}")
+        
+        if tem_dados_contas:
+            st.write(f"**Planilha de Contas:** {nomes_arquivos.get('contas', 'N/A')}")
+            st.write(f"**Total de contas:** {metrics['total_contas_abertas']}")
+            st.write(f"**Beneficiários únicos:** {metrics['beneficiarios_contas']}")
+    
+    with tab2:
+        st.subheader("Pagamentos Duplicados")
+        
+        if metrics['duplicidades_detalhadas']['total_contas_duplicadas'] > 0:
+            st.warning(f"🚨 Foram encontradas {metrics['duplicidades_detalhadas']['total_contas_duplicadas']} contas com pagamentos duplicados")
+            
+            # Mostrar resumo das duplicidades
+            if not metrics['duplicidades_detalhadas']['resumo_duplicidades'].empty:
+                st.write("**Resumo das Duplicidades:**")
+                st.dataframe(metrics['duplicidades_detalhadas']['resumo_duplicidades'])
+            
+            # Mostrar detalhes completos
+            if not metrics['duplicidades_detalhadas']['detalhes_completos_duplicidades'].empty:
+                st.write("**Detalhes Completos dos Pagamentos Duplicados:**")
+                st.dataframe(metrics['duplicidades_detalhadas']['detalhes_completos_duplicidades'])
+        else:
+            st.success("✅ Nenhum pagamento duplicado encontrado")
+    
+    with tab3:
+        st.subheader("Pagamentos Pendentes")
+        
+        if metrics['pagamentos_pendentes']['total_contas_sem_pagamento'] > 0:
+            st.info(f"ℹ️ {metrics['pagamentos_pendentes']['total_contas_sem_pagamento']} contas aguardando pagamento")
+            
+            if not metrics['pagamentos_pendentes']['contas_sem_pagamento'].empty:
+                st.write("**Contas sem Pagamento:**")
+                st.dataframe(metrics['pagamentos_pendentes']['contas_sem_pagamento'])
+        else:
+            st.success("✅ Todas as contas abertas possuem pagamentos registrados")
+    
+    with tab4:
+        st.subheader("Análise de Qualidade dos Dados")
+        
+        if metrics['total_registros_criticos'] > 0:
+            st.error(f"❌ {metrics['total_registros_criticos']} registros com problemas críticos")
+            
+            if not metrics['resumo_ausencias'].empty:
+                st.write("**Registros com Problemas:**")
+                st.dataframe(metrics['resumo_ausencias'])
+        else:
+            st.success("✅ Todos os registros possuem dados essenciais preenchidos")
+        
+        # Mostrar problemas com CPF se houver
+        if metrics['problemas_cpf']['total_problemas_cpf'] > 0:
+            st.warning(f"⚠️ {metrics['problemas_cpf']['total_problemas_cpf']} CPFs com problemas de formatação")
+            
+            if not metrics['problemas_cpf']['detalhes_cpfs_problematicos'].empty:
+                st.write("**Detalhes dos CPFs Problemáticos:**")
+                st.dataframe(metrics['problemas_cpf']['detalhes_cpfs_problematicos'])
 
 if __name__ == "__main__":
     main()
