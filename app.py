@@ -8,6 +8,7 @@ from fpdf import FPDF
 import numpy as np
 import re
 import base64
+import hashlib
 
 # Configuração da página
 st.set_page_config(
@@ -15,6 +16,14 @@ st.set_page_config(
     page_icon="🏛️",
     layout="wide"
 )
+
+# Função para hash de senha
+def hash_senha(senha):
+    """Gera hash SHA-256 da senha"""
+    return hashlib.sha256(senha.encode()).hexdigest()
+
+# Senha autorizada (Smdetpot2025)
+SENHA_AUTORIZADA_HASH = hash_senha("Smdetpot2025")
 
 # Função para obter data/hora no fuso horário de Brasília (São Paulo)
 def agora_brasilia():
@@ -34,21 +43,67 @@ def data_hora_arquivo_brasilia():
     """Retorna a data e hora atual no formato para nome de arquivo no fuso de Brasília"""
     return agora_brasilia().strftime("%Y%m%d_%H%M")
 
-# Sistema de autenticação simples CORRIGIDO
+# Sistema de autenticação seguro
 def autenticar():
     st.sidebar.title("Sistema POT - SMDET")
     st.sidebar.markdown("**Prefeitura de São Paulo**")
     st.sidebar.markdown("**Secretaria Municipal do Desenvolvimento Econômico e Trabalho**")
     st.sidebar.markdown("---")
     
-    email = st.sidebar.text_input("Email @prefeitura.sp.gov.br")
+    # Inicializar estado de autenticação
+    if 'autenticado' not in st.session_state:
+        st.session_state.autenticado = False
+    if 'tentativas_login' not in st.session_state:
+        st.session_state.tentativas_login = 0
+    if 'bloqueado' not in st.session_state:
+        st.session_state.bloqueado = False
     
-    # VERIFICAÇÃO CORRIGIDA - só mostra aviso mas não para execução
-    if email and not email.endswith('@prefeitura.sp.gov.br'):
-        st.sidebar.warning("⚠️ Use email corporativo @prefeitura.sp.gov.br")
-        # Remove o st.stop() para permitir continuar
+    # Verificar se está bloqueado
+    if st.session_state.bloqueado:
+        st.sidebar.error("🚫 Sistema temporariamente bloqueado. Tente novamente mais tarde.")
+        return None
     
-    return email
+    # Se já está autenticado, mostrar informações
+    if st.session_state.autenticado:
+        st.sidebar.success(f"✅ Acesso autorizado")
+        st.sidebar.info(f"👤 {st.session_state.email_autorizado}")
+        if st.sidebar.button("🚪 Sair"):
+            st.session_state.autenticado = False
+            st.session_state.email_autorizado = None
+            st.rerun()
+        return st.session_state.email_autorizado
+    
+    # Formulário de login
+    with st.sidebar.form("login_form"):
+        st.subheader("🔐 Acesso Restrito")
+        email = st.text_input("Email institucional", placeholder="seu.email@prefeitura.sp.gov.br")
+        senha = st.text_input("Senha", type="password", placeholder="Digite sua senha")
+        submit = st.form_submit_button("Entrar")
+        
+        if submit:
+            if not email or not senha:
+                st.sidebar.error("⚠️ Preencha email e senha")
+                st.session_state.tentativas_login += 1
+            elif not email.endswith('@prefeitura.sp.gov.br'):
+                st.sidebar.error("🚫 Acesso restrito aos servidores da Prefeitura de São Paulo")
+                st.session_state.tentativas_login += 1
+            elif hash_senha(senha) != SENHA_AUTORIZADA_HASH:
+                st.sidebar.error("❌ Senha incorreta")
+                st.session_state.tentativas_login += 1
+            else:
+                # Login bem-sucedido
+                st.session_state.autenticado = True
+                st.session_state.email_autorizado = email
+                st.session_state.tentativas_login = 0
+                st.sidebar.success("✅ Login realizado com sucesso!")
+                st.rerun()
+            
+            # Verificar se excedeu tentativas
+            if st.session_state.tentativas_login >= 3:
+                st.session_state.bloqueado = True
+                st.sidebar.error("🚫 Muitas tentativas falhas. Sistema bloqueado temporariamente.")
+    
+    return None
 
 # Função auxiliar para obter coluna de conta
 def obter_coluna_conta(df):
@@ -882,13 +937,23 @@ def carregar_dados():
 
 # Interface principal do sistema CORRIGIDA
 def main():
-    # Autenticação
-    email = autenticar()
+    # Autenticação - AGORA É OBRIGATÓRIA
+    email_autorizado = autenticar()
     
-    if email:
-        st.sidebar.success(f"✅ Acesso autorizado: {email}")
-    else:
-        st.sidebar.info("👆 Insira seu email para continuar")
+    # Se não está autenticado, não mostra o conteúdo principal
+    if not email_autorizado:
+        # Mostrar apenas informações básicas sem dados
+        st.title("🏛️ Sistema POT - SMDET")
+        st.markdown("### Análise de Pagamentos e Contas")
+        st.info("🔐 **Acesso Restrito** - Faça login para acessar o sistema")
+        st.markdown("---")
+        st.write("Este sistema é restrito aos servidores autorizados da Prefeitura de São Paulo.")
+        st.write("**Credenciais necessárias:**")
+        st.write("- Email institucional @prefeitura.sp.gov.br")
+        st.write("- Senha de acesso autorizada")
+        return
+    
+    # A partir daqui, só usuários autenticados têm acesso
     
     st.sidebar.markdown("---")
     
