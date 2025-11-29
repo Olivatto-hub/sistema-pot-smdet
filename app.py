@@ -1622,8 +1622,7 @@ def carregar_dados(conn):
             
             nomes_arquivos['pagamentos'] = upload_pagamentos.name
             
-            # Mostrar colunas disponíveis para debug
-            st.sidebar.info(f"📊 Colunas na planilha: {', '.join(df_pagamentos.columns.tolist()[:5])}{'...' if len(df_pagamentos.columns) > 5 else ''}")
+            # REMOVIDO: Mostrar colunas disponíveis para debug (não precisa aparecer na visão geral)
             
             # Guardar versão original e versão sem totais
             dados['pagamentos_original'] = df_pagamentos.copy()
@@ -1929,10 +1928,7 @@ def main():
                     st.write(f"**Pagamentos válidos:** {metrics['total_pagamentos']}")
                     st.write(f"**Registros sem conta:** {metrics['total_registros_invalidos']}")
                     
-                    # Mostrar colunas disponíveis na planilha
-                    if 'pagamentos' in dados:
-                        colunas_disponiveis = dados['pagamentos'].columns.tolist()
-                        st.write(f"**Colunas disponíveis:** {', '.join(colunas_disponiveis[:8])}{'...' if len(colunas_disponiveis) > 8 else ''}")
+                    # REMOVIDO: Mostrar colunas disponíveis na planilha (não precisa aparecer na visão geral)
                 
                 if tem_dados_contas:
                     st.write(f"**Planilha de Inscrições:** {nomes_arquivos.get('contas', 'N/A')}")
