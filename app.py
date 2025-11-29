@@ -473,97 +473,170 @@ def filtrar_pagamentos_validos(df):
     
     return df_filtrado
 
-# NOVA FUNÇÃO: Detectar CPFs duplicados com inconsistências
-def detectar_cpfs_inconsistentes(df):
-    """Detecta CPFs duplicados com nomes ou números de conta diferentes"""
-    inconsistencias = {
+# FUNÇÃO MELHORADA: Detectar CPFs problemáticos incluindo inconsistências
+def identificar_cpfs_problematicos(df):
+    """Identifica CPFs com problemas de formatação E inconsistências - REGISTROS VÁLIDOS que precisam de correção"""
+    problemas_cpf = {
+        'cpfs_com_caracteres_invalidos': [],
+        'cpfs_com_tamanho_incorreto': [],
+        'cpfs_vazios': [],
         'cpfs_duplicados': [],
         'cpfs_com_nomes_diferentes': [],
         'cpfs_com_contas_diferentes': [],
+        'total_problemas_cpf': 0,
         'total_cpfs_inconsistentes': 0,
-        'detalhes_inconsistencias': pd.DataFrame()
+        'detalhes_cpfs_problematicos': pd.DataFrame(),
+        'detalhes_inconsistencias': pd.DataFrame(),
+        'registros_afetados': [],
+        'status': 'validos_com_problema'
     }
     
     if 'CPF' not in df.columns or df.empty:
-        return inconsistencias
+        return problemas_cpf
     
     # Adicionar coluna com número da linha original
     df_analise = df.copy()
     df_analise['Linha_Planilha_Original'] = df_analise.index + 2
     
-    # Encontrar CPFs duplicados
+    # PRIMEIRO: Identificar problemas de formatação
+    for idx, row in df_analise.iterrows():
+        cpf = str(row['CPF']) if pd.notna(row['CPF']) and str(row['CPF']).strip() != '' else ''
+        problemas = []
+        
+        # CPF vazio
+        if cpf == '':
+            problemas.append('CPF vazio')
+            problemas_cpf['cpfs_vazios'].append(idx)
+            problemas_cpf['registros_afetados'].append(idx)
+        
+        # CPF com caracteres não numéricos
+        elif not cpf.isdigit() and cpf != '':
+            problemas.append('Caracteres inválidos')
+            problemas_cpf['cpfs_com_caracteres_invalidos'].append(idx)
+            problemas_cpf['registros_afetados'].append(idx)
+        
+        # CPF com tamanho incorreto
+        elif len(cpf) != 11 and cpf != '':
+            problemas.append(f'Tamanho incorreto ({len(cpf)} dígitos)')
+            problemas_cpf['cpfs_com_tamanho_incorreto'].append(idx)
+            problemas_cpf['registros_afetados'].append(idx)
+        
+        # Se há problemas de formatação, adicionar aos detalhes
+        if problemas:
+            info_problema = {
+                'Linha_Planilha': row.get('Linha_Planilha_Original', idx + 2),
+                'CPF_Original': row.get('CPF', ''),
+                'CPF_Processado': cpf,
+                'Problemas_Formatacao': ', '.join(problemas),
+                'Status_Registro': 'VÁLIDO - Precisa de correção'
+            }
+            
+            # Adicionar informações adicionais
+            coluna_conta = obter_coluna_conta(df)
+            if coluna_conta and coluna_conta in df.columns and pd.notna(row.get(coluna_conta)):
+                info_problema['Numero_Conta'] = row[coluna_conta]
+            
+            coluna_nome = obter_coluna_nome(df)
+            if coluna_nome and coluna_nome in df.columns and pd.notna(row.get(coluna_nome)):
+                info_problema['Nome'] = row[coluna_nome]
+            
+            # Adicionar outras colunas importantes
+            colunas_adicionais = ['Projeto', 'Valor', 'Data', 'Status']
+            for coluna in colunas_adicionais:
+                if coluna in df.columns and pd.notna(row.get(coluna)):
+                    valor = str(row[coluna])
+                    if len(valor) > 30:
+                        valor = valor[:27] + "..."
+                    info_problema[coluna] = valor
+            
+            # Corrigir a concatenação do DataFrame
+            if problemas_cpf['detalhes_cpfs_problematicos'].empty:
+                problemas_cpf['detalhes_cpfs_problematicos'] = pd.DataFrame([info_problema])
+            else:
+                problemas_cpf['detalhes_cpfs_problematicos'] = pd.concat([
+                    problemas_cpf['detalhes_cpfs_problematicos'],
+                    pd.DataFrame([info_problema])
+                ], ignore_index=True)
+    
+    # SEGUNDO: Identificar CPFs duplicados com inconsistências
     cpfs_duplicados = df_analise[df_analise.duplicated(['CPF'], keep=False)]
     
-    if cpfs_duplicados.empty:
-        return inconsistencias
-    
-    # Agrupar por CPF e verificar inconsistências
-    grupos_cpf = cpfs_duplicados.groupby('CPF')
-    
-    detalhes = []
-    
-    for cpf, grupo in grupos_cpf:
-        if len(grupo) > 1:  # CPF aparece mais de uma vez
-            inconsistencias['cpfs_duplicados'].append(cpf)
-            
-            # Verificar se há nomes diferentes para o mesmo CPF
-            coluna_nome = obter_coluna_nome(grupo)
-            if coluna_nome and coluna_nome in grupo.columns:
-                nomes_unicos = grupo[coluna_nome].dropna().unique()
-                if len(nomes_unicos) > 1:
-                    inconsistencias['cpfs_com_nomes_diferentes'].append(cpf)
-            
-            # Verificar se há números de conta diferentes para o mesmo CPF
-            coluna_conta = obter_coluna_conta(grupo)
-            if coluna_conta and coluna_conta in grupo.columns:
-                contas_unicas = grupo[coluna_conta].dropna().unique()
-                if len(contas_unicas) > 1:
-                    inconsistencias['cpfs_com_contas_diferentes'].append(cpf)
-            
-            # Se há qualquer inconsistência, adicionar aos detalhes
-            if (cpf in inconsistencias['cpfs_com_nomes_diferentes'] or 
-                cpf in inconsistencias['cpfs_com_contas_diferentes']):
+    if not cpfs_duplicados.empty:
+        grupos_cpf = cpfs_duplicados.groupby('CPF')
+        
+        detalhes_inconsistencias = []
+        
+        for cpf, grupo in grupos_cpf:
+            if len(grupo) > 1:  # CPF aparece mais de uma vez
+                problemas_cpf['cpfs_duplicados'].append(cpf)
                 
-                for idx, registro in grupo.iterrows():
-                    info_inconsistencia = {
-                        'CPF': cpf,
-                        'Linha_Planilha': registro['Linha_Planilha_Original'],
-                        'Ocorrencia_CPF': f"{list(grupo.index).index(idx) + 1}/{len(grupo)}"
-                    }
-                    
-                    # Adicionar informações do registro
-                    if coluna_nome and coluna_nome in registro:
-                        info_inconsistencia['Nome'] = registro[coluna_nome]
-                    
-                    if coluna_conta and coluna_conta in registro:
-                        info_inconsistencia['Numero_Conta'] = registro[coluna_conta]
-                    
-                    if 'Projeto' in registro:
-                        info_inconsistencia['Projeto'] = registro['Projeto']
-                    
-                    if 'Valor_Limpo' in registro:
-                        info_inconsistencia['Valor'] = registro['Valor_Limpo']
-                    
-                    # Marcar inconsistências específicas
-                    problemas = ['CPF duplicado']
-                    if cpf in inconsistencias['cpfs_com_nomes_diferentes']:
-                        problemas.append('Nomes diferentes')
-                    if cpf in inconsistencias['cpfs_com_contas_diferentes']:
-                        problemas.append('Contas diferentes')
-                    
-                    info_inconsistencia['Problemas'] = ', '.join(problemas)
-                    info_inconsistencia['Status'] = 'CRÍTICO - Precisa de correção urgente'
-                    
-                    detalhes.append(info_inconsistencia)
+                # Verificar se há nomes diferentes para o mesmo CPF
+                coluna_nome = obter_coluna_nome(grupo)
+                tem_nomes_diferentes = False
+                if coluna_nome and coluna_nome in grupo.columns:
+                    nomes_unicos = grupo[coluna_nome].dropna().unique()
+                    if len(nomes_unicos) > 1:
+                        problemas_cpf['cpfs_com_nomes_diferentes'].append(cpf)
+                        tem_nomes_diferentes = True
+                
+                # Verificar se há números de conta diferentes para o mesmo CPF
+                coluna_conta = obter_coluna_conta(grupo)
+                tem_contas_diferentes = False
+                if coluna_conta and coluna_conta in grupo.columns:
+                    contas_unicas = grupo[coluna_conta].dropna().unique()
+                    if len(contas_unicas) > 1:
+                        problemas_cpf['cpfs_com_contas_diferentes'].append(cpf)
+                        tem_contas_diferentes = True
+                
+                # Se há qualquer inconsistência, adicionar aos detalhes
+                if tem_nomes_diferentes or tem_contas_diferentes:
+                    for idx, registro in grupo.iterrows():
+                        info_inconsistencia = {
+                            'CPF': cpf,
+                            'Linha_Planilha': registro['Linha_Planilha_Original'],
+                            'Ocorrencia_CPF': f"{list(grupo.index).index(idx) + 1}/{len(grupo)}"
+                        }
+                        
+                        # Adicionar informações do registro
+                        if coluna_nome and coluna_nome in registro:
+                            info_inconsistencia['Nome'] = registro[coluna_nome]
+                        
+                        if coluna_conta and coluna_conta in registro:
+                            info_inconsistencia['Numero_Conta'] = registro[coluna_conta]
+                        
+                        if 'Projeto' in registro:
+                            info_inconsistencia['Projeto'] = registro['Projeto']
+                        
+                        if 'Valor_Limpo' in registro:
+                            info_inconsistencia['Valor'] = registro['Valor_Limpo']
+                        
+                        # Marcar inconsistências específicas
+                        problemas_inconsistencia = ['CPF DUPLICADO']
+                        if tem_nomes_diferentes:
+                            problemas_inconsistencia.append('NOMES DIFERENTES')
+                        if tem_contas_diferentes:
+                            problemas_inconsistencia.append('CONTAS DIFERENTES')
+                        
+                        info_inconsistencia['Problemas_Inconsistencia'] = ', '.join(problemas_inconsistencia)
+                        info_inconsistencia['Status'] = 'CRÍTICO - Correção urgente necessária'
+                        
+                        detalhes_inconsistencias.append(info_inconsistencia)
+        
+        if detalhes_inconsistencias:
+            problemas_cpf['detalhes_inconsistencias'] = pd.DataFrame(detalhes_inconsistencias)
+            problemas_cpf['total_cpfs_inconsistentes'] = len(set(
+                problemas_cpf['cpfs_com_nomes_diferentes'] + 
+                problemas_cpf['cpfs_com_contas_diferentes']
+            ))
     
-    if detalhes:
-        inconsistencias['detalhes_inconsistencias'] = pd.DataFrame(detalhes)
-        inconsistencias['total_cpfs_inconsistentes'] = len(set(
-            inconsistencias['cpfs_com_nomes_diferentes'] + 
-            inconsistencias['cpfs_com_contas_diferentes']
-        ))
+    # Calcular totais
+    problemas_cpf['total_problemas_cpf'] = (
+        len(problemas_cpf['cpfs_com_caracteres_invalidos']) +
+        len(problemas_cpf['cpfs_com_tamanho_incorreto']) +
+        len(problemas_cpf['cpfs_vazios'])
+    )
     
-    return inconsistencias
+    return problemas_cpf
 
 # FUNÇÃO CORRIGIDA: Detectar pagamentos duplicados
 def detectar_pagamentos_duplicados(df):
@@ -1038,92 +1111,6 @@ def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_co
     
     return analise_ausencia
 
-# FUNÇÃO CORRIGIDA: Identificar CPFs problemáticos - REGISTROS SÃO VÁLIDOS, APENAS PRECISAM DE CORREÇÃO
-def identificar_cpfs_problematicos(df):
-    """Identifica CPFs com problemas de formatação - REGISTROS SÃO VÁLIDOS, apenas precisam de correção"""
-    problemas_cpf = {
-        'cpfs_com_caracteres_invalidos': [],
-        'cpfs_com_tamanho_incorreto': [],
-        'cpfs_vazios': [],
-        'total_problemas_cpf': 0,
-        'detalhes_cpfs_problematicos': pd.DataFrame(),
-        'registros_afetados': [],  # Lista de registros que precisam de correção
-        'status': 'validos_com_problema'  # Indicador que são registros válidos
-    }
-    
-    if 'CPF' not in df.columns or df.empty:
-        return problemas_cpf
-    
-    # Adicionar coluna com número da linha original
-    df_analise = df.copy()
-    df_analise['Linha_Planilha_Original'] = df_analise.index + 2
-    
-    # Identificar problemas - MAS MANTENDO OS REGISTROS COMO VÁLIDOS
-    for idx, row in df_analise.iterrows():
-        cpf = str(row['CPF']) if pd.notna(row['CPF']) and str(row['CPF']).strip() != '' else ''
-        problemas = []
-        
-        # CPF vazio - AINDA É UM REGISTRO VÁLIDO, só precisa ser preenchido
-        if cpf == '':
-            problemas.append('CPF vazio')
-            problemas_cpf['cpfs_vazios'].append(idx)
-            problemas_cpf['registros_afetados'].append(idx)
-        
-        # CPF com caracteres não numéricos - REGISTRO VÁLIDO, precisa de formatação
-        elif not cpf.isdigit() and cpf != '':
-            problemas.append('Caracteres inválidos')
-            problemas_cpf['cpfs_com_caracteres_invalidos'].append(idx)
-            problemas_cpf['registros_afetados'].append(idx)
-        
-        # CPF com tamanho incorreto - REGISTRO VÁLIDO, precisa de correção
-        elif len(cpf) != 11 and cpf != '':
-            problemas.append(f'Tamanho incorreto ({len(cpf)} dígitos)')
-            problemas_cpf['cpfs_com_tamanho_incorreto'].append(idx)
-            problemas_cpf['registros_afetados'].append(idx)
-        
-        # Se há problemas, adicionar aos detalhes - MAS REGISTRO CONTINUA VÁLIDO
-        if problemas:
-            info_problema = {
-                'Linha_Planilha': row.get('Linha_Planilha_Original', idx + 2),
-                'CPF_Original': row.get('CPF', ''),
-                'CPF_Processado': cpf,
-                'Problemas': ', '.join(problemas),
-                'Status_Registro': 'VÁLIDO - Precisa de correção'  # Status claro
-            }
-            
-            # Adicionar informações adicionais para identificação - APENAS COLUNAS EXISTENTES
-            coluna_conta = obter_coluna_conta(df)
-            if coluna_conta and coluna_conta in df.columns and pd.notna(row.get(coluna_conta)):
-                info_problema['Numero_Conta'] = row[coluna_conta]
-            
-            coluna_nome = obter_coluna_nome(df)
-            if coluna_nome and coluna_nome in df.columns and pd.notna(row.get(coluna_nome)):
-                info_problema['Nome'] = row[coluna_nome]
-            
-            # Adicionar outras colunas importantes que existam na planilha
-            colunas_adicionais = ['Projeto', 'Valor', 'Data', 'Status']
-            for coluna in colunas_adicionais:
-                if coluna in df.columns and pd.notna(row.get(coluna)):
-                    valor = str(row[coluna])
-                    if len(valor) > 30:  # Limitar tamanho para exibição
-                        valor = valor[:27] + "..."
-                    info_problema[coluna] = valor
-            
-            # Corrigir a concatenação do DataFrame
-            if problemas_cpf['detalhes_cpfs_problematicos'].empty:
-                problemas_cpf['detalhes_cpfs_problematicos'] = pd.DataFrame([info_problema])
-            else:
-                problemas_cpf['detalhes_cpfs_problematicos'] = pd.concat([
-                    problemas_cpf['detalhes_cpfs_problematicos'],
-                    pd.DataFrame([info_problema])
-                ], ignore_index=True)
-    
-    problemas_cpf['total_problemas_cpf'] = len(problemas_cpf['cpfs_com_caracteres_invalidos']) + \
-                                         len(problemas_cpf['cpfs_com_tamanho_incorreto']) + \
-                                         len(problemas_cpf['cpfs_vazios'])
-    
-    return problemas_cpf
-
 # CORREÇÃO CRÍTICA: Função para processar dados principais
 def processar_dados(dados, nomes_arquivos=None):
     """Processa os dados para gerar métricas e análises"""
@@ -1141,12 +1128,11 @@ def processar_dados(dados, nomes_arquivos=None):
         'duplicidades_detalhadas': {},
         'pagamentos_pendentes': {},
         'total_registros_invalidos': 0,
-        'problemas_cpf': {},  # Análise de problemas com CPF
+        'problemas_cpf': {},  # Análise UNIFICADA de problemas com CPF
         'linha_totais_removida': False,  # Indicador se linha de totais foi removida
         'total_registros_originais': 0,  # Total original antes de remover totais
         'total_registros_sem_totais': 0,  # Total após remover totais
-        'total_cpfs_ajuste': 0,  # Total de CPFs que precisam de ajuste (não são inválidos)
-        'cpfs_inconsistentes': {}  # NOVO: CPFs com nomes ou contas diferentes
+        'total_cpfs_ajuste': 0  # Total de CPFs que precisam de ajuste (incluindo inconsistentes)
     }
     
     # Combinar com análise de ausência de dados
@@ -1181,14 +1167,15 @@ def processar_dados(dados, nomes_arquivos=None):
         if df.empty:
             return metrics
         
-        # Analisar problemas com CPF - AGORA SÃO REGISTROS VÁLIDOS QUE PRECISAM DE AJUSTE
+        # Analisar problemas com CPF - AGORA INCLUI INCONSISTÊNCIAS
         problemas_cpf = identificar_cpfs_problematicos(df)
         metrics['problemas_cpf'] = problemas_cpf
-        metrics['total_cpfs_ajuste'] = problemas_cpf['total_problemas_cpf']
         
-        # NOVO: Detectar CPFs inconsistentes (com nomes ou contas diferentes)
-        cpfs_inconsistentes = detectar_cpfs_inconsistentes(df)
-        metrics['cpfs_inconsistentes'] = cpfs_inconsistentes
+        # Total de CPFs que precisam de ajuste (formatação + inconsistências)
+        metrics['total_cpfs_ajuste'] = (
+            problemas_cpf['total_problemas_cpf'] + 
+            problemas_cpf['total_cpfs_inconsistentes']
+        )
         
         # Beneficiários únicos - APENAS SE A COLUNA EXISTIR
         coluna_beneficiario = obter_coluna_nome(df)
@@ -1488,7 +1475,6 @@ def gerar_pdf_executivo(metrics, dados, nomes_arquivos, tipo_relatorio='pagament
             ("Valor em Duplicidades", formatar_brasileiro(metrics['valor_total_duplicados'], 'monetario')),
             ("Projetos Ativos", formatar_brasileiro(metrics['projetos_ativos'])),
             ("CPFs p/ Ajuste", formatar_brasileiro(metrics['total_cpfs_ajuste'])),
-            ("CPFs Inconsistentes", formatar_brasileiro(metrics['cpfs_inconsistentes']['total_cpfs_inconsistentes'])),
             ("Registros Críticos", formatar_brasileiro(metrics['total_registros_criticos']))
         ]
     else:
@@ -1512,22 +1498,30 @@ def gerar_pdf_executivo(metrics, dados, nomes_arquivos, tipo_relatorio='pagament
             pdf.cell(0, 10, f"ALERTA: {metrics['pagamentos_duplicados']} contas com pagamentos duplicados", 0, 1)
             pdf.set_text_color(0, 0, 0)
         
-        if metrics['cpfs_inconsistentes']['total_cpfs_inconsistentes'] > 0:
+        if metrics['total_cpfs_ajuste'] > 0:
             pdf.set_font("Arial", 'B', 12)
             pdf.set_text_color(255, 0, 0)
-            pdf.cell(0, 10, f"ALERTA CRÍTICO: {metrics['cpfs_inconsistentes']['total_cpfs_inconsistentes']} CPFs com inconsistências", 0, 1)
+            
+            # Detalhes dos problemas de CPF
+            problemas_cpf = metrics['problemas_cpf']
+            pdf.cell(0, 10, f"ALERTA CRÍTICO: {metrics['total_cpfs_ajuste']} CPFs precisam de correção", 0, 1)
+            
+            if problemas_cpf['total_problemas_cpf'] > 0:
+                pdf.cell(0, 10, f"  - {problemas_cpf['total_problemas_cpf']} CPFs com problemas de formatação", 0, 1)
+            
+            if problemas_cpf['total_cpfs_inconsistentes'] > 0:
+                pdf.cell(0, 10, f"  - {problemas_cpf['total_cpfs_inconsistentes']} CPFs com inconsistências críticas", 0, 1)
+                if problemas_cpf['cpfs_com_nomes_diferentes']:
+                    pdf.cell(0, 10, f"    * {len(problemas_cpf['cpfs_com_nomes_diferentes'])} CPFs com nomes diferentes", 0, 1)
+                if problemas_cpf['cpfs_com_contas_diferentes']:
+                    pdf.cell(0, 10, f"    * {len(problemas_cpf['cpfs_com_contas_diferentes'])} CPFs com contas diferentes", 0, 1)
+            
             pdf.set_text_color(0, 0, 0)
         
         if metrics['total_registros_criticos'] > 0:
             pdf.set_font("Arial", 'B', 12)
             pdf.set_text_color(255, 165, 0)
             pdf.cell(0, 10, f"ATENÇÃO: {metrics['total_registros_criticos']} registros com problemas críticos", 0, 1)
-            pdf.set_text_color(0, 0, 0)
-        
-        if metrics['total_cpfs_ajuste'] > 0:
-            pdf.set_font("Arial", 'B', 12)
-            pdf.set_text_color(0, 100, 0)
-            pdf.cell(0, 10, f"INFO: {metrics['total_cpfs_ajuste']} CPFs precisam de ajuste (registros válidos)", 0, 1)
             pdf.set_text_color(0, 0, 0)
     
     return pdf.output(dest='S').encode('latin1')
@@ -1551,7 +1545,6 @@ def gerar_excel_completo(metrics, dados, tipo_relatorio='pagamentos'):
                     'Valor em Duplicidades',
                     'Projetos Ativos',
                     'CPFs para Ajuste',
-                    'CPFs Inconsistentes',
                     'Registros Críticos'
                 ],
                 'Valor': [
@@ -1564,7 +1557,6 @@ def gerar_excel_completo(metrics, dados, tipo_relatorio='pagamentos'):
                     metrics['valor_total_duplicados'],
                     metrics['projetos_ativos'],
                     metrics['total_cpfs_ajuste'],
-                    metrics['cpfs_inconsistentes']['total_cpfs_inconsistentes'],
                     metrics['total_registros_criticos']
                 ]
             }
@@ -1600,23 +1592,26 @@ def gerar_excel_completo(metrics, dados, tipo_relatorio='pagamentos'):
                 metrics['pagamentos_pendentes']['contas_sem_pagamento'].to_excel(
                     writer, sheet_name='Pagamentos Pendentes', index=False
                 )
-            
-            # CPFs inconsistentes (NOVO)
-            if not metrics['cpfs_inconsistentes']['detalhes_inconsistencias'].empty:
-                metrics['cpfs_inconsistentes']['detalhes_inconsistencias'].to_excel(
-                    writer, sheet_name='CPFs Inconsistentes', index=False
-                )
+        
+        # Problemas de CPF UNIFICADOS
+        problemas_cpf = metrics['problemas_cpf']
+        
+        # CPFs com problemas de formatação
+        if not problemas_cpf['detalhes_cpfs_problematicos'].empty:
+            problemas_cpf['detalhes_cpfs_problematicos'].to_excel(
+                writer, sheet_name='CPFs Formatação', index=False
+            )
+        
+        # CPFs com inconsistências
+        if not problemas_cpf['detalhes_inconsistencias'].empty:
+            problemas_cpf['detalhes_inconsistencias'].to_excel(
+                writer, sheet_name='CPFs Inconsistentes', index=False
+            )
         
         # Problemas de dados CRÍTICOS
         if not metrics['resumo_ausencias'].empty:
             metrics['resumo_ausencias'].to_excel(
                 writer, sheet_name='Problemas Críticos', index=False
-            )
-        
-        # CPFs para ajuste (NÃO SÃO CRÍTICOS)
-        if not metrics['problemas_cpf']['detalhes_cpfs_problematicos'].empty:
-            metrics['problemas_cpf']['detalhes_cpfs_problematicos'].to_excel(
-                writer, sheet_name='CPFs para Ajuste', index=False
             )
     
     return output.getvalue()
@@ -1639,14 +1634,25 @@ def gerar_planilha_ajustes(metrics, tipo_relatorio='pagamentos'):
                 'Impacto Financeiro': formatar_brasileiro(metrics['valor_total_duplicados'], 'monetario')
             })
         
-        # Ações para CPFs inconsistentes (NOVO)
-        if metrics['cpfs_inconsistentes']['total_cpfs_inconsistentes'] > 0:
+        # Ações para CPFs problemáticos (UNIFICADO)
+        problemas_cpf = metrics['problemas_cpf']
+        
+        if problemas_cpf['total_cpfs_inconsistentes'] > 0:
             acoes.append({
                 'Tipo': 'CPF Inconsistente',
-                'Descrição': f'{metrics["cpfs_inconsistentes"]["total_cpfs_inconsistentes"]} CPFs com nomes ou contas diferentes',
-                'Ação Recomendada': 'Verificar e corrigir inconsistências nos CPFs duplicados',
+                'Descrição': f'{problemas_cpf["total_cpfs_inconsistentes"]} CPFs com nomes ou contas diferentes',
+                'Ação Recomendada': 'Verificar e corrigir inconsistências nos CPFs duplicados - CORREÇÃO URGENTE',
                 'Prioridade': 'Crítica',
                 'Impacto Financeiro': 'Risco de fraude e irregularidade'
+            })
+        
+        if problemas_cpf['total_problemas_cpf'] > 0:
+            acoes.append({
+                'Tipo': 'CPF Formatação',
+                'Descrição': f'{problemas_cpf["total_problemas_cpf"]} CPFs com problemas de formatação',
+                'Ação Recomendada': 'Corrigir formatação dos CPFs (apenas números, 11 dígitos)',
+                'Prioridade': 'Alta',
+                'Impacto Financeiro': 'Risco fiscal/documental'
             })
         
         # Ações para pagamentos pendentes
@@ -1667,16 +1673,6 @@ def gerar_planilha_ajustes(metrics, tipo_relatorio='pagamentos'):
             'Ação Recomendada': 'Completar informações faltantes essenciais',
             'Prioridade': 'Alta',
             'Impacto Financeiro': 'Risco operacional'
-        })
-    
-    # Ações para CPFs problemáticos - PRIORIDADE MÉDIA (não são críticos)
-    if metrics['total_cpfs_ajuste'] > 0:
-        acoes.append({
-            'Tipo': 'CPF para Ajuste',
-            'Descrição': f'{metrics["total_cpfs_ajuste"]} CPFs precisam de correção (registros válidos)',
-            'Ação Recomendada': 'Corrigir formatação dos CPFs',
-            'Prioridade': 'Média',
-            'Impacto Financeiro': 'Risco fiscal/documental'
         })
     
     df_acoes = pd.DataFrame(acoes)
@@ -1986,11 +1982,15 @@ def main():
                     )
                 
                 with col7:
+                    # Métrica UNIFICADA para CPFs problemáticos
+                    problemas_cpf = metrics['problemas_cpf']
+                    total_cpfs_problema = metrics['total_cpfs_ajuste']
+                    
                     st.metric(
-                        "CPFs Inconsistentes", 
-                        formatar_brasileiro(metrics['cpfs_inconsistentes']['total_cpfs_inconsistentes']),
-                        delta_color="inverse" if metrics['cpfs_inconsistentes']['total_cpfs_inconsistentes'] > 0 else "off",
-                        help="CPFs com nomes ou contas diferentes"
+                        "CPFs p/ Ajuste", 
+                        formatar_brasileiro(total_cpfs_problema),
+                        delta_color="inverse" if total_cpfs_problema > 0 else "off",
+                        help=f"CPFs com problemas: {problemas_cpf['total_problemas_cpf']} formatação + {problemas_cpf['total_cpfs_inconsistentes']} inconsistências"
                     )
                 
                 with col8:
@@ -2027,14 +2027,13 @@ def main():
             
             st.markdown("---")
             
-            # Abas para análises detalhadas - ADICIONADA NOVA ABA PARA CPFs INCONSISTENTES
-            tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+            # Abas para análises detalhadas - REORGANIZADA
+            tab1, tab2, tab3, tab4, tab5 = st.tabs([
                 "📋 Visão Geral", 
                 "⚠️ Duplicidades", 
-                "🔴 CPFs Inconsistentes",
+                "🔴 CPFs Problemáticos",
                 "⏳ Pagamentos Pendentes", 
-                "🚨 Problemas Críticos",
-                "📝 CPFs p/ Ajuste"
+                "🚨 Problemas Críticos"
             ])
             
             with tab1:
@@ -2081,242 +2080,33 @@ def main():
             
             with tab3:
                 if tem_dados_pagamentos:
-                    st.subheader("CPFs Inconsistentes")
+                    st.subheader("CPFs Problemáticos - Correção Necessária")
                     
-                    if metrics['cpfs_inconsistentes']['total_cpfs_inconsistentes'] > 0:
-                        st.error(f"❌ ALERTA CRÍTICO: {metrics['cpfs_inconsistentes']['total_cpfs_inconsistentes']} CPFs com inconsistências detectadas!")
+                    problemas_cpf = metrics['problemas_cpf']
+                    total_problemas = metrics['total_cpfs_ajuste']
+                    
+                    if total_problemas > 0:
+                        # Alertas visuais diferenciados
+                        col_critico, col_alerta = st.columns(2)
                         
-                        # Mostrar estatísticas detalhadas
-                        if metrics['cpfs_inconsistentes']['cpfs_com_nomes_diferentes']:
-                            st.write(f"**CPFs com nomes diferentes:** {len(metrics['cpfs_inconsistentes']['cpfs_com_nomes_diferentes'])}")
+                        with col_critico:
+                            if problemas_cpf['total_cpfs_inconsistentes'] > 0:
+                                st.error(f"❌ CRÍTICO: {problemas_cpf['total_cpfs_inconsistentes']} CPFs com INCONSISTÊNCIAS")
+                                st.write(f"**CPFs com nomes diferentes:** {len(problemas_cpf['cpfs_com_nomes_diferentes'])}")
+                                st.write(f"**CPFs com contas diferentes:** {len(problemas_cpf['cpfs_com_contas_diferentes'])}")
                         
-                        if metrics['cpfs_inconsistentes']['cpfs_com_contas_diferentes']:
-                            st.write(f"**CPFs com contas diferentes:** {len(metrics['cpfs_inconsistentes']['cpfs_com_contas_diferentes'])}")
+                        with col_alerta:
+                            if problemas_cpf['total_problemas_cpf'] > 0:
+                                st.warning(f"⚠️ ALERTA: {problemas_cpf['total_problemas_cpf']} CPFs com problemas de FORMATAÇÃO")
+                                st.write(f"**CPFs vazios:** {len(problemas_cpf['cpfs_vazios'])}")
+                                st.write(f"**CPFs com caracteres inválidos:** {len(problemas_cpf['cpfs_com_caracteres_invalidos'])}")
+                                st.write(f"**CPFs com tamanho incorreto:** {len(problemas_cpf['cpfs_com_tamanho_incorreto'])}")
                         
-                        # Mostrar detalhes das inconsistências
-                        if not metrics['cpfs_inconsistentes']['detalhes_inconsistencias'].empty:
-                            st.write("**Detalhes das Inconsistências:**")
-                            st.dataframe(metrics['cpfs_inconsistentes']['detalhes_inconsistencias'])
-                    else:
-                        st.success("✅ Nenhum CPF inconsistente encontrado")
-                else:
-                    st.info("ℹ️ Esta análise está disponível apenas para dados de pagamentos")
-            
-            with tab4:
-                if tem_dados_pagamentos and tem_dados_contas:
-                    st.subheader("Pagamentos Pendentes")
-                    
-                    if metrics['pagamentos_pendentes']['total_contas_sem_pagamento'] > 0:
-                        st.info(f"ℹ️ {metrics['pagamentos_pendentes']['total_contas_sem_pagamento']} contas aguardando pagamento")
+                        # Abas para detalhes específicos
+                        tab_inconsistentes, tab_formatacao = st.tabs([
+                            "🔴 CPFs Inconsistentes", 
+                            "📝 CPFs com Problemas de Formatação"
+                        ])
                         
-                        if not metrics['pagamentos_pendentes']['contas_sem_pagamento'].empty:
-                            st.write("**Contas sem Pagamento:**")
-                            st.dataframe(metrics['pagamentos_pendentes']['contas_sem_pagamento'])
-                    else:
-                        st.success("✅ Todas as contas abertas possuem pagamentos registrados")
-                else:
-                    st.info("ℹ️ Esta análise requer ambas as planilhas (pagamentos e inscrições)")
-            
-            with tab5:
-                st.subheader("Problemas Críticos")
-                
-                if metrics['total_registros_criticos'] > 0:
-                    st.error(f"❌ {metrics['total_registros_criticos']} registros com problemas críticos (INVÁLIDOS)")
-                    
-                    if not metrics['resumo_ausencias'].empty:
-                        st.write("**Registros com Problemas Críticos:**")
-                        st.dataframe(metrics['resumo_ausencias'])
-                else:
-                    st.success("✅ Nenhum registro com problemas críticos encontrado")
-            
-            with tab6:
-                st.subheader("CPFs para Ajuste")
-                
-                if metrics['total_cpfs_ajuste'] > 0:
-                    st.warning(f"⚠️ {metrics['total_cpfs_ajuste']} CPFs precisam de ajuste (registros VÁLIDOS)")
-                    
-                    if not metrics['problemas_cpf']['detalhes_cpfs_problematicos'].empty:
-                        st.write("**Detalhes dos CPFs para Ajuste:**")
-                        st.dataframe(metrics['problemas_cpf']['detalhes_cpfs_problematicos'])
-                else:
-                    st.success("✅ Todos os CPFs estão corretamente formatados")
-    
-    with tab_dashboard:
-        st.header("📈 Dashboard Evolutivo")
-        
-        periodo = st.selectbox("Selecione o período", 
-                             ['mensal', 'trimestral', 'semestral', 'anual'],
-                             key='dashboard_periodo')
-        
-        dashboard = criar_dashboard_evolucao(conn, periodo)
-        
-        if dashboard:
-            st.plotly_chart(dashboard['evolucao'], use_container_width=True)
-            st.plotly_chart(dashboard['valor'], use_container_width=True)
-            st.plotly_chart(dashboard['problemas'], use_container_width=True)
-            
-            # Mostrar tabela com dados
-            st.subheader("Dados Detalhados")
-            st.dataframe(dashboard['dados'])
-        else:
-            st.info("ℹ️ Não há dados suficientes para gerar o dashboard. Carregue dados de pelo menos 2 meses diferentes.")
-    
-    with tab_relatorios:
-        st.header("📋 Relatórios Comparativos")
-        
-        periodo_comparativo = st.selectbox("Selecione o período comparativo", 
-                                         ['trimestral', 'semestral', 'anual'],
-                                         key='relatorio_periodo')
-        
-        relatorio = gerar_relatorio_comparativo(conn, periodo_comparativo)
-        
-        if relatorio:
-            st.subheader(f"Relatório Comparativo - {periodo_comparativo.title()}")
-            
-            # Métricas comparativas
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                if 'variacoes' in relatorio and 'total_pagamentos' in relatorio['variacoes']:
-                    variacao = relatorio['variacoes']['total_pagamentos']
-                    st.metric(
-                        "Variação Pagamentos",
-                        f"{variacao:+.1f}%",
-                        delta=f"{variacao:+.1f}%"
-                    )
-            
-            with col2:
-                if 'variacoes' in relatorio and 'beneficiarios' in relatorio['variacoes']:
-                    variacao = relatorio['variacoes']['beneficiarios']
-                    st.metric(
-                        "Variação Beneficiários",
-                        f"{variacao:+.1f}%",
-                        delta=f"{variacao:+.1f}%"
-                    )
-            
-            with col3:
-                if 'variacoes' in relatorio and 'valor_total' in relatorio['variacoes']:
-                    variacao = relatorio['variacoes']['valor_total']
-                    st.metric(
-                        "Variação Valor Total",
-                        f"{variacao:+.1f}%",
-                        delta=f"{variacao:+.1f}%"
-                    )
-            
-            with col4:
-                if 'variacoes' in relatorio and 'cpfs_ajuste' in relatorio['variacoes']:
-                    variacao = relatorio['variacoes']['cpfs_ajuste']
-                    st.metric(
-                        "Variação CPFs p/ Ajuste",
-                        f"{variacao:+.1f}%",
-                        delta=f"{variacao:+.1f}%",
-                        delta_color="inverse" if variacao > 0 else "normal"
-                    )
-            
-            # Tabela comparativa
-            st.subheader("Dados Comparativos")
-            st.dataframe(relatorio['metricas'])
-            
-            # Download do relatório comparativo
-            st.download_button(
-                label="📥 Baixar Relatório Comparativo",
-                data=relatorio['metricas'].to_csv(index=False).encode('utf-8'),
-                file_name=f"relatorio_comparativo_{periodo_comparativo}_{data_hora_arquivo_brasilia()}.csv",
-                mime="text/csv"
-            )
-        else:
-            st.info("ℹ️ Não há dados suficientes para gerar relatório comparativo. Carregue dados de períodos diferentes.")
-    
-    with tab_historico:
-        st.header("🗃️ Dados Históricos")
-        
-        # Seleção de tipo de dados
-        tipo_dados = st.radio("Selecione o tipo de dados", 
-                            ['Pagamentos', 'Inscrições'], 
-                            horizontal=True)
-        
-        if tipo_dados == 'Pagamentos':
-            dados_historicos = carregar_pagamentos_db(conn)
-        else:
-            dados_historicos = carregar_inscricoes_db(conn)
-        
-        if not dados_historicos.empty:
-            st.subheader(f"Histórico de {tipo_dados}")
-            
-            # Mostrar dados históricos
-            for _, row in dados_historicos.iterrows():
-                with st.expander(f"{row['mes_referencia']}/{row['ano_referencia']} - {row['nome_arquivo']}"):
-                    col1, col2, col3 = st.columns(3)
-                    
-                    with col1:
-                        st.write(f"**Data de importação:** {row['data_importacao']}")
-                    
-                    with col2:
-                        st.write(f"**Mês/Ano:** {row['mes_referencia']}/{row['ano_referencia']}")
-                    
-                    with col3:
-                        # Botão para visualizar dados
-                        if st.button("📊 Visualizar Dados", key=f"view_{row['id']}"):
-                            # Carregar dados do JSON
-                            dados_json = json.loads(row['dados_json'])
-                            df_visualizacao = pd.DataFrame(dados_json)
-                            
-                            st.dataframe(df_visualizacao.head(10))
-                            
-                            # Botão para baixar dados específicos
-                            csv = df_visualizacao.to_csv(index=False)
-                            st.download_button(
-                                label="📥 Baixar Dados",
-                                data=csv,
-                                file_name=f"{tipo_dados.lower()}_{row['mes_referencia']}_{row['ano_referencia']}.csv",
-                                mime="text/csv"
-                            )
-        else:
-            st.info(f"ℹ️ Não há dados históricos de {tipo_dados.lower()} no sistema.")
-    
-    with tab_estatisticas:
-        st.header("📊 Estatísticas Detalhadas")
-        
-        if tem_dados_pagamentos:
-            dashboard_estatisticas = criar_dashboard_estatisticas(metrics, dados)
-            
-            if dashboard_estatisticas:
-                if 'valores' in dashboard_estatisticas:
-                    st.subheader("Distribuição de Valores")
-                    st.plotly_chart(dashboard_estatisticas['valores'], use_container_width=True)
-                
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    if 'projetos' in dashboard_estatisticas:
-                        st.subheader("Top Projetos")
-                        st.plotly_chart(dashboard_estatisticas['projetos'], use_container_width=True)
-                
-                with col2:
-                    if 'status' in dashboard_estatisticas:
-                        st.subheader("Distribuição por Status")
-                        st.plotly_chart(dashboard_estatisticas['status'], use_container_width=True)
-                
-                if 'estatisticas' in dashboard_estatisticas:
-                    st.subheader("Estatísticas Descritivas dos Valores")
-                    estatisticas = dashboard_estatisticas['estatisticas']
-                    
-                    col1, col2, col3, col4, col5 = st.columns(5)
-                    
-                    with col1:
-                        st.metric("Média", formatar_brasileiro(estatisticas['Média'], 'monetario'))
-                    with col2:
-                        st.metric("Mediana", formatar_brasileiro(estatisticas['Mediana'], 'monetario'))
-                    with col3:
-                        st.metric("Desvio Padrão", formatar_brasileiro(estatisticas['Desvio Padrão'], 'monetario'))
-                    with col4:
-                        st.metric("Mínimo", formatar_brasileiro(estatisticas['Valor Mínimo'], 'monetario'))
-                    with col5:
-                        st.metric("Máximo", formatar_brasileiro(estatisticas['Valor Máximo'], 'monetario'))
-            else:
-                st.info("ℹ️ Não há dados suficientes para gerar estatísticas detalhadas.")
-        else:
-            st.info("ℹ️ Esta análise está disponível apenas para dados de pagamentos.")
-
-if __name__ == "__main__":
-    main()
+                        with tab_inconsistentes:
+                            if not problemas_cpf['d
