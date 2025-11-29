@@ -387,10 +387,10 @@ def obter_coluna_nome(df):
             return coluna
     return None
 
-# CORREÇÃO: Função auxiliar para obter coluna de valor (priorizando "Valor Pgto")
+# CORREÇÃO CRÍTICA: Função auxiliar para obter coluna de valor (priorizando "Valor Pagto")
 def obter_coluna_valor(df):
-    """Identifica a coluna que contém o valor pago, priorizando 'Valor Pgto'"""
-    colunas_valor_prioridade = ['Valor Pgto', 'Valor_Pgto', 'Valor', 'Valor_Pago', 'Valor Pagamento']
+    """Identifica a coluna que contém o valor pago, priorizando 'Valor Pagto'"""
+    colunas_valor_prioridade = ['Valor Pagto', 'Valor_Pagto', 'Valor Pgto', 'Valor_Pgto', 'Valor', 'Valor_Pago', 'Valor Pagamento']
     for coluna in colunas_valor_prioridade:
         if coluna in df.columns:
             return coluna
@@ -749,13 +749,13 @@ def processar_colunas_data(df):
     
     return df_processed
 
-# CORREÇÃO CRÍTICA: Função para processar colunas de valor (priorizando "Valor Pgto")
+# CORREÇÃO CRÍTICA: Função para processar colunas de valor (priorizando "Valor Pagto")
 def processar_colunas_valor(df):
-    """Processa colunas de valor para formato brasileiro, priorizando 'Valor Pgto'"""
+    """Processa colunas de valor para formato brasileiro, priorizando 'Valor Pagto'"""
     df_processed = df.copy()
     
     # ORDEM DE PRIORIDADE para colunas de valor
-    colunas_valor_prioridade = ['Valor Pgto', 'Valor_Pgto', 'Valor', 'Valor_Pago', 'Valor Pagamento']
+    colunas_valor_prioridade = ['Valor Pagto', 'Valor_Pagto', 'Valor Pgto', 'Valor_Pgto', 'Valor', 'Valor_Pago', 'Valor Pagamento']
     
     coluna_valor_encontrada = None
     for coluna_valor in colunas_valor_prioridade:
@@ -1200,7 +1200,7 @@ def criar_dashboard_evolucao(conn, periodo='mensal'):
     ))
     
     fig_valor.update_layout(
-        title='Evolução do Valor Total Mensal (Valor Pgto)',
+        title='Evolução do Valor Total Mensal (Valor Pagto)',
         xaxis_title='Mês/Ano',
         yaxis_title='Valor (R$)',
         height=400
@@ -1259,7 +1259,7 @@ def criar_dashboard_estatisticas(metrics, dados):
             if len(valores_validos) > 0:
                 fig_valores = px.histogram(
                     x=valores_validos,
-                    title='Distribuição de Valores dos Pagamentos (Valor Pgto)',
+                    title='Distribuição de Valores dos Pagamentos (Valor Pagto)',
                     labels={'x': 'Valor (R$)', 'y': 'Quantidade'},
                     nbins=20
                 )
@@ -1386,7 +1386,7 @@ def gerar_pdf_executivo(metrics, dados, nomes_arquivos, tipo_relatorio='pagament
             ("Total de Pagamentos", formatar_brasileiro(metrics['total_pagamentos'])),
             ("Beneficiários Únicos", formatar_brasileiro(metrics['beneficiarios_unicos'])),
             ("Contas Únicas", formatar_brasileiro(metrics['contas_unicas'])),
-            ("Valor Total (Valor Pgto)", formatar_brasileiro(metrics['valor_total'], 'monetario')),
+            ("Valor Total (Valor Pagto)", formatar_brasileiro(metrics['valor_total'], 'monetario')),
             ("Pagamentos Duplicados", formatar_brasileiro(metrics['pagamentos_duplicados'])),
             ("Valor em Duplicidades", formatar_brasileiro(metrics['valor_total_duplicados'], 'monetario')),
             ("Projetos Ativos", formatar_brasileiro(metrics['projetos_ativos'])),
@@ -1442,7 +1442,7 @@ def gerar_excel_completo(metrics, dados, tipo_relatorio='pagamentos'):
                     'Total de Pagamentos Válidos',
                     'Beneficiários Únicos',
                     'Contas Únicas', 
-                    'Valor Total (Valor Pgto)',
+                    'Valor Total (Valor Pagto)',
                     'Pagamentos Duplicados',
                     'Valor em Duplicidades',
                     'Projetos Ativos',
@@ -1840,9 +1840,9 @@ def main():
                 
                 with col4:
                     st.metric(
-                        "Valor Total (Valor Pgto)", 
+                        "Valor Total (Valor Pagto)", 
                         formatar_brasileiro(metrics['valor_total'], 'monetario'),
-                        help="Somatória dos valores da coluna Valor Pgto"
+                        help="Somatória dos valores da coluna Valor Pagto"
                     )
                 
                 # Segunda linha de métricas
@@ -2131,44 +2131,4 @@ def main():
         st.header("📊 Estatísticas Detalhadas")
         
         if tem_dados_pagamentos:
-            dashboard_estatisticas = criar_dashboard_estatisticas(metrics, dados)
-            
-            if dashboard_estatisticas:
-                # Gráfico de distribuição de valores
-                if 'valores' in dashboard_estatisticas:
-                    st.subheader("Distribuição de Valores (Valor Pgto)")
-                    st.plotly_chart(dashboard_estatisticas['valores'], use_container_width=True)
-                
-                # Gráficos de projetos e status
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    if 'projetos' in dashboard_estatisticas:
-                        st.plotly_chart(dashboard_estatisticas['projetos'], use_container_width=True)
-                
-                with col2:
-                    if 'status' in dashboard_estatisticas:
-                        st.plotly_chart(dashboard_estatisticas['status'], use_container_width=True)
-                
-                # Estatísticas descritivas
-                if 'estatisticas' in dashboard_estatisticas:
-                    st.subheader("Estatísticas Descritivas dos Valores (Valor Pgto)")
-                    estat_df = pd.DataFrame.from_dict(
-                        dashboard_estatisticas['estatisticas'], 
-                        orient='index', 
-                        columns=['Valor']
-                    )
-                    estat_df['Valor Formatado'] = estat_df['Valor'].apply(
-                        lambda x: formatar_brasileiro(x, 'monetario') if x > 1000 else formatar_brasileiro(x)
-                    )
-                    st.dataframe(estat_df[['Valor Formatado']])
-            else:
-                st.info("ℹ️ Não há dados suficientes para gerar estatísticas detalhadas.")
-        else:
-            st.info("ℹ️ Carregue dados de pagamentos para visualizar estatísticas detalhadas.")
-
-    # Fechar conexão com o banco de dados
-    conn.close()
-
-if __name__ == "__main__":
-    main()
+            dashboard_estat
