@@ -19,7 +19,8 @@ import json
 st.set_page_config(
     page_title="Sistema POT - SMDET",
     page_icon="🏛️",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
 # Sistema de banco de dados
@@ -110,7 +111,7 @@ def data_hora_arquivo_brasilia():
 
 # Sistema de autenticação seguro
 def autenticar():
-    st.sidebar.title("Sistema POT - SMDET")
+    st.sidebar.title("🔐 Sistema POT - SMDET")
     st.sidebar.markdown("**Prefeitura de São Paulo**")
     st.sidebar.markdown("**Secretaria Municipal do Desenvolvimento Econômico e Trabalho**")
     st.sidebar.markdown("---")
@@ -132,7 +133,7 @@ def autenticar():
     if st.session_state.autenticado:
         st.sidebar.success(f"✅ Acesso autorizado")
         st.sidebar.info(f"👤 {st.session_state.email_autorizado}")
-        if st.sidebar.button("🚪 Sair"):
+        if st.sidebar.button("🚪 Sair", use_container_width=True):
             st.session_state.autenticado = False
             st.session_state.email_autorizado = None
             st.rerun()
@@ -140,10 +141,10 @@ def autenticar():
     
     # Formulário de login
     with st.sidebar.form("login_form"):
-        st.subheader("🔐 Acesso Restrito")
+        st.subheader("Acesso Restrito")
         email = st.text_input("Email institucional", placeholder="seu.email@prefeitura.sp.gov.br")
         senha = st.text_input("Senha", type="password", placeholder="Digite sua senha")
-        submit = st.form_submit_button("Entrar")
+        submit = st.form_submit_button("Entrar", use_container_width=True)
         
         if submit:
             if not email or not senha:
@@ -836,7 +837,7 @@ def detectar_pagamentos_pendentes(dados):
 def processar_cpf(cpf):
     """Processa CPF, mantendo apenas números e completando com zeros à esquerda"""
     if pd.isna(cpf) or cpf in ['', 'NaN', 'None', 'nan', 'None', 'NULL']:
-        return ''  # Manver como string vazia para campos em branco
+        return ''  # Manter como string vazia para campos em branco
     
     cpf_str = str(cpf).strip()
     
@@ -1429,9 +1430,9 @@ def gerar_relatorio_comparativo(conn, periodo):
         'periodo': periodo
     }
 
-# FUNÇÃO RESTAURADA E MELHORADA: Gerar PDF Executivo
+# FUNÇÃO MELHORADA: Gerar PDF Executivo com tabelas otimizadas
 def gerar_pdf_executivo(metrics, dados, nomes_arquivos, tipo_relatorio='pagamentos'):
-    """Gera relatório executivo em PDF"""
+    """Gera relatório executivo em PDF com layout otimizado"""
     pdf = FPDF()
     pdf.add_page()
     
@@ -1519,7 +1520,7 @@ def gerar_pdf_executivo(metrics, dados, nomes_arquivos, tipo_relatorio='pagament
             
             pdf.set_text_color(0, 0, 0)
             
-            # NOVO: Adicionar tabelas de CPFs problemáticos ao PDF
+            # NOVO: Adicionar tabelas de CPFs problemáticos ao PDF com layout otimizado
             pdf.add_page()
             pdf.set_font("Arial", 'B', 14)
             pdf.cell(0, 10, "Detalhamento dos CPFs Problemáticos", 0, 1)
@@ -1529,25 +1530,31 @@ def gerar_pdf_executivo(metrics, dados, nomes_arquivos, tipo_relatorio='pagament
             if not problemas_cpf['detalhes_inconsistencias'].empty:
                 pdf.set_font("Arial", 'B', 12)
                 pdf.cell(0, 10, "CPFs com Inconsistências Críticas:", 0, 1)
-                pdf.set_font("Arial", '', 10)
+                pdf.set_font("Arial", '', 8)  # Fonte menor para caber mais conteúdo
                 
-                # Adicionar tabela de inconsistências
+                # Adicionar tabela de inconsistências com layout otimizado
                 colunas = ['CPF', 'Nome', 'Conta', 'Valor', 'Problemas']
-                larguras = [30, 40, 30, 25, 65]
+                larguras = [25, 35, 25, 20, 85]  # Ajustado para caber na página
                 
                 # Cabeçalho da tabela
                 for i, coluna in enumerate(colunas):
-                    pdf.cell(larguras[i], 10, coluna, 1, 0, 'C')
+                    pdf.cell(larguras[i], 8, coluna, 1, 0, 'C')
                 pdf.ln()
                 
-                # Dados da tabela
-                for _, row in problemas_cpf['detalhes_inconsistencias'].iterrows():
-                    pdf.cell(larguras[0], 10, str(row.get('CPF', '')), 1)
-                    pdf.cell(larguras[1], 10, str(row.get('Nome', ''))[:20], 1)
-                    pdf.cell(larguras[2], 10, str(row.get('Numero_Conta', ''))[:15], 1)
-                    pdf.cell(larguras[3], 10, str(row.get('Valor', '')), 1)
-                    pdf.cell(larguras[4], 10, str(row.get('Problemas_Inconsistencia', ''))[:40], 1)
+                # Dados da tabela - limitar a 15 registros para não sobrecarregar o PDF
+                df_inconsistencias = problemas_cpf['detalhes_inconsistencias'].head(15)
+                for _, row in df_inconsistencias.iterrows():
+                    pdf.cell(larguras[0], 8, str(row.get('CPF', ''))[:11], 1)
+                    pdf.cell(larguras[1], 8, str(row.get('Nome', ''))[:20], 1)
+                    pdf.cell(larguras[2], 8, str(row.get('Numero_Conta', ''))[:12], 1)
+                    pdf.cell(larguras[3], 8, str(row.get('Valor', ''))[:10], 1)
+                    # Problemas - quebrar texto se necessário
+                    problemas = str(row.get('Problemas_Inconsistencia', ''))[:35]
+                    pdf.cell(larguras[4], 8, problemas, 1)
                     pdf.ln()
+                
+                if len(problemas_cpf['detalhes_inconsistencias']) > 15:
+                    pdf.cell(0, 8, f"... e mais {len(problemas_cpf['detalhes_inconsistencias']) - 15} registros", 0, 1)
                 
                 pdf.ln(10)
             
@@ -1555,25 +1562,30 @@ def gerar_pdf_executivo(metrics, dados, nomes_arquivos, tipo_relatorio='pagament
             if not problemas_cpf['detalhes_cpfs_problematicos'].empty:
                 pdf.set_font("Arial", 'B', 12)
                 pdf.cell(0, 10, "CPFs com Problemas de Formatação:", 0, 1)
-                pdf.set_font("Arial", '', 10)
+                pdf.set_font("Arial", '', 8)
                 
-                # Adicionar tabela de formatação
+                # Adicionar tabela de formatação com layout otimizado
                 colunas = ['CPF Original', 'CPF Processado', 'Nome', 'Conta', 'Problemas']
-                larguras = [30, 30, 40, 30, 60]
+                larguras = [25, 25, 35, 25, 60]
                 
                 # Cabeçalho da tabela
                 for i, coluna in enumerate(colunas):
-                    pdf.cell(larguras[i], 10, coluna, 1, 0, 'C')
+                    pdf.cell(larguras[i], 8, coluna, 1, 0, 'C')
                 pdf.ln()
                 
-                # Dados da tabela
-                for _, row in problemas_cpf['detalhes_cpfs_problematicos'].iterrows():
-                    pdf.cell(larguras[0], 10, str(row.get('CPF_Original', ''))[:15], 1)
-                    pdf.cell(larguras[1], 10, str(row.get('CPF_Processado', ''))[:15], 1)
-                    pdf.cell(larguras[2], 10, str(row.get('Nome', ''))[:20], 1)
-                    pdf.cell(larguras[3], 10, str(row.get('Numero_Conta', ''))[:15], 1)
-                    pdf.cell(larguras[4], 10, str(row.get('Problemas_Formatacao', ''))[:35], 1)
+                # Dados da tabela - limitar a 15 registros
+                df_formatacao = problemas_cpf['detalhes_cpfs_problematicos'].head(15)
+                for _, row in df_formatacao.iterrows():
+                    pdf.cell(larguras[0], 8, str(row.get('CPF_Original', ''))[:12], 1)
+                    pdf.cell(larguras[1], 8, str(row.get('CPF_Processado', ''))[:12], 1)
+                    pdf.cell(larguras[2], 8, str(row.get('Nome', ''))[:20], 1)
+                    pdf.cell(larguras[3], 8, str(row.get('Numero_Conta', ''))[:12], 1)
+                    problemas = str(row.get('Problemas_Formatacao', ''))[:30]
+                    pdf.cell(larguras[4], 8, problemas, 1)
                     pdf.ln()
+                
+                if len(problemas_cpf['detalhes_cpfs_problematicos']) > 15:
+                    pdf.cell(0, 8, f"... e mais {len(problemas_cpf['detalhes_cpfs_problematicos']) - 15} registros", 0, 1)
         
         if metrics['total_registros_criticos'] > 0:
             pdf.set_font("Arial", 'B', 12)
@@ -1868,7 +1880,7 @@ def carregar_dados(conn):
     
     return dados, nomes_arquivos, mes_ref, ano_ref
 
-# Interface principal do sistema CORRIGIDA
+# Interface principal do sistema MELHORADA
 def main():
     # Inicializar banco de dados
     conn = init_database()
@@ -1899,6 +1911,66 @@ def main():
     # Verificar se há dados para processar
     tem_dados_pagamentos = 'pagamentos' in dados and not dados['pagamentos'].empty
     tem_dados_contas = 'contas' in dados and not dados['contas'].empty
+    
+    # CORREÇÃO: Botões de exportação no topo da página principal
+    if tem_dados_pagamentos or tem_dados_contas:
+        st.sidebar.markdown("---")
+        st.sidebar.header("📥 Exportar Relatórios")
+        
+        # Processar dados para gerar relatórios
+        with st.spinner("🔄 Processando dados..."):
+            metrics = processar_dados(dados, nomes_arquivos)
+            
+            # Salvar métricas no banco de dados
+            if tem_dados_pagamentos:
+                salvar_metricas_db(conn, 'pagamentos', mes_ref, ano_ref, metrics)
+            if tem_dados_contas:
+                salvar_metricas_db(conn, 'inscricoes', mes_ref, ano_ref, metrics)
+        
+        # Botões de exportação em colunas
+        col1, col2, col3 = st.sidebar.columns(3)
+        
+        with col1:
+            if tem_dados_pagamentos:
+                pdf_bytes = gerar_pdf_executivo(metrics, dados, nomes_arquivos, 'pagamentos')
+            else:
+                pdf_bytes = gerar_pdf_executivo(metrics, dados, nomes_arquivos, 'inscricoes')
+            
+            st.download_button(
+                label="📄 PDF",
+                data=pdf_bytes,
+                file_name=f"relatorio_executivo_pot_{mes_ref}_{ano_ref}_{data_hora_arquivo_brasilia()}.pdf",
+                mime="application/pdf",
+                use_container_width=True
+            )
+        
+        with col2:
+            if tem_dados_pagamentos:
+                excel_bytes = gerar_excel_completo(metrics, dados, 'pagamentos')
+            else:
+                excel_bytes = gerar_excel_completo(metrics, dados, 'inscricoes')
+            
+            st.download_button(
+                label="📊 Excel",
+                data=excel_bytes,
+                file_name=f"analise_completa_pot_{mes_ref}_{ano_ref}_{data_hora_arquivo_brasilia()}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+        
+        with col3:
+            if tem_dados_pagamentos:
+                ajustes_bytes = gerar_planilha_ajustes(metrics, 'pagamentos')
+            else:
+                ajustes_bytes = gerar_planilha_ajustes(metrics, 'inscricoes')
+            
+            st.download_button(
+                label="🔧 Ajustes",
+                data=ajustes_bytes,
+                file_name=f"plano_ajustes_pot_{mes_ref}_{ano_ref}_{data_hora_arquivo_brasilia()}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
     
     # Abas principais do sistema
     tab_principal, tab_dashboard, tab_relatorios, tab_historico, tab_estatisticas = st.tabs([
@@ -1931,16 +2003,6 @@ def main():
                 st.metric("Valor Total", "R$ 0,00")
             
         else:
-            # Processar dados
-            with st.spinner("🔄 Processando dados..."):
-                metrics = processar_dados(dados, nomes_arquivos)
-                
-                # Salvar métricas no banco de dados
-                if tem_dados_pagamentos:
-                    salvar_metricas_db(conn, 'pagamentos', mes_ref, ano_ref, metrics)
-                if tem_dados_contas:
-                    salvar_metricas_db(conn, 'inscricoes', mes_ref, ano_ref, metrics)
-            
             # Interface principal
             st.title("🏛️ Sistema POT - SMDET")
             st.markdown("### Análise de Pagamentos e Inscrições")
@@ -1952,55 +2014,59 @@ def main():
             if metrics.get('linha_totais_removida', False):
                 st.info(f"📝 **Nota:** Linha de totais da planilha foi identificada e excluída da análise ({metrics['total_registros_originais']} → {metrics['total_registros_sem_totais']} registros)")
             
-            # SEÇÃO RESTAURADA: Download de Relatórios
-            st.sidebar.markdown("---")
-            st.sidebar.header("📥 Exportar Relatórios")
+            # BOTÕES DE EXPORTAÇÃO NO TOPO - MAIS VISÍVEIS
+            st.markdown("---")
+            st.subheader("📥 Exportar Relatórios")
             
-            col1, col2, col3 = st.sidebar.columns(3)
+            exp_col1, exp_col2, exp_col3 = st.columns(3)
             
-            with col1:
+            with exp_col1:
                 if tem_dados_pagamentos:
                     pdf_bytes = gerar_pdf_executivo(metrics, dados, nomes_arquivos, 'pagamentos')
                 else:
                     pdf_bytes = gerar_pdf_executivo(metrics, dados, nomes_arquivos, 'inscricoes')
                 
                 st.download_button(
-                    label="📄 PDF",
+                    label="📄 Relatório PDF Executivo",
                     data=pdf_bytes,
                     file_name=f"relatorio_executivo_pot_{mes_ref}_{ano_ref}_{data_hora_arquivo_brasilia()}.pdf",
-                    mime="application/pdf"
+                    mime="application/pdf",
+                    use_container_width=True
                 )
             
-            with col2:
+            with exp_col2:
                 if tem_dados_pagamentos:
                     excel_bytes = gerar_excel_completo(metrics, dados, 'pagamentos')
                 else:
                     excel_bytes = gerar_excel_completo(metrics, dados, 'inscricoes')
                 
                 st.download_button(
-                    label="📊 Excel",
+                    label="📊 Planilha Completa Excel",
                     data=excel_bytes,
                     file_name=f"analise_completa_pot_{mes_ref}_{ano_ref}_{data_hora_arquivo_brasilia()}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
                 )
             
-            with col3:
+            with exp_col3:
                 if tem_dados_pagamentos:
                     ajustes_bytes = gerar_planilha_ajustes(metrics, 'pagamentos')
                 else:
                     ajustes_bytes = gerar_planilha_ajustes(metrics, 'inscricoes')
                 
                 st.download_button(
-                    label="🔧 Ajustes",
+                    label="🔧 Plano de Ajustes Excel",
                     data=ajustes_bytes,
                     file_name=f"plano_ajustes_pot_{mes_ref}_{ano_ref}_{data_hora_arquivo_brasilia()}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
                 )
             
             st.markdown("---")
             
             # Métricas principais
             if tem_dados_pagamentos:
+                st.subheader("💰 Métricas de Pagamentos")
                 col1, col2, col3, col4 = st.columns(4)
                 
                 with col1:
