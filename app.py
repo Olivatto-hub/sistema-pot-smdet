@@ -438,7 +438,7 @@ def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_co
                 (df['CPF'].astype(str).str.len() < 11) &
                 (df['CPF'].astype(str).str.strip() != '') &
                 (df['CPF'].astype(str).str.strip() != 'NaN') &
-                (df['CPF'].astize(str).str.strip() != 'None')
+                (df['CPF'].astype(str).str.strip() != 'None')
             ]
             analise_ausencia['cpfs_com_zeros_adicional'] = len(cpfs_com_zeros)
             
@@ -457,8 +457,8 @@ def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_co
                 df['CPF'].isna() | 
                 (df['CPF'].astype(str).str.strip() == '') |
                 (df['CPF'].astype(str).str.strip() == 'NaN') |
-                (df['CPF'].astize(str).str.strip() == 'None') |
-                (df['CPF'].astize(str).str.strip() == 'nan')
+                (df['CPF'].astype(str).str.strip() == 'None') |
+                (df['CPF'].astype(str).str.strip() == 'nan')
             )
             
             cpfs_ausentes = df[mask_cpf_ausente]
@@ -469,9 +469,9 @@ def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_co
         if coluna_conta:
             mask_conta_ausente = (
                 df[coluna_conta].isna() | 
-                (df[coluna_conta].astize(str).str.strip() == '') |
-                (df[coluna_conta].astize(str).str.strip() == 'NaN') |
-                (df[coluna_conta].astize(str).str.strip() == 'None')
+                (df[coluna_conta].astype(str).str.strip() == '') |
+                (df[coluna_conta].astype(str).str.strip() == 'NaN') |
+                (df[coluna_conta].astype(str).str.strip() == 'None')
             )
             contas_ausentes = df[mask_conta_ausente]
             for idx in contas_ausentes.index:
@@ -482,9 +482,9 @@ def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_co
         if 'Valor' in df.columns:
             mask_valor_invalido = (
                 df['Valor'].isna() | 
-                (df['Valor'].astize(str).str.strip() == '') |
-                (df['Valor'].astize(str).str.strip() == 'NaN') |
-                (df['Valor'].astize(str).str.strip() == 'None') |
+                (df['Valor'].astype(str).str.strip() == '') |
+                (df['Valor'].astype(str).str.strip() == 'NaN') |
+                (df['Valor'].astype(str).str.strip() == 'None') |
                 (df['Valor_Limpo'] == 0)
             )
             valores_invalidos = df[mask_valor_invalido]
@@ -505,9 +505,9 @@ def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_co
             if coluna in df.columns:
                 mask_ausente = (
                     df[coluna].isna() | 
-                    (df[coluna].astize(str).str.strip() == '') |
-                    (df[coluna].astize(str).str.strip() == 'NaN') |
-                    (df[coluna].astize(str).str.strip() == 'None')
+                    (df[coluna].astype(str).str.strip() == '') |
+                    (df[coluna].astype(str).str.strip() == 'NaN') |
+                    (df[coluna].astype(str).str.strip() == 'None')
                 )
                 ausentes = df[mask_ausente]
                 if len(ausentes) > 0:
@@ -598,16 +598,16 @@ def processar_colunas_valor(df):
             if df_processed['Valor'].dtype == 'object':
                 df_processed['Valor_Limpo'] = (
                     df_processed['Valor']
-                    .astize(str)
+                    .astype(str)
                     .str.replace('R$', '')
                     .str.replace('R$ ', '')
                     .str.replace('.', '')
                     .str.replace(',', '.')
                     .str.replace(' ', '')
-                    .astize(float)
+                    .astype(float)
                 )
             else:
-                df_processed['Valor_Limpo'] = df_processed['Valor'].astize(float)
+                df_processed['Valor_Limpo'] = df_processed['Valor'].astype(float)
                 
         except Exception as e:
             st.warning(f"⚠️ Erro ao processar valores: {str(e)}")
