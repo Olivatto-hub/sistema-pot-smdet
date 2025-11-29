@@ -78,7 +78,7 @@ def formatar_brasileiro(valor, tipo='numero'):
     else:
         return str(valor)
 
-# NOVA FUNÇÃO: Detectar pagamentos duplicados com detalhes
+# FUNÇÃO CORRIGIDA: Detectar pagamentos duplicados com detalhes
 def detectar_pagamentos_duplicados(df):
     """Detecta pagamentos duplicados por número de conta e retorna detalhes completos"""
     duplicidades = {
@@ -86,7 +86,8 @@ def detectar_pagamentos_duplicados(df):
         'total_contas_duplicadas': 0,
         'total_pagamentos_duplicados': 0,
         'valor_total_duplicados': 0,
-        'resumo_duplicidades': pd.DataFrame()
+        'resumo_duplicidades': pd.DataFrame(),
+        'contas_com_multiplos_pagamentos': []  # NOVO: Lista de contas com mais de 1 pagamento
     }
     
     coluna_conta = obter_coluna_conta(df)
@@ -97,13 +98,15 @@ def detectar_pagamentos_duplicados(df):
     
     # Encontrar contas com múltiplos pagamentos
     contagem_por_conta = df[coluna_conta].value_counts()
-    contas_duplicadas = contagem_por_conta[contagem_por_conta > 1].index.tolist()
+    contas_com_multiplos = contagem_por_conta[contagem_por_conta > 1].index.tolist()
     
-    if not contas_duplicadas:
+    duplicidades['contas_com_multiplos_pagamentos'] = contas_com_multiplos
+    
+    if not contas_com_multiplos:
         return duplicidades
     
     # Filtrar apenas os registros duplicados
-    df_duplicados = df[df[coluna_conta].isin(contas_duplicadas)].copy()
+    df_duplicados = df[df[coluna_conta].isin(contas_com_multiplos)].copy()
     
     # Ordenar por conta e data (se disponível)
     colunas_ordenacao = [coluna_conta]
@@ -143,24 +146,27 @@ def detectar_pagamentos_duplicados(df):
     if 'Projeto' in df_duplicados.columns:
         colunas_exibicao.append('Projeto')
     
-    # Atualizar métricas
+    # Atualizar métricas - CORREÇÃO DA LÓGICA
     duplicidades['contas_duplicadas'] = df_duplicados[colunas_exibicao]
-    duplicidades['total_contas_duplicadas'] = len(contas_duplicadas)
+    duplicidades['total_contas_duplicadas'] = len(contas_com_multiplos)
+    
+    # CORREÇÃO: Total de pagamentos duplicados é a soma de TODOS os pagamentos das contas duplicadas
     duplicidades['total_pagamentos_duplicados'] = len(df_duplicados)
     
     if 'Valor_Limpo' in df_duplicados.columns:
         duplicidades['valor_total_duplicados'] = df_duplicados['Valor_Limpo'].sum()
     
-    # Criar resumo por conta
+    # Criar resumo por conta - CORRIGIDO
     resumo = []
-    for conta in contas_duplicadas:
+    for conta in contas_com_multiplos:
         registros_conta = df_duplicados[df_duplicados[coluna_conta] == conta]
         primeiro_registro = registros_conta.iloc[0]
         
         info_conta = {
             'Conta': conta,
             'Total_Pagamentos': len(registros_conta),
-            'Valor_Total': registros_conta['Valor_Limpo'].sum() if 'Valor_Limpo' in registros_conta.columns else 0
+            'Valor_Total': registros_conta['Valor_Limpo'].sum() if 'Valor_Limpo' in registros_conta.columns else 0,
+            'Pagamentos_Extras': len(registros_conta) - 1  # CORREÇÃO: Pagamentos extras = total - 1
         }
         
         if coluna_nome:
@@ -186,7 +192,7 @@ def detectar_pagamentos_duplicados(df):
     
     return duplicidades
 
-# NOVA FUNÇÃO: Detectar pagamentos pendentes
+# FUNÇÃO: Detectar pagamentos pendentes
 def detectar_pagamentos_pendentes(dados):
     """Detecta possíveis pagamentos pendentes comparando contas abertas com pagamentos realizados"""
     pendentes = {
@@ -689,7 +695,7 @@ def gerar_pdf_executivo(dados, metrics, nomes_arquivos):
         # ANÁLISE DE DADOS E ALERTAS
         tem_alertas = False
         
-        # ALERTA DE DUPLICIDADES DETALHADO
+        # ALERTA DE DUPLICIDADES DETALHADO - CORRIGIDO
         duplicidades = metrics.get('duplicidades_detalhadas', {})
         if duplicidades.get('total_contas_duplicadas', 0) > 0:
             tem_alertas = True
@@ -701,11 +707,13 @@ def gerar_pdf_executivo(dados, metrics, nomes_arquivos):
             
             total_pagamentos = metrics.get('total_pagamentos', 0)
             total_contas = metrics.get('contas_unicas', 0)
+            pagamentos_em_excesso = duplicidades['total_pagamentos_duplicados'] - duplicidades['total_contas_duplicadas']
             
+            # CORREÇÃO: Texto com lógica correta
             pdf.cell(0, 6, f'- Total de pagamentos: {formatar_brasileiro(total_pagamentos, "numero")}', 0, 1)
             pdf.cell(0, 6, f'- Total de contas unicas: {formatar_brasileiro(total_contas, "numero")}', 0, 1)
-            pdf.cell(0, 6, f'- Diferenca (pagamentos extras): {formatar_brasileiro(total_pagamentos - total_contas, "numero")}', 0, 1)
-            pdf.cell(0, 6, f'- Contas com pagamentos duplicados: {formatar_brasileiro(duplicidades["total_contas_duplicadas"], "numero")}', 0, 1)
+            pdf.cell(0, 6, f'- Contas com multiplos pagamentos: {formatar_brasileiro(duplicidades["total_contas_duplicadas"], "numero")}', 0, 1)
+            pdf.cell(0, 6, f'- Pagamentos em excesso: {formatar_brasileiro(pagamentos_em_excesso, "numero")}', 0, 1)
             pdf.cell(0, 6, f'- Total de pagamentos duplicados: {formatar_brasileiro(duplicidades["total_pagamentos_duplicados"], "numero")}', 0, 1)
             
             if duplicidades.get('valor_total_duplicados', 0) > 0:
@@ -948,20 +956,27 @@ def main():
         if metrics.get('valor_total', 0) > 0:
             st.metric("Valor Total", formatar_brasileiro(metrics["valor_total"], "monetario"))
     
-    # NOVO: ALERTA DE DUPLICIDADE DETALHADO
+    # CORREÇÃO: ALERTA DE DUPLICIDADE DETALHADO - LÓGICA CORRIGIDA
     duplicidades = metrics.get('duplicidades_detalhadas', {})
     if duplicidades.get('total_contas_duplicadas', 0) > 0:
         total_pagamentos = metrics.get('total_pagamentos', 0)
         total_contas = metrics.get('contas_unicas', 0)
+        total_contas_duplicadas = duplicidades['total_contas_duplicadas']
+        total_pagamentos_duplicados = duplicidades['total_pagamentos_duplicados']
+        
+        # CORREÇÃO: Calcular pagamentos em excesso corretamente
+        pagamentos_em_excesso = total_pagamentos_duplicados - total_contas_duplicadas
         
         st.error(f"""
         🚨 **ALERTA CRÍTICO: DUPLICIDADE DETECTADA**
         
         **{formatar_brasileiro(total_pagamentos, 'numero')} pagamentos** para **{formatar_brasileiro(total_contas, 'numero')} contas**
         
-        ⚠️ **{formatar_brasileiro(total_pagamentos - total_contas, 'numero')} pagamentos em excesso** detectados
-        📋 **{formatar_brasileiro(duplicidades['total_contas_duplicadas'], 'numero')} contas** com pagamentos duplicados
+        ⚠️ **{formatar_brasileiro(total_contas_duplicadas, 'numero')} contas** receberam múltiplos pagamentos
+        📋 **{formatar_brasileiro(pagamentos_em_excesso, 'numero')} pagamentos em excesso** (acima do esperado)
         💰 **Valor total em duplicidades:** {formatar_brasileiro(duplicidades.get('valor_total_duplicados', 0), 'monetario')}
+        
+        *Análise: {formatar_brasileiro(total_contas_duplicadas, 'numero')} contas receberam mais de 1 pagamento cada*
         """)
     
     # Alertas críticos
@@ -1013,26 +1028,60 @@ def main():
         st.header("Análise de Duplicidades")
         
         if duplicidades.get('total_contas_duplicadas', 0) > 0:
-            st.subheader(f"📊 Resumo das Duplicidades")
+            total_pagamentos = metrics.get('total_pagamentos', 0)
+            total_contas = metrics.get('contas_unicas', 0)
+            pagamentos_em_excesso = duplicidades['total_pagamentos_duplicados'] - duplicidades['total_contas_duplicadas']
             
-            col1, col2, col3 = st.columns(3)
+            st.subheader(f"📊 Análise das Duplicidades")
+            
+            # CORREÇÃO: Métricas com lógica correta
+            col1, col2, col3, col4 = st.columns(4)
             
             with col1:
-                st.metric("Contas com Duplicidades", formatar_brasileiro(duplicidades['total_contas_duplicadas'], 'numero'))
+                st.metric("Total de Pagamentos", formatar_brasileiro(total_pagamentos, 'numero'))
             
             with col2:
-                st.metric("Pagamentos Duplicados", formatar_brasileiro(duplicidades['total_pagamentos_duplicados'], 'numero'))
+                st.metric("Contas Únicas", formatar_brasileiro(total_contas, 'numero'))
             
             with col3:
-                st.metric("Valor em Duplicidades", formatar_brasileiro(duplicidades.get('valor_total_duplicados', 0), 'monetario'))
+                st.metric("Contas com Múltiplos Pagamentos", 
+                         formatar_brasileiro(duplicidades['total_contas_duplicadas'], 'numero'),
+                         delta=f"+{formatar_brasileiro(pagamentos_em_excesso, 'numero')} pagamentos extras")
             
-            st.subheader("📋 Contas com Pagamentos Duplicados")
+            with col4:
+                st.metric("Valor em Duplicidades", 
+                         formatar_brasileiro(duplicidades.get('valor_total_duplicados', 0), 'monetario'))
+            
+            # CORREÇÃO: Explicação clara
+            st.info(f"""
+            **📈 Análise Detalhada:**
+            - **{formatar_brasileiro(total_pagamentos, 'numero')} pagamentos** realizados
+            - **{formatar_brasileiro(total_contas, 'numero')} contas únicas** identificadas  
+            - **{formatar_brasileiro(duplicidades['total_contas_duplicadas'], 'numero')} contas** receberam múltiplos pagamentos
+            - **{formatar_brasileiro(pagamentos_em_excesso, 'numero')} pagamentos em excesso** detectados
+            """)
+            
+            st.subheader("📋 Contas com Múltiplos Pagamentos")
             if not duplicidades.get('resumo_duplicidades', pd.DataFrame()).empty:
-                st.dataframe(duplicidades['resumo_duplicidades'], use_container_width=True)
+                # CORREÇÃO: Ordenar por número de pagamentos (mais problemáticos primeiro)
+                df_resumo = duplicidades['resumo_duplicidades'].sort_values('Total_Pagamentos', ascending=False)
+                st.dataframe(df_resumo, use_container_width=True)
             
             st.subheader("📄 Detalhes Completos dos Pagamentos Duplicados")
             if not duplicidades.get('contas_duplicadas', pd.DataFrame()).empty:
                 st.dataframe(duplicidades['contas_duplicadas'], use_container_width=True)
+                
+                # CORREÇÃO: Botão para exportar apenas as duplicidades
+                if st.button("📥 Exportar Duplicidades para Excel"):
+                    output = io.BytesIO()
+                    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                        duplicidades['resumo_duplicidades'].to_excel(writer, sheet_name='Resumo_Duplicidades', index=False)
+                        duplicidades['contas_duplicadas'].to_excel(writer, sheet_name='Detalhes_Duplicidades', index=False)
+                    
+                    output.seek(0)
+                    b64 = base64.b64encode(output.getvalue()).decode()
+                    href = f'<a href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}" download="duplicidades_pot_{data_hora_arquivo_brasilia()}.xlsx">📥 Baixar Duplicidades</a>'
+                    st.markdown(href, unsafe_allow_html=True)
         else:
             st.success("✅ Nenhuma duplicidade detectada nos pagamentos")
     
