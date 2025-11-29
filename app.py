@@ -370,6 +370,7 @@ def carregar_inscricoes_db(conn, mes_ref=None, ano_ref=None):
     df_result = pd.read_sql_query(query, conn, params=params)
     return df_result
 
+# CORREÇÃO: Função carregar_metricas_db para garantir que funciona corretamente
 def carregar_metricas_db(conn, tipo=None, periodo=None):
     """Carrega métricas do banco de dados para relatórios comparativos"""
     query = "SELECT * FROM metricas_mensais"
@@ -391,8 +392,12 @@ def carregar_metricas_db(conn, tipo=None, periodo=None):
     else:
         query += " ORDER BY ano_referencia DESC, mes_referencia DESC"
     
-    df_result = pd.read_sql_query(query, conn, params=params)
-    return df_result
+    try:
+        df_result = pd.read_sql_query(query, conn, params=params)
+        return df_result
+    except Exception as e:
+        st.error(f"Erro ao carregar métricas: {e}")
+        return pd.DataFrame()
 
 # CORREÇÃO: Função para extrair mês e ano do nome do arquivo
 def extrair_mes_ano_arquivo(nome_arquivo):
@@ -935,7 +940,7 @@ def detectar_pagamentos_pendentes(dados):
 def processar_cpf(cpf):
     """Processa CPF, mantendo apenas números e completando com zeros à esquerda"""
     if pd.isna(cpf) or cpf in ['', 'NaN', 'None', 'nan', 'None', 'NULL']:
-        return ''  # Manver como string vazia para campos em branco
+        return ''  # Manter como string vazia para campos em branco
     
     cpf_str = str(cpf).strip()
     
@@ -1340,7 +1345,7 @@ def processar_dados(dados, nomes_arquivos=None):
     
     return metrics
 
-# FUNÇÕES PARA DASHBOARDS E RELATÓRIOS COMPARATIVOS
+# CORREÇÃO: Função criar_dashboard_evolucao
 def criar_dashboard_evolucao(conn, periodo='mensal'):
     """Cria dashboard com evolução temporal dos indicadores"""
     metricas = carregar_metricas_db(conn, 'pagamentos', periodo)
@@ -1353,14 +1358,14 @@ def criar_dashboard_evolucao(conn, periodo='mensal'):
     
     # Gráfico de evolução de pagamentos
     fig_evolucao.add_trace(go.Scatter(
-        x=metricas['mes_referencia'] + '/' + metricas['ano_referencia'].astype(str),
+        x=metricas['mes_referencia'] + '/' + metricas['ano_referencia'].astype(str),  # CORREÇÃO: astype
         y=metricas['total_registros'],
         name='Total Pagamentos',
         line=dict(color='blue', width=3)
     ))
     
     fig_evolucao.add_trace(go.Scatter(
-        x=metricas['mes_referencia'] + '/' + metricas['ano_referencia'].astype(str),
+        x=metricas['mes_referencia'] + '/' + metricas['ano_referencia'].astype(str),  # CORREÇÃO: astype
         y=metricas['beneficiarios_unicos'],
         name='Beneficiários Únicos',
         line=dict(color='green', width=3)
@@ -1377,7 +1382,7 @@ def criar_dashboard_evolucao(conn, periodo='mensal'):
     fig_valor = go.Figure()
     
     fig_valor.add_trace(go.Bar(
-        x=metricas['mes_referencia'] + '/' + metricas['ano_referencia'].astype(str),
+        x=metricas['mes_referencia'] + '/' + metricas['ano_referencia'].astype(str),  # CORREÇÃO: astype
         y=metricas['valor_total'],
         name='Valor Total',
         marker_color='orange'
@@ -1394,7 +1399,7 @@ def criar_dashboard_evolucao(conn, periodo='mensal'):
     fig_problemas = go.Figure()
     
     fig_problemas.add_trace(go.Bar(
-        x=metricas['mes_referencia'] + '/' + metricas['ano_referencia'].astype(str),
+        x=metricas['mes_referencia'] + '/' + metricas['ano_referencia'].astype(str),  # CORREÇÃO: astype
         y=metricas['registros_problema'],
         name='Registros Críticos',
         marker_color='red'
@@ -1403,7 +1408,7 @@ def criar_dashboard_evolucao(conn, periodo='mensal'):
     # Verificar se a coluna cpfs_ajuste existe
     if 'cpfs_ajuste' in metricas.columns:
         fig_problemas.add_trace(go.Bar(
-            x=metricas['mes_referencia'] + '/' + metricas['ano_referencia'].astize(str),
+            x=metricas['mes_referencia'] + '/' + metricas['ano_referencia'].astype(str),  # CORREÇÃO: astype
             y=metricas['cpfs_ajuste'],
             name='CPFs p/ Ajuste',
             marker_color='yellow'
@@ -1424,7 +1429,7 @@ def criar_dashboard_evolucao(conn, periodo='mensal'):
         'dados': metricas
     }
 
-# FUNÇÃO CORRIGIDA: Criar dashboard de estatísticas
+# CORREÇÃO: Função criar_dashboard_estatisticas para lidar com casos sem dados
 def criar_dashboard_estatisticas(metrics, dados):
     """Cria dashboard com estatísticas detalhadas dos dados atuais"""
     if 'pagamentos' not in dados or dados['pagamentos'].empty:
@@ -1496,13 +1501,14 @@ def criar_dashboard_estatisticas(metrics, dados):
         except Exception as e:
             st.warning(f"Não foi possível calcular estatísticas: {e}")
     
-    return dashboard_data
+    return dashboard_data if dashboard_data else None
 
+# CORREÇÃO: Função gerar_relatorio_comparativo para lidar com casos sem dados
 def gerar_relatorio_comparativo(conn, periodo):
     """Gera relatório comparativo entre períodos"""
     metricas = carregar_metricas_db(conn, 'pagamentos', periodo)
     
-    if metricas.empty:
+    if metricas.empty or len(metricas) < 2:
         return None
     
     # Calcular variações
