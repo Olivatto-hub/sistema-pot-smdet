@@ -670,7 +670,7 @@ def detectar_pagamentos_pendentes(dados):
 def processar_cpf(cpf):
     """Processa CPF, mantendo apenas números e completando com zeros à esquerda"""
     if pd.isna(cpf) or cpf in ['', 'NaN', 'None', 'nan', 'None', 'NULL']:
-        return ''  # Manver como string vazia para campos em branco
+        return ''  # Manter como string vazia para campos em branco
     
     cpf_str = str(cpf).strip()
     
@@ -2131,4 +2131,45 @@ def main():
         st.header("📊 Estatísticas Detalhadas")
         
         if tem_dados_pagamentos:
-            dashboard_estat
+            dashboard_estatisticas = criar_dashboard_estatisticas(metrics, dados)
+            
+            if dashboard_estatisticas:
+                if 'valores' in dashboard_estatisticas:
+                    st.subheader("Distribuição de Valores")
+                    st.plotly_chart(dashboard_estatisticas['valores'], use_container_width=True)
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    if 'projetos' in dashboard_estatisticas:
+                        st.subheader("Top Projetos")
+                        st.plotly_chart(dashboard_estatisticas['projetos'], use_container_width=True)
+                
+                with col2:
+                    if 'status' in dashboard_estatisticas:
+                        st.subheader("Distribuição por Status")
+                        st.plotly_chart(dashboard_estatisticas['status'], use_container_width=True)
+                
+                if 'estatisticas' in dashboard_estatisticas:
+                    st.subheader("Estatísticas Descritivas dos Valores")
+                    estatisticas = dashboard_estatisticas['estatisticas']
+                    
+                    col1, col2, col3, col4, col5 = st.columns(5)
+                    
+                    with col1:
+                        st.metric("Média", formatar_brasileiro(estatisticas['Média'], 'monetario'))
+                    with col2:
+                        st.metric("Mediana", formatar_brasileiro(estatisticas['Mediana'], 'monetario'))
+                    with col3:
+                        st.metric("Desvio Padrão", formatar_brasileiro(estatisticas['Desvio Padrão'], 'monetario'))
+                    with col4:
+                        st.metric("Mínimo", formatar_brasileiro(estatisticas['Valor Mínimo'], 'monetario'))
+                    with col5:
+                        st.metric("Máximo", formatar_brasileiro(estatisticas['Valor Máximo'], 'monetario'))
+            else:
+                st.info("ℹ️ Não há dados suficientes para gerar estatísticas detalhadas.")
+        else:
+            st.info("ℹ️ Esta análise está disponível apenas para dados de pagamentos.")
+
+if __name__ == "__main__":
+    main()
