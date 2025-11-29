@@ -312,6 +312,15 @@ def obter_coluna_nome(df):
             return coluna
     return None
 
+# CORREÇÃO: Função auxiliar para obter coluna de valor (priorizando "Valor Pgto")
+def obter_coluna_valor(df):
+    """Identifica a coluna que contém o valor pago, priorizando 'Valor Pgto'"""
+    colunas_valor_prioridade = ['Valor Pgto', 'Valor_Pgto', 'Valor', 'Valor_Pago', 'Valor Pagamento']
+    for coluna in colunas_valor_prioridade:
+        if coluna in df.columns:
+            return coluna
+    return None
+
 # Função auxiliar para formatar valores no padrão brasileiro
 def formatar_brasileiro(valor, tipo='numero'):
     """Formata valores no padrão brasileiro"""
@@ -455,8 +464,10 @@ def detectar_pagamentos_duplicados(df):
             colunas_exibicao_completas.append(col_data)
             break
     
-    if 'Valor' in df_duplicados.columns:
-        colunas_exibicao_completas.append('Valor')
+    # CORREÇÃO: Usar coluna de valor correta
+    coluna_valor = obter_coluna_valor(df_duplicados)
+    if coluna_valor:
+        colunas_exibicao_completas.append(coluna_valor)
     
     if 'Valor_Limpo' in df_duplicados.columns:
         colunas_exibicao_completas.append('Valor_Limpo')
@@ -584,7 +595,7 @@ def detectar_pagamentos_pendentes(dados):
 def processar_cpf(cpf):
     """Processa CPF, mantendo apenas números e completando com zeros à esquerda"""
     if pd.isna(cpf) or cpf in ['', 'NaN', 'None', 'nan', 'None', 'NULL']:
-        return ''  # Manter como string vazia para campos em branco
+        return ''  # Manver como string vazia para campos em branco
     
     cpf_str = str(cpf).strip()
     
@@ -663,34 +674,44 @@ def processar_colunas_data(df):
     
     return df_processed
 
-# CORREÇÃO: Nova função para processar colunas de valor
+# CORREÇÃO ATUALIZADA: Função para processar colunas de valor (priorizando "Valor Pgto")
 def processar_colunas_valor(df):
-    """Processa colunas de valor para formato brasileiro"""
+    """Processa colunas de valor para formato brasileiro, priorizando 'Valor Pgto'"""
     df_processed = df.copy()
     
-    colunas_valor = ['Valor', 'Valor_Pago', 'Valor Pagamento']
+    # ORDEM DE PRIORIDADE para colunas de valor
+    colunas_valor_prioridade = ['Valor Pgto', 'Valor_Pgto', 'Valor', 'Valor_Pago', 'Valor Pagamento']
     
-    for coluna_valor in colunas_valor:
+    coluna_valor_encontrada = None
+    for coluna_valor in colunas_valor_prioridade:
         if coluna_valor in df_processed.columns:
-            try:
-                if df_processed[coluna_valor].dtype == 'object':
-                    df_processed['Valor_Limpo'] = (
-                        df_processed[coluna_valor]
-                        .astype(str)
-                        .str.replace('R$', '')
-                        .str.replace('R$ ', '')
-                        .str.replace('.', '')
-                        .str.replace(',', '.')
-                        .str.replace(' ', '')
-                        .astype(float)
-                    )
-                else:
-                    df_processed['Valor_Limpo'] = df_processed[coluna_valor].astype(float)
-                    
-            except Exception as e:
-                st.warning(f"⚠️ Erro ao processar valores da coluna '{coluna_valor}': {str(e)}")
-                df_processed['Valor_Limpo'] = 0.0
-            break  # Usar apenas a primeira coluna de valor encontrada
+            coluna_valor_encontrada = coluna_valor
+            break
+    
+    if coluna_valor_encontrada:
+        try:
+            if df_processed[coluna_valor_encontrada].dtype == 'object':
+                df_processed['Valor_Limpo'] = (
+                    df_processed[coluna_valor_encontrada]
+                    .astype(str)
+                    .str.replace('R$', '')
+                    .str.replace('R$ ', '')
+                    .str.replace('.', '')
+                    .str.replace(',', '.')
+                    .str.replace(' ', '')
+                    .astype(float)
+                )
+            else:
+                df_processed['Valor_Limpo'] = df_processed[coluna_valor_encontrada].astype(float)
+                
+            st.sidebar.info(f"💰 Coluna de valor utilizada: '{coluna_valor_encontrada}'")
+                
+        except Exception as e:
+            st.warning(f"⚠️ Erro ao processar valores da coluna '{coluna_valor_encontrada}': {str(e)}")
+            df_processed['Valor_Limpo'] = 0.0
+    else:
+        st.warning("⚠️ Nenhuma coluna de valor encontrada na planilha")
+        df_processed['Valor_Limpo'] = 0.0
     
     return df_processed
 
@@ -1034,9 +1055,13 @@ def processar_dados(dados, nomes_arquivos=None):
         if 'Projeto' in df.columns:
             metrics['projetos_ativos'] = df['Projeto'].nunique()
         
-        # Valor total - APENAS SE A COLUNA EXISTIR
+        # CORREÇÃO: Valor total - APENAS SE A COLUNA Valor_Limpo EXISTIR (processada de "Valor Pgto")
         if 'Valor_Limpo' in df.columns:
             metrics['valor_total'] = df['Valor_Limpo'].sum()
+            # Informar qual coluna foi usada para o cálculo
+            coluna_valor_origem = obter_coluna_valor(df)
+            if coluna_valor_origem:
+                st.sidebar.success(f"💰 Total calculado a partir de: '{coluna_valor_origem}'")
         
         # CPFs duplicados - APENAS SE A COLUNA EXISTIR
         if 'CPF' in df.columns:
@@ -1111,7 +1136,7 @@ def criar_dashboard_evolucao(conn, periodo='mensal'):
     ))
     
     fig_valor.update_layout(
-        title='Evolução do Valor Total Mensal',
+        title='Evolução do Valor Total Mensal (Valor Pgto)',
         xaxis_title='Mês/Ano',
         yaxis_title='Valor (R$)',
         height=400
@@ -1170,7 +1195,7 @@ def criar_dashboard_estatisticas(metrics, dados):
             if len(valores_validos) > 0:
                 fig_valores = px.histogram(
                     x=valores_validos,
-                    title='Distribuição de Valores dos Pagamentos',
+                    title='Distribuição de Valores dos Pagamentos (Valor Pgto)',
                     labels={'x': 'Valor (R$)', 'y': 'Quantidade'},
                     nbins=20
                 )
@@ -1296,7 +1321,7 @@ def gerar_pdf_executivo(metrics, dados, nomes_arquivos, tipo_relatorio='pagament
             ("Total de Pagamentos", formatar_brasileiro(metrics['total_pagamentos'])),
             ("Beneficiários Únicos", formatar_brasileiro(metrics['beneficiarios_unicos'])),
             ("Contas Únicas", formatar_brasileiro(metrics['contas_unicas'])),
-            ("Valor Total", formatar_brasileiro(metrics['valor_total'], 'monetario')),
+            ("Valor Total (Valor Pgto)", formatar_brasileiro(metrics['valor_total'], 'monetario')),
             ("Pagamentos Duplicados", formatar_brasileiro(metrics['pagamentos_duplicados'])),
             ("Valor em Duplicidades", formatar_brasileiro(metrics['valor_total_duplicados'], 'monetario')),
             ("Projetos Ativos", formatar_brasileiro(metrics['projetos_ativos'])),
@@ -1352,7 +1377,7 @@ def gerar_excel_completo(metrics, dados, tipo_relatorio='pagamentos'):
                     'Total de Pagamentos Válidos',
                     'Beneficiários Únicos',
                     'Contas Únicas', 
-                    'Valor Total',
+                    'Valor Total (Valor Pgto)',
                     'Pagamentos Duplicados',
                     'Valor em Duplicidades',
                     'Projetos Ativos',
@@ -1733,8 +1758,9 @@ def main():
                 
                 with col4:
                     st.metric(
-                        "Valor Total", 
-                        formatar_brasileiro(metrics['valor_total'], 'monetario')
+                        "Valor Total (Valor Pgto)", 
+                        formatar_brasileiro(metrics['valor_total'], 'monetario'),
+                        help="Somatória dos valores da coluna Valor Pgto"
                     )
                 
                 # Segunda linha de métricas
@@ -2033,7 +2059,7 @@ def main():
             if dashboard_estatisticas:
                 # Gráfico de distribuição de valores
                 if 'valores' in dashboard_estatisticas:
-                    st.subheader("Distribuição de Valores")
+                    st.subheader("Distribuição de Valores (Valor Pgto)")
                     st.plotly_chart(dashboard_estatisticas['valores'], use_container_width=True)
                 
                 # Gráficos de projetos e status
@@ -2049,7 +2075,7 @@ def main():
                 
                 # Estatísticas descritivas
                 if 'estatisticas' in dashboard_estatisticas:
-                    st.subheader("Estatísticas Descritivas dos Valores")
+                    st.subheader("Estatísticas Descritivas dos Valores (Valor Pgto)")
                     estat_df = pd.DataFrame.from_dict(
                         dashboard_estatisticas['estatisticas'], 
                         orient='index', 
