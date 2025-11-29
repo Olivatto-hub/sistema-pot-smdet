@@ -68,6 +68,7 @@ def init_database():
             valor_duplicados REAL,
             projetos_ativos INTEGER,
             registros_problema INTEGER,
+            cpfs_ajuste INTEGER,
             data_calculo TEXT NOT NULL
         )
     ''')
@@ -193,8 +194,8 @@ def salvar_metricas_db(conn, tipo, mes_ref, ano_ref, metrics):
     conn.execute('''
         INSERT INTO metricas_mensais (tipo, mes_referencia, ano_referencia, total_registros, 
                     beneficiarios_unicos, contas_unicas, valor_total, pagamentos_duplicados, 
-                    valor_duplicados, projetos_ativos, registros_problema, data_calculo)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    valor_duplicados, projetos_ativos, registros_problema, cpfs_ajuste, data_calculo)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (tipo, mes_ref, ano_ref, 
           metrics.get('total_pagamentos', 0),
           metrics.get('beneficiarios_unicos', 0),
@@ -204,6 +205,7 @@ def salvar_metricas_db(conn, tipo, mes_ref, ano_ref, metrics):
           metrics.get('valor_total_duplicados', 0),
           metrics.get('projetos_ativos', 0),
           metrics.get('total_registros_criticos', 0),
+          metrics.get('total_cpfs_ajuste', 0),
           data_hora_atual_brasilia()))
     
     conn.commit()
@@ -509,7 +511,7 @@ def detectar_pagamentos_pendentes(dados):
 def processar_cpf(cpf):
     """Processa CPF, mantendo apenas números e completando com zeros à esquerda"""
     if pd.isna(cpf) or cpf in ['', 'NaN', 'None', 'nan', 'None', 'NULL']:
-        return ''  # Manver como string vazia para campos em branco
+        return ''  # Manter como string vazia para campos em branco
     
     cpf_str = str(cpf).strip()
     
@@ -682,17 +684,7 @@ def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_co
         # CRITÉRIO CORRIGIDO: Apenas dados realmente críticos ausentes
         registros_problematicos = []
         
-        # 1. CPF COMPLETAMENTE AUSENTE - APENAS SE A COLUNA EXISTIR
-        if 'CPF' in df.columns:
-            mask_cpf_ausente = (
-                df['CPF'].isna() | 
-                (df['CPF'].astype(str).str.strip() == '')
-            )
-            
-            cpfs_ausentes = df[mask_cpf_ausente]
-            registros_problematicos.extend(cpfs_ausentes.index.tolist())
-        
-        # 2. Número da conta ausente
+        # 1. Número da conta ausente - ESTE É CRÍTICO (registro inválido)
         coluna_conta = obter_coluna_conta(df)
         if coluna_conta:
             mask_conta_ausente = (
@@ -704,7 +696,7 @@ def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_co
                 if idx not in registros_problematicos:
                     registros_problematicos.append(idx)
         
-        # 3. Valor ausente ou zero - APENAS SE A COLUNA EXISTIR
+        # 2. Valor ausente ou zero - APENAS SE A COLUNA EXISTIR - ESTE É CRÍTICO
         if 'Valor' in df.columns:
             mask_valor_invalido = (
                 df['Valor'].isna() | 
@@ -716,6 +708,16 @@ def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_co
                 if idx not in registros_problematicos:
                     registros_problematicos.append(idx)
         
+        # CORREÇÃO: CPF AUSENTE NÃO É MAIS CONSIDERADO CRÍTICO - APENAS PRECISA DE AJUSTE
+        # 3. CPF COMPLETAMENTE AUSENTE - APENAS SE A COLUNA EXISTIR - AGORA É "PRECISA DE AJUSTE"
+        if 'CPF' in df.columns:
+            mask_cpf_ausente = (
+                df['CPF'].isna() | 
+                (df['CPF'].astype(str).str.strip() == '')
+            )
+            cpfs_ausentes = df[mask_cpf_ausente]
+            # NÃO adicionamos aos registros problemáticos críticos - apenas marcamos para ajuste
+        
         # Atualizar análise
         analise_ausencia['registros_criticos_problematicos'] = registros_problematicos
         analise_ausencia['total_registros_criticos'] = len(registros_problematicos)
@@ -724,7 +726,7 @@ def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_co
             analise_ausencia['registros_problema_detalhados'] = df.loc[registros_problematicos].copy()
         
         # Analisar ausência por coluna crítica - APENAS COLUNAS EXISTENTES
-        colunas_criticas = ['CPF', 'Num Cartao', 'Num_Cartao', 'Valor']
+        colunas_criticas = ['Num Cartao', 'Num_Cartao', 'Valor']  # REMOVIDO CPF DAS COLUNAS CRÍTICAS
         for coluna in colunas_criticas:
             if coluna in df.columns:
                 mask_ausente = (
@@ -744,7 +746,8 @@ def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_co
                 info_ausencia = {
                     'Indice_Registro': idx,
                     'Linha_Planilha': registro.get('Linha_Planilha_Original', idx + 2),
-                    'Planilha_Origem': nome_arquivo_pagamentos or 'Pagamentos'
+                    'Planilha_Origem': nome_arquivo_pagamentos or 'Pagamentos',
+                    'Status_Registro': 'INVÁLIDO - Precisa de correção'  # Status claro
                 }
                 
                 # COLUNAS DINÂMICAS BASEADAS NO QUE REALMENTE EXISTE NA PLANILHA
@@ -782,9 +785,6 @@ def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_co
                 
                 # Marcar campos problemáticos - APENAS PARA CAMPOS EXISTENTES
                 problemas = []
-                if 'CPF' in df.columns and (pd.isna(registro['CPF']) or str(registro['CPF']).strip() == ''):
-                    problemas.append('CPF ausente')
-                
                 if coluna_conta and (pd.isna(registro[coluna_conta]) or str(registro[coluna_conta]).strip() == ''):
                     problemas.append('Número da conta ausente')
                 
@@ -798,15 +798,17 @@ def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_co
     
     return analise_ausencia
 
-# FUNÇÃO CORRIGIDA: Identificar CPFs problemáticos - USANDO APENAS COLUNAS EXISTENTES
+# FUNÇÃO CORRIGIDA: Identificar CPFs problemáticos - REGISTROS SÃO VÁLIDOS, APENAS PRECISAM DE CORREÇÃO
 def identificar_cpfs_problematicos(df):
-    """Identifica CPFs com problemas de formatação usando apenas colunas existentes"""
+    """Identifica CPFs com problemas de formatação - REGISTROS SÃO VÁLIDOS, apenas precisam de correção"""
     problemas_cpf = {
         'cpfs_com_caracteres_invalidos': [],
         'cpfs_com_tamanho_incorreto': [],
         'cpfs_vazios': [],
         'total_problemas_cpf': 0,
-        'detalhes_cpfs_problematicos': pd.DataFrame()
+        'detalhes_cpfs_problematicos': pd.DataFrame(),
+        'registros_afetados': [],  # Lista de registros que precisam de correção
+        'status': 'validos_com_problema'  # Indicador que são registros válidos
     }
     
     if 'CPF' not in df.columns or df.empty:
@@ -816,33 +818,37 @@ def identificar_cpfs_problematicos(df):
     df_analise = df.copy()
     df_analise['Linha_Planilha_Original'] = df_analise.index + 2
     
-    # Identificar problemas
+    # Identificar problemas - MAS MANTENDO OS REGISTROS COMO VÁLIDOS
     for idx, row in df_analise.iterrows():
         cpf = str(row['CPF']) if pd.notna(row['CPF']) and str(row['CPF']).strip() != '' else ''
         problemas = []
         
-        # CPF vazio
+        # CPF vazio - AINDA É UM REGISTRO VÁLIDO, só precisa ser preenchido
         if cpf == '':
             problemas.append('CPF vazio')
             problemas_cpf['cpfs_vazios'].append(idx)
+            problemas_cpf['registros_afetados'].append(idx)
         
-        # CPF com caracteres não numéricos (após processamento não deveria ter, mas verifica)
+        # CPF com caracteres não numéricos - REGISTRO VÁLIDO, precisa de formatação
         elif not cpf.isdigit() and cpf != '':
             problemas.append('Caracteres inválidos')
             problemas_cpf['cpfs_com_caracteres_invalidos'].append(idx)
+            problemas_cpf['registros_afetados'].append(idx)
         
-        # CPF com tamanho incorreto (deve ter 11 dígitos)
+        # CPF com tamanho incorreto - REGISTRO VÁLIDO, precisa de correção
         elif len(cpf) != 11 and cpf != '':
             problemas.append(f'Tamanho incorreto ({len(cpf)} dígitos)')
             problemas_cpf['cpfs_com_tamanho_incorreto'].append(idx)
+            problemas_cpf['registros_afetados'].append(idx)
         
-        # Se há problemas, adicionar aos detalhes
+        # Se há problemas, adicionar aos detalhes - MAS REGISTRO CONTINUA VÁLIDO
         if problemas:
             info_problema = {
                 'Linha_Planilha': row.get('Linha_Planilha_Original', idx + 2),
                 'CPF_Original': row.get('CPF', ''),
                 'CPF_Processado': cpf,
-                'Problemas': ', '.join(problemas)
+                'Problemas': ', '.join(problemas),
+                'Status_Registro': 'VÁLIDO - Precisa de correção'  # Status claro
             }
             
             # Adicionar informações adicionais para identificação - APENAS COLUNAS EXISTENTES
@@ -895,10 +901,11 @@ def processar_dados(dados, nomes_arquivos=None):
         'duplicidades_detalhadas': {},
         'pagamentos_pendentes': {},
         'total_registros_invalidos': 0,
-        'problemas_cpf': {},  # NOVO: Análise de problemas com CPF
-        'linha_totais_removida': False,  # NOVO: Indicador se linha de totais foi removida
-        'total_registros_originais': 0,  # NOVO: Total original antes de remover totais
-        'total_registros_sem_totais': 0  # NOVO: Total após remover totais
+        'problemas_cpf': {},  # Análise de problemas com CPF
+        'linha_totais_removida': False,  # Indicador se linha de totais foi removida
+        'total_registros_originais': 0,  # Total original antes de remover totais
+        'total_registros_sem_totais': 0,  # Total após remover totais
+        'total_cpfs_ajuste': 0  # NOVO: Total de CPFs que precisam de ajuste (não são inválidos)
     }
     
     # Combinar com análise de ausência de dados
@@ -933,8 +940,10 @@ def processar_dados(dados, nomes_arquivos=None):
         if df.empty:
             return metrics
         
-        # NOVO: Analisar problemas com CPF
-        metrics['problemas_cpf'] = identificar_cpfs_problematicos(df)
+        # NOVO: Analisar problemas com CPF - AGORA SÃO REGISTROS VÁLIDOS QUE PRECISAM DE AJUSTE
+        problemas_cpf = identificar_cpfs_problematicos(df)
+        metrics['problemas_cpf'] = problemas_cpf
+        metrics['total_cpfs_ajuste'] = problemas_cpf['total_problemas_cpf']
         
         # Beneficiários únicos - APENAS SE A COLUNA EXISTIR
         coluna_beneficiario = obter_coluna_nome(df)
@@ -1047,15 +1056,15 @@ def criar_dashboard_evolucao(conn, periodo='mensal'):
     
     fig_problemas.add_trace(go.Bar(
         x=metricas['mes_referencia'] + '/' + metricas['ano_referencia'].astype(str),
-        y=metricas['pagamentos_duplicados'],
-        name='Pagamentos Duplicados',
+        y=metricas['registros_problema'],
+        name='Registros Críticos',
         marker_color='red'
     ))
     
     fig_problemas.add_trace(go.Bar(
         x=metricas['mes_referencia'] + '/' + metricas['ano_referencia'].astype(str),
-        y=metricas['registros_problema'],
-        name='Registros com Problemas',
+        y=metricas['cpfs_ajuste'],
+        name='CPFs p/ Ajuste',
         marker_color='yellow'
     ))
     
@@ -1090,7 +1099,8 @@ def gerar_relatorio_comparativo(conn, periodo):
             'total_pagamentos': ((ultimo['total_registros'] - anterior['total_registros']) / anterior['total_registros']) * 100,
             'beneficiarios': ((ultimo['beneficiarios_unicos'] - anterior['beneficiarios_unicos']) / anterior['beneficiarios_unicos']) * 100,
             'valor_total': ((ultimo['valor_total'] - anterior['valor_total']) / anterior['valor_total']) * 100,
-            'duplicidades': ((ultimo['pagamentos_duplicados'] - anterior['pagamentos_duplicados']) / anterior['pagamentos_duplicados']) * 100 if anterior['pagamentos_duplicados'] > 0 else 0
+            'duplicidades': ((ultimo['pagamentos_duplicados'] - anterior['pagamentos_duplicados']) / anterior['pagamentos_duplicados']) * 100 if anterior['pagamentos_duplicados'] > 0 else 0,
+            'cpfs_ajuste': ((ultimo['cpfs_ajuste'] - anterior['cpfs_ajuste']) / anterior['cpfs_ajuste']) * 100 if anterior['cpfs_ajuste'] > 0 else 0
         }
     else:
         variacoes = {}
@@ -1146,7 +1156,9 @@ def gerar_pdf_executivo(metrics, dados, nomes_arquivos, tipo_relatorio='pagament
             ("Valor Total", formatar_brasileiro(metrics['valor_total'], 'monetario')),
             ("Pagamentos Duplicados", formatar_brasileiro(metrics['pagamentos_duplicados'])),
             ("Valor em Duplicidades", formatar_brasileiro(metrics['valor_total_duplicados'], 'monetario')),
-            ("Projetos Ativos", formatar_brasileiro(metrics['projetos_ativos']))
+            ("Projetos Ativos", formatar_brasileiro(metrics['projetos_ativos'])),
+            ("CPFs p/ Ajuste", formatar_brasileiro(metrics['total_cpfs_ajuste'])),
+            ("Registros Críticos", formatar_brasileiro(metrics['total_registros_criticos']))
         ]
     else:
         metricas = [
@@ -1174,6 +1186,12 @@ def gerar_pdf_executivo(metrics, dados, nomes_arquivos, tipo_relatorio='pagament
             pdf.set_text_color(255, 165, 0)
             pdf.cell(0, 10, f"ATENÇÃO: {metrics['total_registros_criticos']} registros com problemas críticos", 0, 1)
             pdf.set_text_color(0, 0, 0)
+        
+        if metrics['total_cpfs_ajuste'] > 0:
+            pdf.set_font("Arial", 'B', 12)
+            pdf.set_text_color(0, 100, 0)
+            pdf.cell(0, 10, f"INFO: {metrics['total_cpfs_ajuste']} CPFs precisam de ajuste (registros válidos)", 0, 1)
+            pdf.set_text_color(0, 0, 0)
     
     return pdf.output(dest='S').encode('latin1')
 
@@ -1195,7 +1213,8 @@ def gerar_excel_completo(metrics, dados, tipo_relatorio='pagamentos'):
                     'Pagamentos Duplicados',
                     'Valor em Duplicidades',
                     'Projetos Ativos',
-                    'Registros com Problemas'
+                    'CPFs para Ajuste',
+                    'Registros Críticos'
                 ],
                 'Valor': [
                     data_hora_atual_brasilia(),
@@ -1206,6 +1225,7 @@ def gerar_excel_completo(metrics, dados, tipo_relatorio='pagamentos'):
                     metrics['pagamentos_duplicados'],
                     metrics['valor_total_duplicados'],
                     metrics['projetos_ativos'],
+                    metrics['total_cpfs_ajuste'],
                     metrics['total_registros_criticos']
                 ]
             }
@@ -1242,16 +1262,16 @@ def gerar_excel_completo(metrics, dados, tipo_relatorio='pagamentos'):
                     writer, sheet_name='Pagamentos Pendentes', index=False
                 )
         
-        # Problemas de dados
+        # Problemas de dados CRÍTICOS
         if not metrics['resumo_ausencias'].empty:
             metrics['resumo_ausencias'].to_excel(
-                writer, sheet_name='Problemas de Dados', index=False
+                writer, sheet_name='Problemas Críticos', index=False
             )
         
-        # CPFs problemáticos
+        # CPFs para ajuste (NÃO SÃO CRÍTICOS)
         if not metrics['problemas_cpf']['detalhes_cpfs_problematicos'].empty:
             metrics['problemas_cpf']['detalhes_cpfs_problematicos'].to_excel(
-                writer, sheet_name='CPFs Problemáticos', index=False
+                writer, sheet_name='CPFs para Ajuste', index=False
             )
     
     return output.getvalue()
@@ -1284,24 +1304,24 @@ def gerar_planilha_ajustes(metrics, tipo_relatorio='pagamentos'):
                 'Impacto Financeiro': 'A definir'
             })
     
-    # Ações para problemas de dados
+    # Ações para problemas CRÍTICOS de dados
     if metrics['total_registros_criticos'] > 0:
         acoes.append({
-            'Tipo': 'Dados Incompletos',
-            'Descrição': f'{metrics["total_registros_criticos"]} registros com problemas críticos',
-            'Ação Recomendada': 'Completar informações faltantes',
+            'Tipo': 'Dados Críticos Incompletos',
+            'Descrição': f'{metrics["total_registros_criticos"]} registros com problemas críticos (sem conta ou valor)',
+            'Ação Recomendada': 'Completar informações faltantes essenciais',
             'Prioridade': 'Alta',
             'Impacto Financeiro': 'Risco operacional'
         })
     
-    # Ações para CPFs problemáticos
-    if metrics['problemas_cpf']['total_problemas_cpf'] > 0:
+    # Ações para CPFs problemáticos - PRIORIDADE MÉDIA (não são críticos)
+    if metrics['total_cpfs_ajuste'] > 0:
         acoes.append({
-            'Tipo': 'CPF Inválido',
-            'Descrição': f'{metrics["problemas_cpf"]["total_problemas_cpf"]} CPFs com problemas de formatação',
+            'Tipo': 'CPF para Ajuste',
+            'Descrição': f'{metrics["total_cpfs_ajuste"]} CPFs precisam de correção (registros válidos)',
             'Ação Recomendada': 'Corrigir formatação dos CPFs',
             'Prioridade': 'Média',
-            'Impacto Financeiro': 'Risco fiscal'
+            'Impacto Financeiro': 'Risco fiscal/documental'
         })
     
     df_acoes = pd.DataFrame(acoes)
@@ -1593,20 +1613,18 @@ def main():
                 
                 with col7:
                     st.metric(
-                        "Registros com Problemas", 
-                        formatar_brasileiro(metrics['total_registros_criticos']),
-                        delta_color="inverse" if metrics['total_registros_criticos'] > 0 else "off"
+                        "CPFs p/ Ajuste", 
+                        formatar_brasileiro(metrics['total_cpfs_ajuste']),
+                        help="Registros VÁLIDOS que precisam de correção no CPF"
                     )
                 
                 with col8:
-                    if metrics['pagamentos_pendentes']['total_contas_sem_pagamento'] > 0:
-                        st.metric(
-                            "Pagamentos Pendentes", 
-                            formatar_brasileiro(metrics['pagamentos_pendentes']['total_contas_sem_pagamento']),
-                            delta_color="inverse"
-                        )
-                    else:
-                        st.metric("Pagamentos Pendentes", "0")
+                    st.metric(
+                        "Registros Críticos", 
+                        formatar_brasileiro(metrics['total_registros_criticos']),
+                        delta_color="inverse" if metrics['total_registros_criticos'] > 0 else "off",
+                        help="Registros INVÁLIDOS (sem conta ou valor)"
+                    )
             
             if tem_dados_contas:
                 st.markdown("---")
@@ -1635,11 +1653,12 @@ def main():
             st.markdown("---")
             
             # Abas para análises detalhadas
-            tab1, tab2, tab3, tab4 = st.tabs([
+            tab1, tab2, tab3, tab4, tab5 = st.tabs([
                 "📋 Visão Geral", 
                 "⚠️ Duplicidades", 
                 "⏳ Pagamentos Pendentes", 
-                "🔍 Análise de Dados"
+                "🔴 Problemas Críticos",
+                "📝 CPFs p/ Ajuste"
             ])
             
             with tab1:
@@ -1705,26 +1724,28 @@ def main():
                     st.info("ℹ️ Esta análise requer ambas as planilhas (pagamentos e inscrições)")
             
             with tab4:
-                st.subheader("Análise de Qualidade dos Dados")
+                st.subheader("Problemas Críticos")
                 
                 if metrics['total_registros_criticos'] > 0:
-                    st.error(f"❌ {metrics['total_registros_criticos']} registros com problemas críticos")
+                    st.error(f"❌ {metrics['total_registros_criticos']} registros com problemas críticos (INVÁLIDOS)")
                     
                     if not metrics['resumo_ausencias'].empty:
-                        st.write("**Registros com Problemas:**")
-                        # CORREÇÃO: Mostrar apenas as colunas que realmente existem
+                        st.write("**Registros com Problemas Críticos:**")
                         st.dataframe(metrics['resumo_ausencias'])
                 else:
-                    st.success("✅ Todos os registros possuem dados essenciais preenchidos")
+                    st.success("✅ Nenhum registro com problemas críticos encontrado")
+            
+            with tab5:
+                st.subheader("CPFs para Ajuste")
                 
-                # Mostrar problemas com CPF se houver
-                if metrics['problemas_cpf']['total_problemas_cpf'] > 0:
-                    st.warning(f"⚠️ {metrics['problemas_cpf']['total_problemas_cpf']} CPFs com problemas de formatação")
+                if metrics['total_cpfs_ajuste'] > 0:
+                    st.warning(f"⚠️ {metrics['total_cpfs_ajuste']} CPFs precisam de ajuste (registros VÁLIDOS)")
                     
                     if not metrics['problemas_cpf']['detalhes_cpfs_problematicos'].empty:
-                        st.write("**Detalhes dos CPFs Problemáticos:**")
-                        # CORREÇÃO: Mostrar apenas colunas que realmente existem
+                        st.write("**Detalhes dos CPFs para Ajuste:**")
                         st.dataframe(metrics['problemas_cpf']['detalhes_cpfs_problematicos'])
+                else:
+                    st.success("✅ Todos os CPFs estão corretamente formatados")
     
     with tab_dashboard:
         st.header("📈 Dashboard Evolutivo")
@@ -1789,10 +1810,10 @@ def main():
                     )
             
             with col4:
-                if 'variacoes' in relatorio and 'duplicidades' in relatorio['variacoes']:
-                    variacao = relatorio['variacoes']['duplicidades']
+                if 'variacoes' in relatorio and 'cpfs_ajuste' in relatorio['variacoes']:
+                    variacao = relatorio['variacoes']['cpfs_ajuste']
                     st.metric(
-                        "Variação Duplicidades",
+                        "Variação CPFs p/ Ajuste",
                         f"{variacao:+.1f}%",
                         delta=f"{variacao:+.1f}%",
                         delta_color="inverse" if variacao > 0 else "normal"
