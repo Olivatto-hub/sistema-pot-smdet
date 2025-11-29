@@ -1630,7 +1630,7 @@ def carregar_dados(conn):
             
             # Remover linha de totais antes do processamento
             df_pagamentos_sem_totais = remover_linha_totais(df_pagamentos)
-            dados['pagamentos'] = df_pagamentos_sem_totais
+            dados['pagamentos_sem_totais'] = df_pagamentos_sem_totais
             
             # CORREÇÃO: Processar valores ANTES de outras operações
             df_pagamentos_sem_totais = processar_colunas_valor(df_pagamentos_sem_totais)
