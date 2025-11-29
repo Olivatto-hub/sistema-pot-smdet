@@ -455,10 +455,7 @@ def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_co
         if 'CPF' in df.columns:
             mask_cpf_ausente = (
                 df['CPF'].isna() | 
-                (df['CPF'].astype(str).str.strip() == '') |
-                (df['CPF'].astype(str).str.strip() == 'NaN') |
-                (df['CPF'].astype(str).str.strip() == 'None') |
-                (df['CPF'].astype(str).str.strip() == 'nan')
+                (df['CPF'].astype(str).str.strip() == '')
             )
             
             cpfs_ausentes = df[mask_cpf_ausente]
@@ -469,9 +466,7 @@ def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_co
         if coluna_conta:
             mask_conta_ausente = (
                 df[coluna_conta].isna() | 
-                (df[coluna_conta].astype(str).str.strip() == '') |
-                (df[coluna_conta].astype(str).str.strip() == 'NaN') |
-                (df[coluna_conta].astype(str).str.strip() == 'None')
+                (df[coluna_conta].astype(str).str.strip() == '')
             )
             contas_ausentes = df[mask_conta_ausente]
             for idx in contas_ausentes.index:
@@ -483,8 +478,6 @@ def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_co
             mask_valor_invalido = (
                 df['Valor'].isna() | 
                 (df['Valor'].astype(str).str.strip() == '') |
-                (df['Valor'].astype(str).str.strip() == 'NaN') |
-                (df['Valor'].astype(str).str.strip() == 'None') |
                 (df['Valor_Limpo'] == 0)
             )
             valores_invalidos = df[mask_valor_invalido]
@@ -505,9 +498,7 @@ def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_co
             if coluna in df.columns:
                 mask_ausente = (
                     df[coluna].isna() | 
-                    (df[coluna].astype(str).str.strip() == '') |
-                    (df[coluna].astype(str).str.strip() == 'NaN') |
-                    (df[coluna].astype(str).str.strip() == 'None')
+                    (df[coluna].astype(str).str.strip() == '')
                 )
                 ausentes = df[mask_ausente]
                 if len(ausentes) > 0:
@@ -537,15 +528,17 @@ def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_co
                         if len(valor) > 50:
                             valor = valor[:47] + "..."
                         info_ausencia[col] = valor
+                    elif col in df.columns:
+                        info_ausencia[col] = ''  # CORREÇÃO: Manter vazio em vez de 'N/A'
                     else:
-                        info_ausencia[col] = 'N/A'
+                        info_ausencia[col] = ''
                 
                 # Marcar campos problemáticos
                 problemas = []
-                if 'CPF' in df.columns and (pd.isna(registro['CPF']) or str(registro['CPF']).strip() in ['', 'NaN', 'None', 'nan']):
+                if 'CPF' in df.columns and (pd.isna(registro['CPF']) or str(registro['CPF']).strip() == ''):
                     problemas.append('CPF ausente')
                 
-                if coluna_conta and (pd.isna(registro[coluna_conta]) or str(registro[coluna_conta]).strip() in ['', 'NaN', 'None', 'nan']):
+                if coluna_conta and (pd.isna(registro[coluna_conta]) or str(registro[coluna_conta]).strip() == ''):
                     problemas.append('Número da conta ausente')
                 
                 if 'Valor' in df.columns and (pd.isna(registro['Valor']) or registro.get('Valor_Limpo', 0) == 0):
@@ -730,15 +723,23 @@ def gerar_pdf_executivo(dados, metrics, nomes_arquivos):
             if not duplicidades.get('detalhes_completos_duplicidades', pd.DataFrame()).empty:
                 df_detalhes = duplicidades['detalhes_completos_duplicidades']
                 for _, row in df_detalhes.iterrows():
-                    conta = row.get('Num Cartao') or row.get('Num_Cartao') or row.get('Conta', 'N/A')
-                    nome = row.get('Beneficiario') or row.get('Beneficiário') or row.get('Nome', 'N/A')
-                    cpf = row.get('CPF', 'N/A')
-                    data_pagto = row.get('Data') or row.get('Data Pagto') or row.get('Data_Pagto') or row.get('DataPagto', 'N/A')
-                    valor = row.get('Valor', 'N/A')
+                    conta = row.get('Num Cartao') or row.get('Num_Cartao') or row.get('Conta', '')
+                    nome = row.get('Beneficiario') or row.get('Beneficiário') or row.get('Nome', '')
+                    cpf = row.get('CPF', '')
+                    data_pagto = row.get('Data') or row.get('Data Pagto') or row.get('Data_Pagto') or row.get('DataPagto', '')
+                    valor = row.get('Valor', '')
                     ocorrencia = row.get('Ocorrencia', '')
                     total_ocorrencias = row.get('Total_Ocorrencias', '')
                     
-                    pdf.cell(0, 4, f'  Conta: {conta} | Nome: {nome} | CPF: {cpf} | Data: {data_pagto} | Valor: {valor} | Ocorrência: {ocorrencia}/{total_ocorrencias}', 0, 1)
+                    # CORREÇÃO: Não mostrar campos vazios
+                    linha = f'  Conta: {conta}' if conta else '  Conta: [Não informada]'
+                    if nome: linha += f' | Nome: {nome}'
+                    if cpf: linha += f' | CPF: {cpf}'
+                    if data_pagto: linha += f' | Data: {data_pagto}'
+                    if valor: linha += f' | Valor: {valor}'
+                    if ocorrencia: linha += f' | Ocorrência: {ocorrencia}/{total_ocorrencias}'
+                    
+                    pdf.cell(0, 4, linha, 0, 1)
             
             pdf.ln(2)
         
