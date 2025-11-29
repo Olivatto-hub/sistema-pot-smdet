@@ -424,7 +424,7 @@ def gerar_pdf_executivo(dados, metrics, nomes_arquivos):
         pdf.set_font('Arial', 'B', 14)
         pdf.cell(0, 10, 'SECRETARIA MUNICIPAL DO DESENVOLVIMENTO ECONOMICO E TRABALHO', 0, 1, 'C')
         pdf.set_font('Arial', 'B', 16)
-        pdf.cell(0, 10, 'PROGRAMA DE OPERACOES DO TRABALHO - POT', 0, 1, 'C')
+        pdf.cell(0, 10, 'PROGRAMA OPERACAO TRABALHO (POT)', 0, 1, 'C')
         pdf.cell(0, 10, 'RELATORIO DE MONITORAMENTO DE PAGAMENTOS', 0, 1, 'C')
         
         # Linha divisória
@@ -664,7 +664,7 @@ def mostrar_dashboard(dados, nomes_arquivos=None):
     # CABEÇALHO PRINCIPAL CORRETO
     st.markdown("<h1 style='text-align: center;'>🏛️ PREFEITURA DE SÃO PAULO</h1>", unsafe_allow_html=True)
     st.markdown("<h2 style='text-align: center;'>Secretaria Municipal do Desenvolvimento Econômico e Trabalho - SMDET</h2>", unsafe_allow_html=True)
-    st.markdown("<h3 style='text-align: center;'>Programa de Operações do Trabalho - POT</h3>", unsafe_allow_html=True)
+    st.markdown("<h3 style='text-align: center;'>Programa Operação Trabalho (POT)</h3>", unsafe_allow_html=True)
     st.markdown("<h4 style='text-align: center;'>Sistema de Monitoramento de Pagamentos</h4>", unsafe_allow_html=True)
     st.markdown("---")
     
@@ -830,7 +830,7 @@ def mostrar_dashboard(dados, nomes_arquivos=None):
 def mostrar_importacao():
     st.markdown("<h1 style='text-align: center;'>🏛️ PREFEITURA DE SÃO PAULO</h1>", unsafe_allow_html=True)
     st.markdown("<h2 style='text-align: center;'>Secretaria Municipal do Desenvolvimento Econômico e Trabalho - SMDET</h2>", unsafe_allow_html=True)
-    st.markdown("<h3 style='text-align: center;'>Programa de Operações do Trabalho - POT</h3>", unsafe_allow_html=True)
+    st.markdown("<h3 style='text-align: center;'>Programa Operação Trabalho (POT)</h3>", unsafe_allow_html=True)
     st.markdown("<h4 style='text-align: center;'>Sistema de Monitoramento de Pagamentos</h4>", unsafe_allow_html=True)
     st.markdown("---")
     
@@ -876,7 +876,7 @@ Agência (texto/número)
 def mostrar_consultas(dados):
     st.markdown("<h1 style='text-align: center;'>🏛️ PREFEITURA DE SÃO PAULO</h1>", unsafe_allow_html=True)
     st.markdown("<h2 style='text-align: center;'>Secretaria Municipal do Desenvolvimento Econômico e Trabalho - SMDET</h2>", unsafe_allow_html=True)
-    st.markdown("<h3 style='text-align: center;'>Programa de Operações do Trabalho - POT</h3>", unsafe_allow_html=True)
+    st.markdown("<h3 style='text-align: center;'>Programa Operação Trabalho (POT)</h3>", unsafe_allow_html=True)
     st.markdown("<h4 style='text-align: center;'>Sistema de Monitoramento de Pagamentos</h4>", unsafe_allow_html=True)
     st.markdown("---")
     
@@ -970,7 +970,7 @@ def mostrar_consultas(dados):
 def mostrar_relatorios(dados, nomes_arquivos=None):
     st.markdown("<h1 style='text-align: center;'>🏛️ PREFEITURA DE SÃO PAULO</h1>", unsafe_allow_html=True)
     st.markdown("<h2 style='text-align: center;'>Secretaria Municipal do Desenvolvimento Econômico e Trabalho - SMDET</h2>", unsafe_allow_html=True)
-    st.markdown("<h3 style='text-align: center;'>Programa de Operações do Trabalho - POT</h3>", unsafe_allow_html=True)
+    st.markdown("<h3 style='text-align: center;'>Programa Operação Trabalho (POT)</h3>", unsafe_allow_html=True)
     st.markdown("<h4 style='text-align: center;'>Sistema de Monitoramento de Pagamentos</h4>", unsafe_allow_html=True)
     st.markdown("---")
     
@@ -1075,6 +1075,7 @@ def main():
         "**Sistema POT - SMDET**  \n"
         "Prefeitura de São Paulo  \n"
         "Secretaria Municipal do Desenvolvimento Econômico e Trabalho  \n"
+        "Programa Operação Trabalho (POT)  \n"
         f"© {datetime.now().year} - Versão 2.0"
     )
 
