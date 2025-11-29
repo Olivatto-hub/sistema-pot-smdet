@@ -674,7 +674,7 @@ def processar_colunas_data(df):
     
     return df_processed
 
-# CORREÇÃO ATUALIZADA: Função para processar colunas de valor (priorizando "Valor Pgto")
+# CORREÇÃO CRÍTICA: Função para processar colunas de valor (priorizando "Valor Pgto")
 def processar_colunas_valor(df):
     """Processa colunas de valor para formato brasileiro, priorizando 'Valor Pgto'"""
     df_processed = df.copy()
@@ -690,21 +690,44 @@ def processar_colunas_valor(df):
     
     if coluna_valor_encontrada:
         try:
-            if df_processed[coluna_valor_encontrada].dtype == 'object':
-                df_processed['Valor_Limpo'] = (
-                    df_processed[coluna_valor_encontrada]
-                    .astype(str)
-                    .str.replace('R$', '')
-                    .str.replace('R$ ', '')
-                    .str.replace('.', '')
-                    .str.replace(',', '.')
-                    .str.replace(' ', '')
-                    .astype(float)
-                )
-            else:
-                df_processed['Valor_Limpo'] = df_processed[coluna_valor_encontrada].astype(float)
+            # CORREÇÃO: Processar todos os valores, não apenas strings
+            valores_limpos = []
+            
+            for valor in df_processed[coluna_valor_encontrada]:
+                if pd.isna(valor):
+                    valores_limpos.append(0.0)
+                    continue
                 
-            st.sidebar.info(f"💰 Coluna de valor utilizada: '{coluna_valor_encontrada}'")
+                # Se já é numérico, usar diretamente
+                if isinstance(valor, (int, float)):
+                    valores_limpos.append(float(valor))
+                    continue
+                
+                # Se é string, processar
+                valor_str = str(valor).strip()
+                if valor_str == '':
+                    valores_limpos.append(0.0)
+                    continue
+                
+                # Remover caracteres não numéricos exceto ponto e vírgula
+                valor_limpo_str = re.sub(r'[^\d,.]', '', valor_str)
+                
+                # Substituir vírgula por ponto para conversão float
+                valor_limpo_str = valor_limpo_str.replace(',', '.')
+                
+                # Se tem múltiplos pontos, manter apenas o último como decimal
+                if valor_limpo_str.count('.') > 1:
+                    partes = valor_limpo_str.split('.')
+                    valor_limpo_str = ''.join(partes[:-1]) + '.' + partes[-1]
+                
+                try:
+                    valor_float = float(valor_limpo_str) if valor_limpo_str else 0.0
+                    valores_limpos.append(valor_float)
+                except:
+                    valores_limpos.append(0.0)
+            
+            df_processed['Valor_Limpo'] = valores_limpos
+            st.sidebar.success(f"💰 Coluna de valor utilizada: '{coluna_valor_encontrada}'")
                 
         except Exception as e:
             st.warning(f"⚠️ Erro ao processar valores da coluna '{coluna_valor_encontrada}': {str(e)}")
@@ -715,9 +738,9 @@ def processar_colunas_valor(df):
     
     return df_processed
 
-# FUNÇÃO MELHORADA: Analisar ausência de dados
+# CORREÇÃO CRÍTICA: Analisar ausência de dados - APENAS REGISTROS REALMENTE INVÁLIDOS
 def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_contas=None):
-    """Analisa e reporta apenas dados críticos realmente ausentes com info da planilha original"""
+    """Analisa e reporta apenas dados críticos realmente ausentes"""
     analise_ausencia = {
         'registros_criticos_problematicos': [],
         'total_registros_criticos': 0,
@@ -735,51 +758,21 @@ def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_co
     }
     
     if 'pagamentos' in dados and not dados['pagamentos'].empty:
-        # CORREÇÃO: Usar dados SEM linha de totais para análise de ausência
+        # Usar dados SEM linha de totais para análise de ausência
         df = dados['pagamentos_sem_totais'] if 'pagamentos_sem_totais' in dados else dados['pagamentos']
         
-        # NOVO: Adicionar coluna com número da linha original
+        # CORREÇÃO: Adicionar coluna com número da linha original
+        df = df.reset_index(drop=True)
         df['Linha_Planilha_Original'] = df.index + 2
         
-        # Contar documentos padronizados - APENAS COLUNAS EXISTENTES
+        # Contar documentos padronizados
         colunas_docs = ['RG', 'CPF']
         for coluna in colunas_docs:
             if coluna in df.columns:
-                docs_originais = len(df[df[coluna].notna()])
+                docs_originais = len(df[df[coluna].notna() & (df[coluna].astype(str).str.strip() != '')])
                 analise_ausencia['documentos_padronizados'] += docs_originais
         
-        # CORREÇÃO: Contar RGs válidos com QUALQUER letra - APENAS SE A COLUNA EXISTIR
-        if 'RG' in df.columns:
-            rgs_com_letras = df[df['RG'].astype(str).str.contains(r'[A-Za-z]', na=False)]
-            analise_ausencia['registros_validos_com_letras'] = len(rgs_com_letras)
-            
-            # Detalhar quais letras específicas foram encontradas
-            letras_encontradas = {}
-            for _, row in rgs_com_letras.iterrows():
-                rg_str = str(row['RG'])
-                letras = re.findall(r'[A-Za-z]', rg_str)
-                for letra in letras:
-                    letra_upper = letra.upper()
-                    letras_encontradas[letra_upper] = letras_encontradas.get(letra_upper, 0) + 1
-            
-            analise_ausencia['rgs_com_letras_especificas'] = letras_encontradas
-        
-        # Contar CPFs que receberam zeros à esquerda - APENAS SE A COLUNA EXISTIR
-        if 'CPF' in df.columns:
-            cpfs_com_zeros = df[
-                df['CPF'].notna() & 
-                (df['CPF'].astype(str).str.len() < 11) &
-                (df['CPF'].astype(str).str.strip() != '')
-            ]
-            analise_ausencia['cpfs_com_zeros_adicional'] = len(cpfs_com_zeros)
-            
-            cpfs_com_formatos = df[
-                df['CPF'].notna() & 
-                (df['CPF'].astype(str).str.contains(r'[.-]', na=False))
-            ]
-            analise_ausencia['cpfs_formatos_diferentes'] = len(cpfs_com_formatos)
-        
-        # CRITÉRIO CORRIGIDO: Apenas dados realmente críticos ausentes
+        # CORREÇÃO CRÍTICA: Apenas dados REALMENTE críticos ausentes
         registros_problematicos = []
         
         # 1. Número da conta ausente - ESTE É CRÍTICO (registro inválido)
@@ -805,36 +798,50 @@ def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_co
                 if idx not in registros_problematicos:
                     registros_problematicos.append(idx)
         
-        # Atualizar análise
-        analise_ausencia['registros_criticos_problematicos'] = registros_problematicos
-        analise_ausencia['total_registros_criticos'] = len(registros_problematicos)
+        # CORREÇÃO: REMOVER registros que já foram ajustados (com CPF válido)
+        # Um registro NÃO é crítico se tem conta e valor válidos, mesmo com CPF problemático
+        registros_problematicos_filtrados = []
+        for idx in registros_problematicos:
+            registro = df.loc[idx]
+            # Verificar se o registro tem conta e valor válidos
+            tem_conta_valida = coluna_conta and pd.notna(registro[coluna_conta]) and str(registro[coluna_conta]).strip() != ''
+            tem_valor_valido = 'Valor_Limpo' in df.columns and pd.notna(registro['Valor_Limpo']) and registro['Valor_Limpo'] > 0
+            
+            # Se não tem conta OU não tem valor válido, é crítico
+            if not tem_conta_valida or not tem_valor_valido:
+                registros_problematicos_filtrados.append(idx)
         
-        if registros_problematicos:
-            analise_ausencia['registros_problema_detalhados'] = df.loc[registros_problematicos].copy()
+        # Atualizar análise com apenas registros realmente críticos
+        analise_ausencia['registros_criticos_problematicos'] = registros_problematicos_filtrados
+        analise_ausencia['total_registros_criticos'] = len(registros_problematicos_filtrados)
         
-        # Analisar ausência por coluna crítica - APENAS COLUNAS EXISTENTES
+        if registros_problematicos_filtrados:
+            analise_ausencia['registros_problema_detalhados'] = df.loc[registros_problematicos_filtrados].copy()
+        
+        # Analisar ausência por coluna crítica
         colunas_criticas = ['Num Cartao', 'Num_Cartao', 'Conta', 'Valor_Limpo']
         for coluna in colunas_criticas:
             if coluna in df.columns:
                 mask_ausente = (
                     df[coluna].isna() | 
-                    (df[coluna].astype(str).str.strip() == '')
+                    (df[coluna].astype(str).str.strip() == '') |
+                    ((coluna == 'Valor_Limpo') & (df[coluna] == 0))
                 )
                 ausentes = df[mask_ausente]
                 if len(ausentes) > 0:
                     analise_ausencia['colunas_com_ausencia_critica'][coluna] = len(ausentes)
                     analise_ausencia['tipos_problemas'][f'Sem {coluna}'] = len(ausentes)
         
-        # Criar resumo de ausências com informações da planilha original - APENAS COLUNAS EXISTENTES
-        if registros_problematicos:
+        # Criar resumo de ausências com informações da planilha original
+        if registros_problematicos_filtrados:
             resumo = []
-            for idx in registros_problematicos[:100]:
+            for idx in registros_problematicos_filtrados[:100]:  # Limitar a 100 registros
                 registro = df.loc[idx]
                 info_ausencia = {
                     'Indice_Registro': idx,
                     'Linha_Planilha': registro.get('Linha_Planilha_Original', idx + 2),
                     'Planilha_Origem': nome_arquivo_pagamentos or 'Pagamentos',
-                    'Status_Registro': 'INVÁLIDO - Precisa de correção'  # Status claro
+                    'Status_Registro': 'INVÁLIDO - Precisa de correção'
                 }
                 
                 # COLUNAS DINÂMICAS BASEADAS NO QUE REALMENTE EXISTE NA PLANILHA
@@ -870,7 +877,7 @@ def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_co
                     else:
                         info_ausencia[col] = ''
                 
-                # Marcar campos problemáticos - APENAS PARA CAMPOS EXISTENTES
+                # Marcar campos problemáticos
                 problemas = []
                 if coluna_conta and (pd.isna(registro[coluna_conta]) or str(registro[coluna_conta]).strip() == ''):
                     problemas.append('Número da conta ausente')
@@ -971,7 +978,7 @@ def identificar_cpfs_problematicos(df):
     
     return problemas_cpf
 
-# CORREÇÃO: Função para processar dados principais - Considera apenas pagamentos válidos SEM TOTAIS
+# CORREÇÃO CRÍTICA: Função para processar dados principais
 def processar_dados(dados, nomes_arquivos=None):
     """Processa os dados para gerar métricas e análises"""
     metrics = {
@@ -992,19 +999,19 @@ def processar_dados(dados, nomes_arquivos=None):
         'linha_totais_removida': False,  # Indicador se linha de totais foi removida
         'total_registros_originais': 0,  # Total original antes de remover totais
         'total_registros_sem_totais': 0,  # Total após remover totais
-        'total_cpfs_ajuste': 0  # NOVO: Total de CPFs que precisam de ajuste (não são inválidos)
+        'total_cpfs_ajuste': 0  # Total de CPFs que precisam de ajuste (não são inválidos)
     }
     
     # Combinar com análise de ausência de dados
     analise_ausencia = analisar_ausencia_dados(dados, nomes_arquivos.get('pagamentos'), nomes_arquivos.get('contas'))
     metrics.update(analise_ausencia)
     
-    # CORREÇÃO: Processar planilha de PAGAMENTOS - apenas válidos SEM TOTAIS
+    # CORREÇÃO: Processar planilha de PAGAMENTOS
     if 'pagamentos' in dados and not dados['pagamentos'].empty:
         df_original = dados['pagamentos']
         metrics['total_registros_originais'] = len(df_original)
         
-        # NOVO: Remover linha de totais antes de qualquer processamento
+        # Remover linha de totais antes de qualquer processamento
         df_sem_totais = remover_linha_totais(df_original)
         metrics['total_registros_sem_totais'] = len(df_sem_totais)
         
@@ -1014,7 +1021,7 @@ def processar_dados(dados, nomes_arquivos=None):
         # CORREÇÃO: Filtrar apenas pagamentos válidos (com número de conta)
         df = filtrar_pagamentos_validos(df_sem_totais)
         
-        # NOVO: Contar registros inválidos (sem número de conta)
+        # CORREÇÃO: Contar registros inválidos (sem número de conta)
         coluna_conta = obter_coluna_conta(df_sem_totais)
         if coluna_conta:
             registros_invalidos = df_sem_totais[
@@ -1027,7 +1034,7 @@ def processar_dados(dados, nomes_arquivos=None):
         if df.empty:
             return metrics
         
-        # NOVO: Analisar problemas com CPF - AGORA SÃO REGISTROS VÁLIDOS QUE PRECISAM DE AJUSTE
+        # Analisar problemas com CPF - AGORA SÃO REGISTROS VÁLIDOS QUE PRECISAM DE AJUSTE
         problemas_cpf = identificar_cpfs_problematicos(df)
         metrics['problemas_cpf'] = problemas_cpf
         metrics['total_cpfs_ajuste'] = problemas_cpf['total_problemas_cpf']
@@ -1055,20 +1062,20 @@ def processar_dados(dados, nomes_arquivos=None):
         if 'Projeto' in df.columns:
             metrics['projetos_ativos'] = df['Projeto'].nunique()
         
-        # CORREÇÃO: Valor total - APENAS SE A COLUNA Valor_Limpo EXISTIR (processada de "Valor Pgto")
+        # CORREÇÃO CRÍTICA: Valor total - SOMA DE TODOS OS PAGAMENTOS VÁLIDOS
         if 'Valor_Limpo' in df.columns:
             metrics['valor_total'] = df['Valor_Limpo'].sum()
             # Informar qual coluna foi usada para o cálculo
             coluna_valor_origem = obter_coluna_valor(df)
             if coluna_valor_origem:
-                st.sidebar.success(f"💰 Total calculado a partir de: '{coluna_valor_origem}'")
+                st.sidebar.success(f"💰 Total calculado a partir de: '{coluna_valor_origem}' = R$ {metrics['valor_total']:,.2f}")
         
         # CPFs duplicados - APENAS SE A COLUNA EXISTIR
         if 'CPF' in df.columns:
             cpfs_duplicados = df[df.duplicated(['CPF'], keep=False)]
             metrics['total_cpfs_duplicados'] = cpfs_duplicados['CPF'].nunique()
     
-    # CORREÇÃO: Processar planilha de ABERTURA DE CONTAS
+    # Processar planilha de ABERTURA DE CONTAS
     if 'contas' in dados and not dados['contas'].empty:
         df_contas = dados['contas']
         
@@ -1258,14 +1265,15 @@ def gerar_relatorio_comparativo(conn, periodo):
         return None
     
     # Calcular variações
+    variacoes = {}
     if len(metricas) > 1:
         ultimo = metricas.iloc[0]
         anterior = metricas.iloc[1]
         
         variacoes = {
-            'total_pagamentos': ((ultimo['total_registros'] - anterior['total_registros']) / anterior['total_registros']) * 100,
-            'beneficiarios': ((ultimo['beneficiarios_unicos'] - anterior['beneficiarios_unicos']) / anterior['beneficiarios_unicos']) * 100,
-            'valor_total': ((ultimo['valor_total'] - anterior['valor_total']) / anterior['valor_total']) * 100,
+            'total_pagamentos': ((ultimo['total_registros'] - anterior['total_registros']) / anterior['total_registros']) * 100 if anterior['total_registros'] > 0 else 0,
+            'beneficiarios': ((ultimo['beneficiarios_unicos'] - anterior['beneficiarios_unicos']) / anterior['beneficiarios_unicos']) * 100 if anterior['beneficiarios_unicos'] > 0 else 0,
+            'valor_total': ((ultimo['valor_total'] - anterior['valor_total']) / anterior['valor_total']) * 100 if anterior['valor_total'] > 0 else 0,
             'duplicidades': ((ultimo['pagamentos_duplicados'] - anterior['pagamentos_duplicados']) / anterior['pagamentos_duplicados']) * 100 if anterior['pagamentos_duplicados'] > 0 else 0,
         }
         
@@ -1551,8 +1559,9 @@ def carregar_dados(conn):
             df_pagamentos_sem_totais = remover_linha_totais(df_pagamentos)
             dados['pagamentos'] = df_pagamentos_sem_totais
             
-            df_pagamentos_sem_totais = processar_colunas_data(df_pagamentos_sem_totais)
+            # CORREÇÃO: Processar valores ANTES de outras operações
             df_pagamentos_sem_totais = processar_colunas_valor(df_pagamentos_sem_totais)
+            df_pagamentos_sem_totais = processar_colunas_data(df_pagamentos_sem_totais)
             df_pagamentos_sem_totais = padronizar_documentos(df_pagamentos_sem_totais)
             
             dados['pagamentos'] = df_pagamentos_sem_totais
