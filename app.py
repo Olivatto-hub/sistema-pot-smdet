@@ -265,16 +265,16 @@ def detectar_pagamentos_duplicados(df):
     df_duplicados['Ocorrencia'] = df_duplicados.groupby(coluna_conta).cumcount() + 1
     df_duplicados['Total_Ocorrencias'] = df_duplicados.groupby(coluna_conta)[coluna_conta].transform('count')
     
-    # Preparar dados completos para exibição - TODOS os campos importantes
+    # Preparar dados completos para exibição - APENAS COLUNAS EXISTENTES
     colunas_exibicao_completas = [coluna_conta, 'Ocorrencia', 'Total_Ocorrencias']
     
-    if coluna_nome:
+    if coluna_nome and coluna_nome in df_duplicados.columns:
         colunas_exibicao_completas.append(coluna_nome)
     
     if 'CPF' in df_duplicados.columns:
         colunas_exibicao_completas.append('CPF')
     
-    # Adicionar colunas de data
+    # Adicionar colunas de data EXISTENTES
     for col_data in colunas_data:
         if col_data in df_duplicados.columns:
             colunas_exibicao_completas.append(col_data)
@@ -291,6 +291,9 @@ def detectar_pagamentos_duplicados(df):
     
     if 'Status' in df_duplicados.columns:
         colunas_exibicao_completas.append('Status')
+    
+    # Garantir que só colunas existentes sejam usadas
+    colunas_exibicao_completas = [col for col in colunas_exibicao_completas if col in df_duplicados.columns]
     
     # Atualizar métricas
     duplicidades['contas_duplicadas'] = df_duplicados[colunas_exibicao_completas]
@@ -314,11 +317,11 @@ def detectar_pagamentos_duplicados(df):
             'Pagamentos_Extras': len(registros_conta) - 1
         }
         
-        if coluna_nome:
+        if coluna_nome and coluna_nome in primeiro_registro:
             info_conta['Nome'] = primeiro_registro[coluna_nome]
         
         if 'CPF' in registros_conta.columns:
-            info_conta['CPF'] = primeiro_registro['CPF']
+            info_conta['CPF'] = primeiro_registro.get('CPF', '')
         
         # Datas dos pagamentos
         datas = []
@@ -373,10 +376,10 @@ def detectar_pagamentos_pendentes(dados):
     # Filtrar contas sem pagamento
     df_contas_sem_pagamento = df_contas[df_contas[coluna_conta_contas].isin(contas_sem_pagamento)].copy()
     
-    # Preparar colunas para exibição
+    # Preparar colunas para exibição - APENAS COLUNAS EXISTENTES
     colunas_exibicao = [coluna_conta_contas]
     
-    if coluna_nome_contas:
+    if coluna_nome_contas and coluna_nome_contas in df_contas_sem_pagamento.columns:
         colunas_exibicao.append(coluna_nome_contas)
     
     if 'CPF' in df_contas_sem_pagamento.columns:
@@ -390,12 +393,15 @@ def detectar_pagamentos_pendentes(dados):
     elif 'Data' in df_contas_sem_pagamento.columns:
         colunas_exibicao.append('Data')
     
+    # Garantir que só colunas existentes sejam usadas
+    colunas_exibicao = [col for col in colunas_exibicao if col in df_contas_sem_pagamento.columns]
+    
     # Adicionar status
     df_contas_sem_pagamento['Status'] = 'Aguardando Pagamento'
     
     pendentes['contas_sem_pagamento'] = df_contas_sem_pagamento[colunas_exibicao + ['Status']]
     pendentes['total_contas_sem_pagamento'] = len(contas_sem_pagamento)
-    pendentes['beneficiarios_sem_pagamento'] = df_contas_sem_pagamento[coluna_nome_contas].nunique() if coluna_nome_contas else 0
+    pendentes['beneficiarios_sem_pagamento'] = df_contas_sem_pagamento[coluna_nome_contas].nunique() if coluna_nome_contas and coluna_nome_contas in df_contas_sem_pagamento.columns else 0
     
     return pendentes
 
@@ -535,14 +541,14 @@ def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_co
         # NOVO: Adicionar coluna com número da linha original
         df['Linha_Planilha_Original'] = df.index + 2
         
-        # Contar documentos padronizados
+        # Contar documentos padronizados - APENAS COLUNAS EXISTENTES
         colunas_docs = ['RG', 'CPF']
         for coluna in colunas_docs:
             if coluna in df.columns:
                 docs_originais = len(df[df[coluna].notna()])
                 analise_ausencia['documentos_padronizados'] += docs_originais
         
-        # CORREÇÃO: Contar RGs válidos com QUALQUER letra
+        # CORREÇÃO: Contar RGs válidos com QUALQUER letra - APENAS SE A COLUNA EXISTIR
         if 'RG' in df.columns:
             rgs_com_letras = df[df['RG'].astype(str).str.contains(r'[A-Za-z]', na=False)]
             analise_ausencia['registros_validos_com_letras'] = len(rgs_com_letras)
@@ -558,7 +564,7 @@ def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_co
             
             analise_ausencia['rgs_com_letras_especificas'] = letras_encontradas
         
-        # Contar CPFs que receberam zeros à esquerda
+        # Contar CPFs que receberam zeros à esquerda - APENAS SE A COLUNA EXISTIR
         if 'CPF' in df.columns:
             cpfs_com_zeros = df[
                 df['CPF'].notna() & 
@@ -576,7 +582,7 @@ def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_co
         # CRITÉRIO CORRIGIDO: Apenas dados realmente críticos ausentes
         registros_problematicos = []
         
-        # 1. CPF COMPLETAMENTE AUSENTE
+        # 1. CPF COMPLETAMENTE AUSENTE - APENAS SE A COLUNA EXISTIR
         if 'CPF' in df.columns:
             mask_cpf_ausente = (
                 df['CPF'].isna() | 
@@ -598,7 +604,7 @@ def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_co
                 if idx not in registros_problematicos:
                     registros_problematicos.append(idx)
         
-        # 3. Valor ausente ou zero
+        # 3. Valor ausente ou zero - APENAS SE A COLUNA EXISTIR
         if 'Valor' in df.columns:
             mask_valor_invalido = (
                 df['Valor'].isna() | 
@@ -617,7 +623,7 @@ def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_co
         if registros_problematicos:
             analise_ausencia['registros_problema_detalhados'] = df.loc[registros_problematicos].copy()
         
-        # Analisar ausência por coluna crítica
+        # Analisar ausência por coluna crítica - APENAS COLUNAS EXISTENTES
         colunas_criticas = ['CPF', 'Num Cartao', 'Num_Cartao', 'Valor']
         for coluna in colunas_criticas:
             if coluna in df.columns:
@@ -630,7 +636,7 @@ def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_co
                     analise_ausencia['colunas_com_ausencia_critica'][coluna] = len(ausentes)
                     analise_ausencia['tipos_problemas'][f'Sem {coluna}'] = len(ausentes)
         
-        # Criar resumo de ausências com informações da planilha original
+        # Criar resumo de ausências com informações da planilha original - APENAS COLUNAS EXISTENTES
         if registros_problematicos:
             resumo = []
             for idx in registros_problematicos[:100]:
@@ -641,24 +647,40 @@ def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_co
                     'Planilha_Origem': nome_arquivo_pagamentos or 'Pagamentos'
                 }
                 
-                colunas_interesse = [
+                # COLUNAS DINÂMICAS BASEADAS NO QUE REALMENTE EXISTE NA PLANILHA
+                colunas_interesse = []
+                
+                # Adicionar apenas colunas que existem na planilha
+                colunas_possiveis = [
                     'CPF', 'RG', 'Projeto', 'Valor', 'Beneficiario', 'Beneficiário', 'Nome',
                     'Data', 'Data Pagto', 'Data_Pagto', 'DataPagto',
                     'Num Cartao', 'Num_Cartao', 'Conta', 'Status'
                 ]
                 
+                for col in colunas_possiveis:
+                    if col in df.columns:
+                        colunas_interesse.append(col)
+                
+                # Adicionar coluna de conta se existir
+                coluna_conta = obter_coluna_conta(df)
+                if coluna_conta and coluna_conta not in colunas_interesse:
+                    colunas_interesse.append(coluna_conta)
+                
+                # Adicionar coluna de nome se existir
+                coluna_nome = obter_coluna_nome(df)
+                if coluna_nome and coluna_nome not in colunas_interesse:
+                    colunas_interesse.append(coluna_nome)
+                
                 for col in colunas_interesse:
-                    if col in df.columns and pd.notna(registro[col]):
+                    if pd.notna(registro[col]):
                         valor = str(registro[col])
                         if len(valor) > 50:
                             valor = valor[:47] + "..."
                         info_ausencia[col] = valor
-                    elif col in df.columns:
-                        info_ausencia[col] = ''
                     else:
                         info_ausencia[col] = ''
                 
-                # Marcar campos problemáticos
+                # Marcar campos problemáticos - APENAS PARA CAMPOS EXISTENTES
                 problemas = []
                 if 'CPF' in df.columns and (pd.isna(registro['CPF']) or str(registro['CPF']).strip() == ''):
                     problemas.append('CPF ausente')
@@ -723,7 +745,7 @@ def identificar_cpfs_problematicos(df):
                 'Problemas': ', '.join(problemas)
             }
             
-            # Adicionar informações adicionais para identificação
+            # Adicionar informações adicionais para identificação - APENAS COLUNAS EXISTENTES
             coluna_conta = obter_coluna_conta(df)
             if coluna_conta and coluna_conta in row:
                 info_problema['Numero_Conta'] = row[coluna_conta]
@@ -805,9 +827,9 @@ def processar_dados(dados, nomes_arquivos=None):
         # NOVO: Analisar problemas com CPF
         metrics['problemas_cpf'] = identificar_cpfs_problematicos(df)
         
-        # Beneficiários únicos
+        # Beneficiários únicos - APENAS SE A COLUNA EXISTIR
         coluna_beneficiario = obter_coluna_nome(df)
-        if coluna_beneficiario:
+        if coluna_beneficiario and coluna_beneficiario in df.columns:
             metrics['beneficiarios_unicos'] = df[coluna_beneficiario].nunique()
         
         # Total de pagamentos VÁLIDOS (já sem linha de totais)
@@ -815,7 +837,7 @@ def processar_dados(dados, nomes_arquivos=None):
         
         # Contas únicas (da planilha de pagamentos VÁLIDOS)
         coluna_conta = obter_coluna_conta(df)
-        if coluna_conta:
+        if coluna_conta and coluna_conta in df.columns:
             metrics['contas_unicas'] = df[coluna_conta].nunique()
             
             # Detectar duplicidades detalhadas
@@ -824,15 +846,15 @@ def processar_dados(dados, nomes_arquivos=None):
             metrics['pagamentos_duplicados'] = duplicidades['total_contas_duplicadas']
             metrics['valor_total_duplicados'] = duplicidades['valor_total_duplicados']
         
-        # Projetos ativos
+        # Projetos ativos - APENAS SE A COLUNA EXISTIR
         if 'Projeto' in df.columns:
             metrics['projetos_ativos'] = df['Projeto'].nunique()
         
-        # Valor total
+        # Valor total - APENAS SE A COLUNA EXISTIR
         if 'Valor_Limpo' in df.columns:
             metrics['valor_total'] = df['Valor_Limpo'].sum()
         
-        # CPFs duplicados
+        # CPFs duplicados - APENAS SE A COLUNA EXISTIR
         if 'CPF' in df.columns:
             cpfs_duplicados = df[df.duplicated(['CPF'], keep=False)]
             metrics['total_cpfs_duplicados'] = cpfs_duplicados['CPF'].nunique()
@@ -844,9 +866,9 @@ def processar_dados(dados, nomes_arquivos=None):
         # Total de contas abertas
         metrics['total_contas_abertas'] = len(df_contas)
         
-        # Beneficiários únicos na planilha de contas
+        # Beneficiários únicos na planilha de contas - APENAS SE A COLUNA EXISTIR
         coluna_nome = obter_coluna_nome(df_contas)
-        if coluna_nome:
+        if coluna_nome and coluna_nome in df_contas.columns:
             metrics['beneficiarios_contas'] = df_contas[coluna_nome].nunique()
         
         # Se não há planilha de pagamentos, usar contas como referência
@@ -891,6 +913,9 @@ def carregar_dados():
                 df_pagamentos = pd.read_csv(upload_pagamentos, encoding='utf-8', sep=';')
             
             nomes_arquivos['pagamentos'] = upload_pagamentos.name
+            
+            # NOVO: Mostrar colunas disponíveis para debug
+            st.sidebar.info(f"📊 Colunas na planilha: {', '.join(df_pagamentos.columns.tolist()[:5])}{'...' if len(df_pagamentos.columns) > 5 else ''}")
             
             # NOVO: Guardar versão original e versão sem totais
             dados['pagamentos_original'] = df_pagamentos.copy()
@@ -1082,6 +1107,11 @@ def main():
             
             st.write(f"**Pagamentos válidos:** {metrics['total_pagamentos']}")
             st.write(f"**Registros sem conta:** {metrics['total_registros_invalidos']}")
+            
+            # NOVO: Mostrar colunas disponíveis na planilha
+            if 'pagamentos' in dados:
+                colunas_disponiveis = dados['pagamentos'].columns.tolist()
+                st.write(f"**Colunas disponíveis:** {', '.join(colunas_disponiveis[:8])}{'...' if len(colunas_disponiveis) > 8 else ''}")
         
         if tem_dados_contas:
             st.write(f"**Planilha de Contas:** {nomes_arquivos.get('contas', 'N/A')}")
@@ -1126,6 +1156,7 @@ def main():
             
             if not metrics['resumo_ausencias'].empty:
                 st.write("**Registros com Problemas:**")
+                # CORREÇÃO: Mostrar apenas as colunas que realmente existem
                 st.dataframe(metrics['resumo_ausencias'])
         else:
             st.success("✅ Todos os registros possuem dados essenciais preenchidos")
