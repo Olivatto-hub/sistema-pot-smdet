@@ -2,6 +2,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 from datetime import datetime, timezone, timedelta
 import io
 from fpdf import FPDF
@@ -9,6 +10,10 @@ import numpy as np
 import re
 import base64
 import hashlib
+import sqlite3
+from sqlite3 import Error
+import os
+import json
 
 # Configuração da página
 st.set_page_config(
@@ -16,6 +21,59 @@ st.set_page_config(
     page_icon="🏛️",
     layout="wide"
 )
+
+# Sistema de banco de dados
+def init_database():
+    """Inicializa o banco de dados SQLite"""
+    conn = sqlite3.connect('pot_smdet.db', check_same_thread=False)
+    
+    # Tabela para armazenar dados de pagamentos
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS pagamentos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            mes_referencia TEXT NOT NULL,
+            ano_referencia INTEGER NOT NULL,
+            data_importacao TEXT NOT NULL,
+            nome_arquivo TEXT NOT NULL,
+            dados_json TEXT NOT NULL,
+            metadados_json TEXT NOT NULL
+        )
+    ''')
+    
+    # Tabela para armazenar dados de inscrições/contas
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS inscricoes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            mes_referencia TEXT NOT NULL,
+            ano_referencia INTEGER NOT NULL,
+            data_importacao TEXT NOT NULL,
+            nome_arquivo TEXT NOT NULL,
+            dados_json TEXT NOT NULL,
+            metadados_json TEXT NOT NULL
+        )
+    ''')
+    
+    # Tabela para métricas consolidadas
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS metricas_mensais (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tipo TEXT NOT NULL,
+            mes_referencia TEXT NOT NULL,
+            ano_referencia INTEGER NOT NULL,
+            total_registros INTEGER,
+            beneficiarios_unicos INTEGER,
+            contas_unicas INTEGER,
+            valor_total REAL,
+            pagamentos_duplicados INTEGER,
+            valor_duplicados REAL,
+            projetos_ativos INTEGER,
+            registros_problema INTEGER,
+            data_calculo TEXT NOT NULL
+        )
+    ''')
+    
+    conn.commit()
+    return conn
 
 # Função para hash de senha
 def hash_senha(senha):
@@ -105,6 +163,103 @@ def autenticar():
     
     return None
 
+# Funções de banco de dados
+def salvar_pagamentos_db(conn, mes_ref, ano_ref, nome_arquivo, dados_df, metadados):
+    """Salva dados de pagamentos no banco de dados"""
+    dados_json = dados_df.to_json(orient='records', date_format='iso')
+    metadados_json = json.dumps(metadados)
+    
+    conn.execute('''
+        INSERT INTO pagamentos (mes_referencia, ano_referencia, data_importacao, nome_arquivo, dados_json, metadados_json)
+        VALUES (?, ?, ?, ?, ?, ?)
+    ''', (mes_ref, ano_ref, data_hora_atual_brasilia(), nome_arquivo, dados_json, metadados_json))
+    
+    conn.commit()
+
+def salvar_inscricoes_db(conn, mes_ref, ano_ref, nome_arquivo, dados_df, metadados):
+    """Salva dados de inscrições no banco de dados"""
+    dados_json = dados_df.to_json(orient='records', date_format='iso')
+    metadados_json = json.dumps(metadados)
+    
+    conn.execute('''
+        INSERT INTO inscricoes (mes_referencia, ano_referencia, data_importacao, nome_arquivo, dados_json, metadados_json)
+        VALUES (?, ?, ?, ?, ?, ?)
+    ''', (mes_ref, ano_ref, data_hora_atual_brasilia(), nome_arquivo, dados_json, metadados_json))
+    
+    conn.commit()
+
+def salvar_metricas_db(conn, tipo, mes_ref, ano_ref, metrics):
+    """Salva métricas no banco de dados para relatórios comparativos"""
+    conn.execute('''
+        INSERT INTO metricas_mensais (tipo, mes_referencia, ano_referencia, total_registros, 
+                    beneficiarios_unicos, contas_unicas, valor_total, pagamentos_duplicados, 
+                    valor_duplicados, projetos_ativos, registros_problema, data_calculo)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (tipo, mes_ref, ano_ref, 
+          metrics.get('total_pagamentos', 0),
+          metrics.get('beneficiarios_unicos', 0),
+          metrics.get('contas_unicas', 0),
+          metrics.get('valor_total', 0),
+          metrics.get('pagamentos_duplicados', 0),
+          metrics.get('valor_total_duplicados', 0),
+          metrics.get('projetos_ativos', 0),
+          metrics.get('total_registros_criticos', 0),
+          data_hora_atual_brasilia()))
+    
+    conn.commit()
+
+def carregar_pagamentos_db(conn, mes_ref=None, ano_ref=None):
+    """Carrega dados de pagamentos do banco de dados"""
+    query = "SELECT * FROM pagamentos"
+    params = []
+    
+    if mes_ref and ano_ref:
+        query += " WHERE mes_referencia = ? AND ano_referencia = ?"
+        params = [mes_ref, ano_ref]
+    
+    query += " ORDER BY ano_referencia DESC, mes_referencia DESC"
+    
+    df_result = pd.read_sql_query(query, conn, params=params)
+    return df_result
+
+def carregar_inscricoes_db(conn, mes_ref=None, ano_ref=None):
+    """Carrega dados de inscrições do banco de dados"""
+    query = "SELECT * FROM inscricoes"
+    params = []
+    
+    if mes_ref and ano_ref:
+        query += " WHERE mes_referencia = ? AND ano_referencia = ?"
+        params = [mes_ref, ano_ref]
+    
+    query += " ORDER BY ano_referencia DESC, mes_referencia DESC"
+    
+    df_result = pd.read_sql_query(query, conn, params=params)
+    return df_result
+
+def carregar_metricas_db(conn, tipo=None, periodo=None):
+    """Carrega métricas do banco de dados para relatórios comparativos"""
+    query = "SELECT * FROM metricas_mensais"
+    params = []
+    
+    if tipo:
+        query += " WHERE tipo = ?"
+        params = [tipo]
+    
+    if periodo == 'trimestral':
+        # Últimos 3 meses
+        query += " ORDER BY ano_referencia DESC, mes_referencia DESC LIMIT 3"
+    elif periodo == 'semestral':
+        # Últimos 6 meses
+        query += " ORDER BY ano_referencia DESC, mes_referencia DESC LIMIT 6"
+    elif periodo == 'anual':
+        # Últimos 12 meses
+        query += " ORDER BY ano_referencia DESC, mes_referencia DESC LIMIT 12"
+    else:
+        query += " ORDER BY ano_referencia DESC, mes_referencia DESC"
+    
+    df_result = pd.read_sql_query(query, conn, params=params)
+    return df_result
+
 # Função auxiliar para obter coluna de conta
 def obter_coluna_conta(df):
     """Identifica a coluna que contém o número da conta"""
@@ -143,7 +298,6 @@ def remover_linha_totais(df):
     
     # SEMPRE remover a última linha (linha de totais)
     df_limpo = df_limpo.iloc[:-1].copy()
-    st.sidebar.info(f"📝 Linha de totais removida automaticamente: {len(df)} → {len(df_limpo)} registros")
     
     return df_limpo
 
@@ -838,8 +992,117 @@ def processar_dados(dados, nomes_arquivos=None):
     
     return metrics
 
+# FUNÇÕES PARA DASHBOARDS E RELATÓRIOS COMPARATIVOS
+def criar_dashboard_evolucao(conn, periodo='mensal'):
+    """Cria dashboard com evolução temporal dos indicadores"""
+    metricas = carregar_metricas_db(conn, 'pagamentos', periodo)
+    
+    if metricas.empty:
+        return None
+    
+    # Criar gráficos
+    fig_evolucao = go.Figure()
+    
+    # Gráfico de evolução de pagamentos
+    fig_evolucao.add_trace(go.Scatter(
+        x=metricas['mes_referencia'] + '/' + metricas['ano_referencia'].astype(str),
+        y=metricas['total_registros'],
+        name='Total Pagamentos',
+        line=dict(color='blue', width=3)
+    ))
+    
+    fig_evolucao.add_trace(go.Scatter(
+        x=metricas['mes_referencia'] + '/' + metricas['ano_referencia'].astype(str),
+        y=metricas['beneficiarios_unicos'],
+        name='Beneficiários Únicos',
+        line=dict(color='green', width=3)
+    ))
+    
+    fig_evolucao.update_layout(
+        title='Evolução Mensal de Pagamentos e Beneficiários',
+        xaxis_title='Mês/Ano',
+        yaxis_title='Quantidade',
+        height=400
+    )
+    
+    # Gráfico de valor total
+    fig_valor = go.Figure()
+    
+    fig_valor.add_trace(go.Bar(
+        x=metricas['mes_referencia'] + '/' + metricas['ano_referencia'].astype(str),
+        y=metricas['valor_total'],
+        name='Valor Total',
+        marker_color='orange'
+    ))
+    
+    fig_valor.update_layout(
+        title='Evolução do Valor Total Mensal',
+        xaxis_title='Mês/Ano',
+        yaxis_title='Valor (R$)',
+        height=400
+    )
+    
+    # Gráfico de problemas
+    fig_problemas = go.Figure()
+    
+    fig_problemas.add_trace(go.Bar(
+        x=metricas['mes_referencia'] + '/' + metricas['ano_referencia'].astype(str),
+        y=metricas['pagamentos_duplicados'],
+        name='Pagamentos Duplicados',
+        marker_color='red'
+    ))
+    
+    fig_problemas.add_trace(go.Bar(
+        x=metricas['mes_referencia'] + '/' + metricas['ano_referencia'].astype(str),
+        y=metricas['registros_problema'],
+        name='Registros com Problemas',
+        marker_color='yellow'
+    ))
+    
+    fig_problemas.update_layout(
+        title='Evolução de Problemas Identificados',
+        xaxis_title='Mês/Ano',
+        yaxis_title='Quantidade',
+        height=400,
+        barmode='group'
+    )
+    
+    return {
+        'evolucao': fig_evolucao,
+        'valor': fig_valor,
+        'problemas': fig_problemas,
+        'dados': metricas
+    }
+
+def gerar_relatorio_comparativo(conn, periodo):
+    """Gera relatório comparativo entre períodos"""
+    metricas = carregar_metricas_db(conn, 'pagamentos', periodo)
+    
+    if metricas.empty:
+        return None
+    
+    # Calcular variações
+    if len(metricas) > 1:
+        ultimo = metricas.iloc[0]
+        anterior = metricas.iloc[1]
+        
+        variacoes = {
+            'total_pagamentos': ((ultimo['total_registros'] - anterior['total_registros']) / anterior['total_registros']) * 100,
+            'beneficiarios': ((ultimo['beneficiarios_unicos'] - anterior['beneficiarios_unicos']) / anterior['beneficiarios_unicos']) * 100,
+            'valor_total': ((ultimo['valor_total'] - anterior['valor_total']) / anterior['valor_total']) * 100,
+            'duplicidades': ((ultimo['pagamentos_duplicados'] - anterior['pagamentos_duplicados']) / anterior['pagamentos_duplicados']) * 100 if anterior['pagamentos_duplicados'] > 0 else 0
+        }
+    else:
+        variacoes = {}
+    
+    return {
+        'metricas': metricas,
+        'variacoes': variacoes,
+        'periodo': periodo
+    }
+
 # FUNÇÃO RESTAURADA: Gerar PDF Executivo
-def gerar_pdf_executivo(metrics, dados, nomes_arquivos):
+def gerar_pdf_executivo(metrics, dados, nomes_arquivos, tipo_relatorio='pagamentos'):
     """Gera relatório executivo em PDF"""
     pdf = FPDF()
     pdf.add_page()
@@ -850,7 +1113,12 @@ def gerar_pdf_executivo(metrics, dados, nomes_arquivos):
     # Cabeçalho
     pdf.cell(0, 10, "Prefeitura de São Paulo", 0, 1, 'C')
     pdf.cell(0, 10, "Secretaria Municipal do Desenvolvimento Econômico e Trabalho - SMDET", 0, 1, 'C')
-    pdf.cell(0, 10, "Relatório Executivo - Sistema POT", 0, 1, 'C')
+    
+    if tipo_relatorio == 'pagamentos':
+        pdf.cell(0, 10, "Relatório Executivo - Sistema POT (Pagamentos)", 0, 1, 'C')
+    else:
+        pdf.cell(0, 10, "Relatório Executivo - Sistema POT (Inscrições)", 0, 1, 'C')
+    
     pdf.ln(10)
     
     # Data da análise
@@ -862,7 +1130,7 @@ def gerar_pdf_executivo(metrics, dados, nomes_arquivos):
     if nomes_arquivos.get('pagamentos'):
         pdf.cell(0, 10, f"Planilha de Pagamentos: {nomes_arquivos['pagamentos']}", 0, 1)
     if nomes_arquivos.get('contas'):
-        pdf.cell(0, 10, f"Planilha de Contas: {nomes_arquivos['contas']}", 0, 1)
+        pdf.cell(0, 10, f"Planilha de Inscrições: {nomes_arquivos['contas']}", 0, 1)
     pdf.ln(10)
     
     # Métricas principais
@@ -870,16 +1138,22 @@ def gerar_pdf_executivo(metrics, dados, nomes_arquivos):
     pdf.cell(0, 10, "Métricas Principais", 0, 1)
     pdf.set_font("Arial", '', 12)
     
-    metricas = [
-        ("Total de Pagamentos", formatar_brasileiro(metrics['total_pagamentos'])),
-        ("Beneficiários Únicos", formatar_brasileiro(metrics['beneficiarios_unicos'])),
-        ("Contas Únicas", formatar_brasileiro(metrics['contas_unicas'])),
-        ("Valor Total", formatar_brasileiro(metrics['valor_total'], 'monetario')),
-        ("Pagamentos Duplicados", formatar_brasileiro(metrics['pagamentos_duplicados'])),
-        ("Valor em Duplicidades", formatar_brasileiro(metrics['valor_total_duplicados'], 'monetario')),
-        ("Contas Abertas", formatar_brasileiro(metrics['total_contas_abertas'])),
-        ("Projetos Ativos", formatar_brasileiro(metrics['projetos_ativos']))
-    ]
+    if tipo_relatorio == 'pagamentos':
+        metricas = [
+            ("Total de Pagamentos", formatar_brasileiro(metrics['total_pagamentos'])),
+            ("Beneficiários Únicos", formatar_brasileiro(metrics['beneficiarios_unicos'])),
+            ("Contas Únicas", formatar_brasileiro(metrics['contas_unicas'])),
+            ("Valor Total", formatar_brasileiro(metrics['valor_total'], 'monetario')),
+            ("Pagamentos Duplicados", formatar_brasileiro(metrics['pagamentos_duplicados'])),
+            ("Valor em Duplicidades", formatar_brasileiro(metrics['valor_total_duplicados'], 'monetario')),
+            ("Projetos Ativos", formatar_brasileiro(metrics['projetos_ativos']))
+        ]
+    else:
+        metricas = [
+            ("Total de Inscrições", formatar_brasileiro(metrics['total_contas_abertas'])),
+            ("Beneficiários Únicos", formatar_brasileiro(metrics['beneficiarios_contas'])),
+            ("Projetos Ativos", formatar_brasileiro(metrics['projetos_ativos']))
+        ]
     
     for nome, valor in metricas:
         pdf.cell(100, 10, nome, 0, 0)
@@ -888,66 +1162,85 @@ def gerar_pdf_executivo(metrics, dados, nomes_arquivos):
     pdf.ln(10)
     
     # Alertas e problemas
-    if metrics['pagamentos_duplicados'] > 0:
-        pdf.set_font("Arial", 'B', 12)
-        pdf.set_text_color(255, 0, 0)
-        pdf.cell(0, 10, f"ALERTA: {metrics['pagamentos_duplicados']} contas com pagamentos duplicados", 0, 1)
-        pdf.set_text_color(0, 0, 0)
-    
-    if metrics['total_registros_criticos'] > 0:
-        pdf.set_font("Arial", 'B', 12)
-        pdf.set_text_color(255, 165, 0)
-        pdf.cell(0, 10, f"ATENÇÃO: {metrics['total_registros_criticos']} registros com problemas críticos", 0, 1)
-        pdf.set_text_color(0, 0, 0)
+    if tipo_relatorio == 'pagamentos':
+        if metrics['pagamentos_duplicados'] > 0:
+            pdf.set_font("Arial", 'B', 12)
+            pdf.set_text_color(255, 0, 0)
+            pdf.cell(0, 10, f"ALERTA: {metrics['pagamentos_duplicados']} contas com pagamentos duplicados", 0, 1)
+            pdf.set_text_color(0, 0, 0)
+        
+        if metrics['total_registros_criticos'] > 0:
+            pdf.set_font("Arial", 'B', 12)
+            pdf.set_text_color(255, 165, 0)
+            pdf.cell(0, 10, f"ATENÇÃO: {metrics['total_registros_criticos']} registros com problemas críticos", 0, 1)
+            pdf.set_text_color(0, 0, 0)
     
     return pdf.output(dest='S').encode('latin1')
 
 # FUNÇÃO RESTAURADA: Gerar Excel Completo
-def gerar_excel_completo(metrics, dados):
+def gerar_excel_completo(metrics, dados, tipo_relatorio='pagamentos'):
     """Gera planilha Excel com todas as análises"""
     output = io.BytesIO()
     
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         # Resumo Executivo
-        resumo_data = {
-            'Métrica': [
-                'Data da Análise',
-                'Total de Pagamentos Válidos',
-                'Beneficiários Únicos',
-                'Contas Únicas', 
-                'Valor Total',
-                'Pagamentos Duplicados',
-                'Valor em Duplicidades',
-                'Contas Abertas',
-                'Projetos Ativos',
-                'Registros com Problemas'
-            ],
-            'Valor': [
-                data_hora_atual_brasilia(),
-                metrics['total_pagamentos'],
-                metrics['beneficiarios_unicos'],
-                metrics['contas_unicas'],
-                metrics['valor_total'],
-                metrics['pagamentos_duplicados'],
-                metrics['valor_total_duplicados'],
-                metrics['total_contas_abertas'],
-                metrics['projetos_ativos'],
-                metrics['total_registros_criticos']
-            ]
-        }
+        if tipo_relatorio == 'pagamentos':
+            resumo_data = {
+                'Métrica': [
+                    'Data da Análise',
+                    'Total de Pagamentos Válidos',
+                    'Beneficiários Únicos',
+                    'Contas Únicas', 
+                    'Valor Total',
+                    'Pagamentos Duplicados',
+                    'Valor em Duplicidades',
+                    'Projetos Ativos',
+                    'Registros com Problemas'
+                ],
+                'Valor': [
+                    data_hora_atual_brasilia(),
+                    metrics['total_pagamentos'],
+                    metrics['beneficiarios_unicos'],
+                    metrics['contas_unicas'],
+                    metrics['valor_total'],
+                    metrics['pagamentos_duplicados'],
+                    metrics['valor_total_duplicados'],
+                    metrics['projetos_ativos'],
+                    metrics['total_registros_criticos']
+                ]
+            }
+        else:
+            resumo_data = {
+                'Métrica': [
+                    'Data da Análise',
+                    'Total de Inscrições',
+                    'Beneficiários Únicos',
+                    'Projetos Ativos',
+                    'Registros com Problemas'
+                ],
+                'Valor': [
+                    data_hora_atual_brasilia(),
+                    metrics['total_contas_abertas'],
+                    metrics['beneficiarios_contas'],
+                    metrics['projetos_ativos'],
+                    metrics['total_registros_criticos']
+                ]
+            }
+        
         pd.DataFrame(resumo_data).to_excel(writer, sheet_name='Resumo Executivo', index=False)
         
-        # Duplicidades detalhadas
-        if not metrics['duplicidades_detalhadas']['resumo_duplicidades'].empty:
-            metrics['duplicidades_detalhadas']['resumo_duplicidades'].to_excel(
-                writer, sheet_name='Duplicidades', index=False
-            )
-        
-        # Pagamentos pendentes
-        if not metrics['pagamentos_pendentes']['contas_sem_pagamento'].empty:
-            metrics['pagamentos_pendentes']['contas_sem_pagamento'].to_excel(
-                writer, sheet_name='Pagamentos Pendentes', index=False
-            )
+        if tipo_relatorio == 'pagamentos':
+            # Duplicidades detalhadas
+            if not metrics['duplicidades_detalhadas']['resumo_duplicidades'].empty:
+                metrics['duplicidades_detalhadas']['resumo_duplicidades'].to_excel(
+                    writer, sheet_name='Duplicidades', index=False
+                )
+            
+            # Pagamentos pendentes
+            if not metrics['pagamentos_pendentes']['contas_sem_pagamento'].empty:
+                metrics['pagamentos_pendentes']['contas_sem_pagamento'].to_excel(
+                    writer, sheet_name='Pagamentos Pendentes', index=False
+                )
         
         # Problemas de dados
         if not metrics['resumo_ausencias'].empty:
@@ -964,31 +1257,32 @@ def gerar_excel_completo(metrics, dados):
     return output.getvalue()
 
 # FUNÇÃO RESTAURADA: Gerar Planilha de Ajustes
-def gerar_planilha_ajustes(metrics):
+def gerar_planilha_ajustes(metrics, tipo_relatorio='pagamentos'):
     """Gera planilha com ações recomendadas"""
     output = io.BytesIO()
     
     acoes = []
     
-    # Ações para duplicidades
-    if metrics['pagamentos_duplicados'] > 0:
-        acoes.append({
-            'Tipo': 'Duplicidade',
-            'Descrição': f'Verificar {metrics["pagamentos_duplicados"]} contas com pagamentos duplicados',
-            'Ação Recomendada': 'Auditar pagamentos e ajustar contas duplicadas',
-            'Prioridade': 'Alta',
-            'Impacto Financeiro': formatar_brasileiro(metrics['valor_total_duplicados'], 'monetario')
-        })
-    
-    # Ações para pagamentos pendentes
-    if metrics['pagamentos_pendentes']['total_contas_sem_pagamento'] > 0:
-        acoes.append({
-            'Tipo': 'Pagamento Pendente',
-            'Descrição': f'{metrics["pagamentos_pendentes"]["total_contas_sem_pagamento"]} contas aguardando pagamento',
-            'Ação Recomendada': 'Regularizar pagamentos pendentes',
-            'Prioridade': 'Média',
-            'Impacto Financeiro': 'A definir'
-        })
+    if tipo_relatorio == 'pagamentos':
+        # Ações para duplicidades
+        if metrics['pagamentos_duplicados'] > 0:
+            acoes.append({
+                'Tipo': 'Duplicidade',
+                'Descrição': f'Verificar {metrics["pagamentos_duplicados"]} contas com pagamentos duplicados',
+                'Ação Recomendada': 'Auditar pagamentos e ajustar contas duplicadas',
+                'Prioridade': 'Alta',
+                'Impacto Financeiro': formatar_brasileiro(metrics['valor_total_duplicados'], 'monetario')
+            })
+        
+        # Ações para pagamentos pendentes
+        if metrics['pagamentos_pendentes']['total_contas_sem_pagamento'] > 0:
+            acoes.append({
+                'Tipo': 'Pagamento Pendente',
+                'Descrição': f'{metrics["pagamentos_pendentes"]["total_contas_sem_pagamento"]} contas aguardando pagamento',
+                'Ação Recomendada': 'Regularizar pagamentos pendentes',
+                'Prioridade': 'Média',
+                'Impacto Financeiro': 'A definir'
+            })
     
     # Ações para problemas de dados
     if metrics['total_registros_criticos'] > 0:
@@ -1016,8 +1310,21 @@ def gerar_planilha_ajustes(metrics):
     return output.getvalue()
 
 # Sistema de upload de dados MELHORADO: capturar nomes dos arquivos
-def carregar_dados():
-    st.sidebar.header("📤 Carregar Dados Reais")
+def carregar_dados(conn):
+    st.sidebar.header("📤 Carregar Dados Mensais")
+    
+    # Seleção de mês e ano de referência
+    col1, col2 = st.sidebar.columns(2)
+    with col1:
+        mes_ref = st.selectbox("Mês de Referência", 
+                             ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
+                              'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'])
+    with col2:
+        ano_atual = datetime.now().year
+        ano_ref = st.selectbox("Ano de Referência", 
+                             [ano_atual, ano_atual-1, ano_atual-2])
+    
+    st.sidebar.markdown("---")
     
     upload_pagamentos = st.sidebar.file_uploader(
         "Planilha de Pagamentos", 
@@ -1027,7 +1334,7 @@ def carregar_dados():
     )
     
     upload_contas = st.sidebar.file_uploader(
-        "Planilha de Abertura de Contas", 
+        "Planilha de Inscrições/Contas", 
         type=['xlsx', 'csv'],
         key="contas",
         help="Arraste e solte o arquivo aqui ou clique para procurar"
@@ -1046,10 +1353,10 @@ def carregar_dados():
             
             nomes_arquivos['pagamentos'] = upload_pagamentos.name
             
-            # NOVO: Mostrar colunas disponíveis para debug
+            # Mostrar colunas disponíveis para debug
             st.sidebar.info(f"📊 Colunas na planilha: {', '.join(df_pagamentos.columns.tolist()[:5])}{'...' if len(df_pagamentos.columns) > 5 else ''}")
             
-            # NOVO: Guardar versão original e versão sem totais
+            # Guardar versão original e versão sem totais
             dados['pagamentos_original'] = df_pagamentos.copy()
             
             # Remover linha de totais antes do processamento - SEMPRE REMOVE
@@ -1062,7 +1369,16 @@ def carregar_dados():
             
             dados['pagamentos'] = df_pagamentos_sem_totais
             
-            # CORREÇÃO: Mostrar estatísticas de pagamentos válidos vs inválidos (JÁ SEM TOTAIS)
+            # Salvar no banco de dados
+            metadados = {
+                'total_registros_originais': len(df_pagamentos),
+                'total_registros_sem_totais': len(df_pagamentos_sem_totais),
+                'colunas_disponiveis': df_pagamentos.columns.tolist()
+            }
+            
+            salvar_pagamentos_db(conn, mes_ref, ano_ref, upload_pagamentos.name, df_pagamentos_sem_totais, metadados)
+            
+            # Mostrar estatísticas de pagamentos válidos vs inválidos (JÁ SEM TOTAIS)
             df_pagamentos_validos = filtrar_pagamentos_validos(df_pagamentos_sem_totais)
             total_validos = len(df_pagamentos_validos)
             total_invalidos = len(df_pagamentos_sem_totais) - total_validos
@@ -1086,14 +1402,26 @@ def carregar_dados():
             df_contas = padronizar_documentos(df_contas)
             
             dados['contas'] = df_contas
-            st.sidebar.success(f"✅ Contas: {len(dados['contas'])} registros - {upload_contas.name}")
+            
+            # Salvar no banco de dados
+            metadados = {
+                'total_registros': len(df_contas),
+                'colunas_disponiveis': df_contas.columns.tolist()
+            }
+            
+            salvar_inscricoes_db(conn, mes_ref, ano_ref, upload_contas.name, df_contas, metadados)
+            
+            st.sidebar.success(f"✅ Inscrições: {len(dados['contas'])} registros - {upload_contas.name}")
         except Exception as e:
-            st.sidebar.error(f"❌ Erro ao carregar contas: {str(e)}")
+            st.sidebar.error(f"❌ Erro ao carregar inscrições: {str(e)}")
     
-    return dados, nomes_arquivos
+    return dados, nomes_arquivos, mes_ref, ano_ref
 
 # Interface principal do sistema CORRIGIDA
 def main():
+    # Inicializar banco de dados
+    conn = init_database()
+    
     # Autenticação - AGORA É OBRIGATÓRIA
     email_autorizado = autenticar()
     
@@ -1115,225 +1443,424 @@ def main():
     st.sidebar.markdown("---")
     
     # Carregar dados
-    dados, nomes_arquivos = carregar_dados()
+    dados, nomes_arquivos, mes_ref, ano_ref = carregar_dados(conn)
     
     # Verificar se há dados para processar
     tem_dados_pagamentos = 'pagamentos' in dados and not dados['pagamentos'].empty
     tem_dados_contas = 'contas' in dados and not dados['contas'].empty
     
-    if not tem_dados_pagamentos and not tem_dados_contas:
-        st.info("📊 Faça o upload das planilhas de pagamentos e/ou abertura de contas para iniciar a análise")
-        
-        # Mostrar exemplo de interface mesmo sem dados
-        st.title("🏛️ Sistema POT - SMDET")
-        st.markdown("### Análise de Pagamentos e Contas")
-        st.markdown("---")
-        
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            st.metric("Total de Pagamentos", "0")
-        with col2:
-            st.metric("Beneficiários Únicos", "0")
-        with col3:
-            st.metric("Valor Total", "R$ 0,00")
-        
-        return
-    
-    # Processar dados
-    with st.spinner("🔄 Processando dados..."):
-        metrics = processar_dados(dados, nomes_arquivos)
-    
-    # Interface principal
-    st.title("🏛️ Sistema POT - SMDET")
-    st.markdown("### Análise de Pagamentos e Contas")
-    st.markdown(f"**Data da análise:** {data_hora_atual_brasilia()}")
-    
-    # NOVO: Mostrar informação sobre linha de totais removida
-    if metrics.get('linha_totais_removida', False):
-        st.info(f"📝 **Nota:** Linha de totais da planilha foi identificada e excluída da análise ({metrics['total_registros_originais']} → {metrics['total_registros_sem_totais']} registros)")
-    
-    # SEÇÃO RESTAURADA: Download de Relatórios
-    st.sidebar.markdown("---")
-    st.sidebar.header("📥 Exportar Relatórios")
-    
-    col1, col2, col3 = st.sidebar.columns(3)
-    
-    with col1:
-        pdf_bytes = gerar_pdf_executivo(metrics, dados, nomes_arquivos)
-        st.download_button(
-            label="📄 PDF",
-            data=pdf_bytes,
-            file_name=f"relatorio_executivo_pot_{data_hora_arquivo_brasilia()}.pdf",
-            mime="application/pdf"
-        )
-    
-    with col2:
-        excel_bytes = gerar_excel_completo(metrics, dados)
-        st.download_button(
-            label="📊 Excel",
-            data=excel_bytes,
-            file_name=f"analise_completa_pot_{data_hora_arquivo_brasilia()}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-    
-    with col3:
-        ajustes_bytes = gerar_planilha_ajustes(metrics)
-        st.download_button(
-            label="🔧 Ajustes",
-            data=ajustes_bytes,
-            file_name=f"plano_ajustes_pot_{data_hora_arquivo_brasilia()}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-    
-    st.markdown("---")
-    
-    # Métricas principais
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.metric(
-            "Total de Pagamentos", 
-            formatar_brasileiro(metrics['total_pagamentos']),
-            help="Pagamentos válidos com número de conta (já excluindo linha de totais)"
-        )
-    
-    with col2:
-        st.metric(
-            "Beneficiários Únicos", 
-            formatar_brasileiro(metrics['beneficiarios_unicos'])
-        )
-    
-    with col3:
-        st.metric(
-            "Contas Únicas", 
-            formatar_brasileiro(metrics['contas_unicas'])
-        )
-    
-    with col4:
-        st.metric(
-            "Valor Total", 
-            formatar_brasileiro(metrics['valor_total'], 'monetario')
-        )
-    
-    # Segunda linha de métricas
-    col5, col6, col7, col8 = st.columns(4)
-    
-    with col5:
-        st.metric(
-            "Pagamentos Duplicados", 
-            formatar_brasileiro(metrics['pagamentos_duplicados']),
-            delta=f"-{formatar_brasileiro(metrics['valor_total_duplicados'], 'monetario')}",
-            delta_color="inverse",
-            help="Contas com múltiplos pagamentos"
-        )
-    
-    with col6:
-        st.metric(
-            "Contas Abertas", 
-            formatar_brasileiro(metrics['total_contas_abertas'])
-        )
-    
-    with col7:
-        st.metric(
-            "Projetos Ativos", 
-            formatar_brasileiro(metrics['projetos_ativos'])
-        )
-    
-    with col8:
-        st.metric(
-            "Registros com Problemas", 
-            formatar_brasileiro(metrics['total_registros_criticos']),
-            delta_color="inverse" if metrics['total_registros_criticos'] > 0 else "off"
-        )
-    
-    st.markdown("---")
-    
-    # Abas para análises detalhadas
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "📋 Visão Geral", 
-        "⚠️ Duplicidades", 
-        "⏳ Pagamentos Pendentes", 
-        "🔍 Análise de Dados"
+    # Abas principais do sistema
+    tab_principal, tab_dashboard, tab_relatorios, tab_historico = st.tabs([
+        "📊 Análise Mensal", 
+        "📈 Dashboard Evolutivo", 
+        "📋 Relatórios Comparativos", 
+        "🗃️ Dados Históricos"
     ])
     
-    with tab1:
-        st.subheader("Resumo dos Dados")
-        
-        if tem_dados_pagamentos:
-            st.write(f"**Planilha de Pagamentos:** {nomes_arquivos.get('pagamentos', 'N/A')}")
+    with tab_principal:
+        if not tem_dados_pagamentos and not tem_dados_contas:
+            st.info("📊 Faça o upload das planilhas de pagamentos e/ou inscrições para iniciar a análise")
             
-            # CORREÇÃO: Mostrar apenas total SEM linha de totais
-            st.write(f"**Total de registros válidos:** {metrics['total_registros_sem_totais']}")
+            # Mostrar exemplo de interface mesmo sem dados
+            st.title("🏛️ Sistema POT - SMDET")
+            st.markdown("### Análise de Pagamentos e Inscrições")
+            st.markdown(f"**Mês de referência:** {mes_ref}/{ano_ref}")
+            st.markdown("---")
             
-            # NOVO: Mostrar informação sobre remoção de totais se aplicável
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.metric("Total de Pagamentos", "0")
+            with col2:
+                st.metric("Beneficiários Únicos", "0")
+            with col3:
+                st.metric("Valor Total", "R$ 0,00")
+            
+        else:
+            # Processar dados
+            with st.spinner("🔄 Processando dados..."):
+                metrics = processar_dados(dados, nomes_arquivos)
+                
+                # Salvar métricas no banco de dados
+                if tem_dados_pagamentos:
+                    salvar_metricas_db(conn, 'pagamentos', mes_ref, ano_ref, metrics)
+                if tem_dados_contas:
+                    salvar_metricas_db(conn, 'inscricoes', mes_ref, ano_ref, metrics)
+            
+            # Interface principal
+            st.title("🏛️ Sistema POT - SMDET")
+            st.markdown("### Análise de Pagamentos e Inscrições")
+            st.markdown(f"**Mês de referência:** {mes_ref}/{ano_ref}")
+            st.markdown(f"**Data da análise:** {data_hora_atual_brasilia()}")
+            
+            # Informação sobre linha de totais removida
             if metrics.get('linha_totais_removida', False):
-                st.write(f"🔍 **Observação:** Linha de totais removida (originalmente {metrics['total_registros_originais']} registros)")
+                st.info(f"📝 **Nota:** Linha de totais da planilha foi identificada e excluída da análise ({metrics['total_registros_originais']} → {metrics['total_registros_sem_totais']} registros)")
             
-            st.write(f"**Pagamentos válidos:** {metrics['total_pagamentos']}")
-            st.write(f"**Registros sem conta:** {metrics['total_registros_invalidos']}")
+            # SEÇÃO RESTAURADA: Download de Relatórios
+            st.sidebar.markdown("---")
+            st.sidebar.header("📥 Exportar Relatórios")
             
-            # NOVO: Mostrar colunas disponíveis na planilha
-            if 'pagamentos' in dados:
-                colunas_disponiveis = dados['pagamentos'].columns.tolist()
-                st.write(f"**Colunas disponíveis:** {', '.join(colunas_disponiveis[:8])}{'...' if len(colunas_disponiveis) > 8 else ''}")
-        
-        if tem_dados_contas:
-            st.write(f"**Planilha de Contas:** {nomes_arquivos.get('contas', 'N/A')}")
-            st.write(f"**Total de contas:** {metrics['total_contas_abertas']}")
-            st.write(f"**Beneficiários únicos:** {metrics['beneficiarios_contas']}")
+            col1, col2, col3 = st.sidebar.columns(3)
+            
+            with col1:
+                if tem_dados_pagamentos:
+                    pdf_bytes = gerar_pdf_executivo(metrics, dados, nomes_arquivos, 'pagamentos')
+                else:
+                    pdf_bytes = gerar_pdf_executivo(metrics, dados, nomes_arquivos, 'inscricoes')
+                
+                st.download_button(
+                    label="📄 PDF",
+                    data=pdf_bytes,
+                    file_name=f"relatorio_executivo_pot_{mes_ref}_{ano_ref}_{data_hora_arquivo_brasilia()}.pdf",
+                    mime="application/pdf"
+                )
+            
+            with col2:
+                if tem_dados_pagamentos:
+                    excel_bytes = gerar_excel_completo(metrics, dados, 'pagamentos')
+                else:
+                    excel_bytes = gerar_excel_completo(metrics, dados, 'inscricoes')
+                
+                st.download_button(
+                    label="📊 Excel",
+                    data=excel_bytes,
+                    file_name=f"analise_completa_pot_{mes_ref}_{ano_ref}_{data_hora_arquivo_brasilia()}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+            
+            with col3:
+                if tem_dados_pagamentos:
+                    ajustes_bytes = gerar_planilha_ajustes(metrics, 'pagamentos')
+                else:
+                    ajustes_bytes = gerar_planilha_ajustes(metrics, 'inscricoes')
+                
+                st.download_button(
+                    label="🔧 Ajustes",
+                    data=ajustes_bytes,
+                    file_name=f"plano_ajustes_pot_{mes_ref}_{ano_ref}_{data_hora_arquivo_brasilia()}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+            
+            st.markdown("---")
+            
+            # Métricas principais
+            if tem_dados_pagamentos:
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    st.metric(
+                        "Total de Pagamentos", 
+                        formatar_brasileiro(metrics['total_pagamentos']),
+                        help="Pagamentos válidos com número de conta (já excluindo linha de totais)"
+                    )
+                
+                with col2:
+                    st.metric(
+                        "Beneficiários Únicos", 
+                        formatar_brasileiro(metrics['beneficiarios_unicos'])
+                    )
+                
+                with col3:
+                    st.metric(
+                        "Contas Únicas", 
+                        formatar_brasileiro(metrics['contas_unicas'])
+                    )
+                
+                with col4:
+                    st.metric(
+                        "Valor Total", 
+                        formatar_brasileiro(metrics['valor_total'], 'monetario')
+                    )
+                
+                # Segunda linha de métricas
+                col5, col6, col7, col8 = st.columns(4)
+                
+                with col5:
+                    st.metric(
+                        "Pagamentos Duplicados", 
+                        formatar_brasileiro(metrics['pagamentos_duplicados']),
+                        delta=f"-{formatar_brasileiro(metrics['valor_total_duplicados'], 'monetario')}",
+                        delta_color="inverse",
+                        help="Contas com múltiplos pagamentos"
+                    )
+                
+                with col6:
+                    st.metric(
+                        "Projetos Ativos", 
+                        formatar_brasileiro(metrics['projetos_ativos'])
+                    )
+                
+                with col7:
+                    st.metric(
+                        "Registros com Problemas", 
+                        formatar_brasileiro(metrics['total_registros_criticos']),
+                        delta_color="inverse" if metrics['total_registros_criticos'] > 0 else "off"
+                    )
+                
+                with col8:
+                    if metrics['pagamentos_pendentes']['total_contas_sem_pagamento'] > 0:
+                        st.metric(
+                            "Pagamentos Pendentes", 
+                            formatar_brasileiro(metrics['pagamentos_pendentes']['total_contas_sem_pagamento']),
+                            delta_color="inverse"
+                        )
+                    else:
+                        st.metric("Pagamentos Pendentes", "0")
+            
+            if tem_dados_contas:
+                st.markdown("---")
+                st.subheader("📋 Dados de Inscrições/Contas")
+                
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    st.metric(
+                        "Total de Inscrições", 
+                        formatar_brasileiro(metrics['total_contas_abertas'])
+                    )
+                
+                with col2:
+                    st.metric(
+                        "Beneficiários Únicos", 
+                        formatar_brasileiro(metrics['beneficiarios_contas'])
+                    )
+                
+                with col3:
+                    st.metric(
+                        "Projetos Ativos", 
+                        formatar_brasileiro(metrics['projetos_ativos'])
+                    )
+            
+            st.markdown("---")
+            
+            # Abas para análises detalhadas
+            tab1, tab2, tab3, tab4 = st.tabs([
+                "📋 Visão Geral", 
+                "⚠️ Duplicidades", 
+                "⏳ Pagamentos Pendentes", 
+                "🔍 Análise de Dados"
+            ])
+            
+            with tab1:
+                st.subheader("Resumo dos Dados")
+                
+                if tem_dados_pagamentos:
+                    st.write(f"**Planilha de Pagamentos:** {nomes_arquivos.get('pagamentos', 'N/A')}")
+                    
+                    # Mostrar apenas total SEM linha de totais
+                    st.write(f"**Total de registros válidos:** {metrics['total_registros_sem_totais']}")
+                    
+                    # Mostrar informação sobre remoção de totais se aplicável
+                    if metrics.get('linha_totais_removida', False):
+                        st.write(f"🔍 **Observação:** Linha de totais removida (originalmente {metrics['total_registros_originais']} registros)")
+                    
+                    st.write(f"**Pagamentos válidos:** {metrics['total_pagamentos']}")
+                    st.write(f"**Registros sem conta:** {metrics['total_registros_invalidos']}")
+                    
+                    # Mostrar colunas disponíveis na planilha
+                    if 'pagamentos' in dados:
+                        colunas_disponiveis = dados['pagamentos'].columns.tolist()
+                        st.write(f"**Colunas disponíveis:** {', '.join(colunas_disponiveis[:8])}{'...' if len(colunas_disponiveis) > 8 else ''}")
+                
+                if tem_dados_contas:
+                    st.write(f"**Planilha de Inscrições:** {nomes_arquivos.get('contas', 'N/A')}")
+                    st.write(f"**Total de inscrições:** {metrics['total_contas_abertas']}")
+                    st.write(f"**Beneficiários únicos:** {metrics['beneficiarios_contas']}")
+            
+            with tab2:
+                if tem_dados_pagamentos:
+                    st.subheader("Pagamentos Duplicados")
+                    
+                    if metrics['duplicidades_detalhadas']['total_contas_duplicadas'] > 0:
+                        st.warning(f"🚨 Foram encontradas {metrics['duplicidades_detalhadas']['total_contas_duplicadas']} contas com pagamentos duplicados")
+                        
+                        # Mostrar resumo das duplicidades
+                        if not metrics['duplicidades_detalhadas']['resumo_duplicidades'].empty:
+                            st.write("**Resumo das Duplicidades:**")
+                            st.dataframe(metrics['duplicidades_detalhadas']['resumo_duplicidades'])
+                        
+                        # Mostrar detalhes completos
+                        if not metrics['duplicidades_detalhadas']['detalhes_completos_duplicidades'].empty:
+                            st.write("**Detalhes Completos dos Pagamentos Duplicados:**")
+                            st.dataframe(metrics['duplicidades_detalhadas']['detalhes_completos_duplicidades'])
+                    else:
+                        st.success("✅ Nenhum pagamento duplicado encontrado")
+                else:
+                    st.info("ℹ️ Esta análise está disponível apenas para dados de pagamentos")
+            
+            with tab3:
+                if tem_dados_pagamentos and tem_dados_contas:
+                    st.subheader("Pagamentos Pendentes")
+                    
+                    if metrics['pagamentos_pendentes']['total_contas_sem_pagamento'] > 0:
+                        st.info(f"ℹ️ {metrics['pagamentos_pendentes']['total_contas_sem_pagamento']} contas aguardando pagamento")
+                        
+                        if not metrics['pagamentos_pendentes']['contas_sem_pagamento'].empty:
+                            st.write("**Contas sem Pagamento:**")
+                            st.dataframe(metrics['pagamentos_pendentes']['contas_sem_pagamento'])
+                    else:
+                        st.success("✅ Todas as contas abertas possuem pagamentos registrados")
+                else:
+                    st.info("ℹ️ Esta análise requer ambas as planilhas (pagamentos e inscrições)")
+            
+            with tab4:
+                st.subheader("Análise de Qualidade dos Dados")
+                
+                if metrics['total_registros_criticos'] > 0:
+                    st.error(f"❌ {metrics['total_registros_criticos']} registros com problemas críticos")
+                    
+                    if not metrics['resumo_ausencias'].empty:
+                        st.write("**Registros com Problemas:**")
+                        # CORREÇÃO: Mostrar apenas as colunas que realmente existem
+                        st.dataframe(metrics['resumo_ausencias'])
+                else:
+                    st.success("✅ Todos os registros possuem dados essenciais preenchidos")
+                
+                # Mostrar problemas com CPF se houver
+                if metrics['problemas_cpf']['total_problemas_cpf'] > 0:
+                    st.warning(f"⚠️ {metrics['problemas_cpf']['total_problemas_cpf']} CPFs com problemas de formatação")
+                    
+                    if not metrics['problemas_cpf']['detalhes_cpfs_problematicos'].empty:
+                        st.write("**Detalhes dos CPFs Problemáticos:**")
+                        # CORREÇÃO: Mostrar apenas colunas que realmente existem
+                        st.dataframe(metrics['problemas_cpf']['detalhes_cpfs_problematicos'])
     
-    with tab2:
-        st.subheader("Pagamentos Duplicados")
+    with tab_dashboard:
+        st.header("📈 Dashboard Evolutivo")
         
-        if metrics['duplicidades_detalhadas']['total_contas_duplicadas'] > 0:
-            st.warning(f"🚨 Foram encontradas {metrics['duplicidades_detalhadas']['total_contas_duplicadas']} contas com pagamentos duplicados")
+        periodo = st.selectbox("Selecione o período", 
+                             ['mensal', 'trimestral', 'semestral', 'anual'],
+                             key='dashboard_periodo')
+        
+        dashboard = criar_dashboard_evolucao(conn, periodo)
+        
+        if dashboard:
+            st.plotly_chart(dashboard['evolucao'], use_container_width=True)
+            st.plotly_chart(dashboard['valor'], use_container_width=True)
+            st.plotly_chart(dashboard['problemas'], use_container_width=True)
             
-            # Mostrar resumo das duplicidades
-            if not metrics['duplicidades_detalhadas']['resumo_duplicidades'].empty:
-                st.write("**Resumo das Duplicidades:**")
-                st.dataframe(metrics['duplicidades_detalhadas']['resumo_duplicidades'])
-            
-            # Mostrar detalhes completos
-            if not metrics['duplicidades_detalhadas']['detalhes_completos_duplicidades'].empty:
-                st.write("**Detalhes Completos dos Pagamentos Duplicados:**")
-                st.dataframe(metrics['duplicidades_detalhadas']['detalhes_completos_duplicidades'])
+            # Mostrar tabela com dados
+            st.subheader("Dados Detalhados")
+            st.dataframe(dashboard['dados'])
         else:
-            st.success("✅ Nenhum pagamento duplicado encontrado")
+            st.info("ℹ️ Não há dados suficientes para gerar o dashboard. Carregue dados de pelo menos 2 meses diferentes.")
     
-    with tab3:
-        st.subheader("Pagamentos Pendentes")
+    with tab_relatorios:
+        st.header("📋 Relatórios Comparativos")
         
-        if metrics['pagamentos_pendentes']['total_contas_sem_pagamento'] > 0:
-            st.info(f"ℹ️ {metrics['pagamentos_pendentes']['total_contas_sem_pagamento']} contas aguardando pagamento")
+        periodo_comparativo = st.selectbox("Selecione o período comparativo", 
+                                         ['trimestral', 'semestral', 'anual'],
+                                         key='relatorio_periodo')
+        
+        relatorio = gerar_relatorio_comparativo(conn, periodo_comparativo)
+        
+        if relatorio:
+            st.subheader(f"Relatório Comparativo - {periodo_comparativo.title()}")
             
-            if not metrics['pagamentos_pendentes']['contas_sem_pagamento'].empty:
-                st.write("**Contas sem Pagamento:**")
-                st.dataframe(metrics['pagamentos_pendentes']['contas_sem_pagamento'])
+            # Métricas comparativas
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                if 'variacoes' in relatorio and 'total_pagamentos' in relatorio['variacoes']:
+                    variacao = relatorio['variacoes']['total_pagamentos']
+                    st.metric(
+                        "Variação Pagamentos",
+                        f"{variacao:+.1f}%",
+                        delta=f"{variacao:+.1f}%"
+                    )
+            
+            with col2:
+                if 'variacoes' in relatorio and 'beneficiarios' in relatorio['variacoes']:
+                    variacao = relatorio['variacoes']['beneficiarios']
+                    st.metric(
+                        "Variação Beneficiários",
+                        f"{variacao:+.1f}%",
+                        delta=f"{variacao:+.1f}%"
+                    )
+            
+            with col3:
+                if 'variacoes' in relatorio and 'valor_total' in relatorio['variacoes']:
+                    variacao = relatorio['variacoes']['valor_total']
+                    st.metric(
+                        "Variação Valor Total",
+                        f"{variacao:+.1f}%",
+                        delta=f"{variacao:+.1f}%"
+                    )
+            
+            with col4:
+                if 'variacoes' in relatorio and 'duplicidades' in relatorio['variacoes']:
+                    variacao = relatorio['variacoes']['duplicidades']
+                    st.metric(
+                        "Variação Duplicidades",
+                        f"{variacao:+.1f}%",
+                        delta=f"{variacao:+.1f}%",
+                        delta_color="inverse" if variacao > 0 else "normal"
+                    )
+            
+            # Tabela comparativa
+            st.subheader("Dados Comparativos")
+            st.dataframe(relatorio['metricas'])
+            
+            # Download do relatório comparativo
+            st.download_button(
+                label="📥 Baixar Relatório Comparativo",
+                data=relatorio['metricas'].to_csv(index=False).encode('utf-8'),
+                file_name=f"relatorio_comparativo_{periodo_comparativo}_{data_hora_arquivo_brasilia()}.csv",
+                mime="text/csv"
+            )
         else:
-            st.success("✅ Todas as contas abertas possuem pagamentos registrados")
+            st.info("ℹ️ Não há dados suficientes para gerar relatório comparativo. Carregue dados de períodos diferentes.")
     
-    with tab4:
-        st.subheader("Análise de Qualidade dos Dados")
+    with tab_historico:
+        st.header("🗃️ Dados Históricos")
         
-        if metrics['total_registros_criticos'] > 0:
-            st.error(f"❌ {metrics['total_registros_criticos']} registros com problemas críticos")
-            
-            if not metrics['resumo_ausencias'].empty:
-                st.write("**Registros com Problemas:**")
-                # CORREÇÃO: Mostrar apenas as colunas que realmente existem
-                st.dataframe(metrics['resumo_ausencias'])
+        # Seleção de tipo de dados
+        tipo_dados = st.radio("Selecione o tipo de dados", 
+                            ['Pagamentos', 'Inscrições'], 
+                            horizontal=True)
+        
+        if tipo_dados == 'Pagamentos':
+            dados_historicos = carregar_pagamentos_db(conn)
         else:
-            st.success("✅ Todos os registros possuem dados essenciais preenchidos")
+            dados_historicos = carregar_inscricoes_db(conn)
         
-        # Mostrar problemas com CPF se houver
-        if metrics['problemas_cpf']['total_problemas_cpf'] > 0:
-            st.warning(f"⚠️ {metrics['problemas_cpf']['total_problemas_cpf']} CPFs com problemas de formatação")
+        if not dados_historicos.empty:
+            st.subheader(f"Histórico de {tipo_dados}")
             
-            if not metrics['problemas_cpf']['detalhes_cpfs_problematicos'].empty:
-                st.write("**Detalhes dos CPFs Problemáticos:**")
-                # CORREÇÃO: Mostrar apenas colunas que realmente existem
-                st.dataframe(metrics['problemas_cpf']['detalhes_cpfs_problematicos'])
+            # Mostrar dados históricos
+            for _, row in dados_historicos.iterrows():
+                with st.expander(f"{row['mes_referencia']}/{row['ano_referencia']} - {row['nome_arquivo']}"):
+                    col1, col2, col3 = st.columns(3)
+                    
+                    with col1:
+                        st.write(f"**Data de importação:** {row['data_importacao']}")
+                    
+                    with col2:
+                        st.write(f"**Mês/Ano:** {row['mes_referencia']}/{row['ano_referencia']}")
+                    
+                    with col3:
+                        # Botão para visualizar dados
+                        if st.button("📊 Visualizar Dados", key=f"view_{row['id']}"):
+                            # Carregar dados do JSON
+                            dados_json = json.loads(row['dados_json'])
+                            df_visualizacao = pd.DataFrame(dados_json)
+                            
+                            st.dataframe(df_visualizacao.head(10))
+                            
+                            # Botão para baixar dados específicos
+                            csv = df_visualizacao.to_csv(index=False)
+                            st.download_button(
+                                label="📥 Baixar Dados",
+                                data=csv,
+                                file_name=f"{tipo_dados.lower()}_{row['mes_referencia']}_{row['ano_referencia']}.csv",
+                                mime="text/csv"
+                            )
+        else:
+            st.info(f"ℹ️ Não há dados históricos de {tipo_dados.lower()} no sistema.")
+
+    # Fechar conexão com o banco de dados
+    conn.close()
 
 if __name__ == "__main__":
     main()
