@@ -78,7 +78,7 @@ def formatar_brasileiro(valor, tipo='numero'):
     else:
         return str(valor)
 
-# FUNÇÃO CORRIGIDA: Detectar pagamentos duplicados com detalhes
+# FUNÇÃO CORRIGIDA: Detectar pagamentos duplicados com detalhes COMPLETOS
 def detectar_pagamentos_duplicados(df):
     """Detecta pagamentos duplicados por número de conta e retorna detalhes completos"""
     duplicidades = {
@@ -87,7 +87,8 @@ def detectar_pagamentos_duplicados(df):
         'total_pagamentos_duplicados': 0,
         'valor_total_duplicados': 0,
         'resumo_duplicidades': pd.DataFrame(),
-        'contas_com_multiplos_pagamentos': []  # NOVO: Lista de contas com mais de 1 pagamento
+        'contas_com_multiplos_pagamentos': [],
+        'detalhes_completos_duplicidades': pd.DataFrame()  # NOVO: Detalhes completos de todos os pagamentos duplicados
     }
     
     coluna_conta = obter_coluna_conta(df)
@@ -122,41 +123,43 @@ def detectar_pagamentos_duplicados(df):
     df_duplicados['Ocorrencia'] = df_duplicados.groupby(coluna_conta).cumcount() + 1
     df_duplicados['Total_Ocorrencias'] = df_duplicados.groupby(coluna_conta)[coluna_conta].transform('count')
     
-    # Preparar dados para exibição
-    colunas_exibicao = [coluna_conta, 'Ocorrencia', 'Total_Ocorrencias']
+    # NOVO: Preparar dados completos para exibição - TODOS os campos importantes
+    colunas_exibicao_completas = [coluna_conta, 'Ocorrencia', 'Total_Ocorrencias']
     
     if coluna_nome:
-        colunas_exibicao.append(coluna_nome)
+        colunas_exibicao_completas.append(coluna_nome)
     
     if 'CPF' in df_duplicados.columns:
-        colunas_exibicao.append('CPF')
+        colunas_exibicao_completas.append('CPF')
     
     # Adicionar colunas de data
     for col_data in colunas_data:
         if col_data in df_duplicados.columns:
-            colunas_exibicao.append(col_data)
+            colunas_exibicao_completas.append(col_data)
             break
     
     if 'Valor' in df_duplicados.columns:
-        colunas_exibicao.append('Valor')
+        colunas_exibicao_completas.append('Valor')
     
     if 'Valor_Limpo' in df_duplicados.columns:
-        colunas_exibicao.append('Valor_Limpo')
+        colunas_exibicao_completas.append('Valor_Limpo')
     
     if 'Projeto' in df_duplicados.columns:
-        colunas_exibicao.append('Projeto')
+        colunas_exibicao_completas.append('Projeto')
     
-    # Atualizar métricas - CORREÇÃO DA LÓGICA
-    duplicidades['contas_duplicadas'] = df_duplicados[colunas_exibicao]
+    if 'Status' in df_duplicados.columns:
+        colunas_exibicao_completas.append('Status')
+    
+    # Atualizar métricas
+    duplicidades['contas_duplicadas'] = df_duplicados[colunas_exibicao_completas]
+    duplicidades['detalhes_completos_duplicidades'] = df_duplicados[colunas_exibicao_completas]  # NOVO: Detalhes completos
     duplicidades['total_contas_duplicadas'] = len(contas_com_multiplos)
-    
-    # CORREÇÃO: Total de pagamentos duplicados é a soma de TODOS os pagamentos das contas duplicadas
     duplicidades['total_pagamentos_duplicados'] = len(df_duplicados)
     
     if 'Valor_Limpo' in df_duplicados.columns:
         duplicidades['valor_total_duplicados'] = df_duplicados['Valor_Limpo'].sum()
     
-    # Criar resumo por conta - CORRIGIDO
+    # Criar resumo por conta
     resumo = []
     for conta in contas_com_multiplos:
         registros_conta = df_duplicados[df_duplicados[coluna_conta] == conta]
@@ -166,7 +169,7 @@ def detectar_pagamentos_duplicados(df):
             'Conta': conta,
             'Total_Pagamentos': len(registros_conta),
             'Valor_Total': registros_conta['Valor_Limpo'].sum() if 'Valor_Limpo' in registros_conta.columns else 0,
-            'Pagamentos_Extras': len(registros_conta) - 1  # CORREÇÃO: Pagamentos extras = total - 1
+            'Pagamentos_Extras': len(registros_conta) - 1
         }
         
         if coluna_nome:
@@ -181,9 +184,7 @@ def detectar_pagamentos_duplicados(df):
             if col_data in registros_conta.columns:
                 datas = registros_conta[col_data].dropna().unique().tolist()
                 if datas:
-                    info_conta['Datas_Pagamentos'] = ', '.join([str(d) for d in datas[:3]])  # Mostra até 3 datas
-                    if len(datas) > 3:
-                        info_conta['Datas_Pagamentos'] += f'... (+{len(datas)-3})'
+                    info_conta['Datas_Pagamentos'] = ', '.join([str(d) for d in datas])
                     break
         
         resumo.append(info_conta)
@@ -437,7 +438,7 @@ def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_co
                 (df['CPF'].astype(str).str.len() < 11) &
                 (df['CPF'].astype(str).str.strip() != '') &
                 (df['CPF'].astype(str).str.strip() != 'NaN') &
-                (df['CPF'].astype(str).str.strip() != 'None')
+                (df['CPF'].astize(str).str.strip() != 'None')
             ]
             analise_ausencia['cpfs_com_zeros_adicional'] = len(cpfs_com_zeros)
             
@@ -456,8 +457,8 @@ def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_co
                 df['CPF'].isna() | 
                 (df['CPF'].astype(str).str.strip() == '') |
                 (df['CPF'].astype(str).str.strip() == 'NaN') |
-                (df['CPF'].astype(str).str.strip() == 'None') |
-                (df['CPF'].astype(str).str.strip() == 'nan')
+                (df['CPF'].astize(str).str.strip() == 'None') |
+                (df['CPF'].astize(str).str.strip() == 'nan')
             )
             
             cpfs_ausentes = df[mask_cpf_ausente]
@@ -468,9 +469,9 @@ def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_co
         if coluna_conta:
             mask_conta_ausente = (
                 df[coluna_conta].isna() | 
-                (df[coluna_conta].astype(str).str.strip() == '') |
-                (df[coluna_conta].astype(str).str.strip() == 'NaN') |
-                (df[coluna_conta].astype(str).str.strip() == 'None')
+                (df[coluna_conta].astize(str).str.strip() == '') |
+                (df[coluna_conta].astize(str).str.strip() == 'NaN') |
+                (df[coluna_conta].astize(str).str.strip() == 'None')
             )
             contas_ausentes = df[mask_conta_ausente]
             for idx in contas_ausentes.index:
@@ -481,9 +482,9 @@ def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_co
         if 'Valor' in df.columns:
             mask_valor_invalido = (
                 df['Valor'].isna() | 
-                (df['Valor'].astype(str).str.strip() == '') |
-                (df['Valor'].astype(str).str.strip() == 'NaN') |
-                (df['Valor'].astype(str).str.strip() == 'None') |
+                (df['Valor'].astize(str).str.strip() == '') |
+                (df['Valor'].astize(str).str.strip() == 'NaN') |
+                (df['Valor'].astize(str).str.strip() == 'None') |
                 (df['Valor_Limpo'] == 0)
             )
             valores_invalidos = df[mask_valor_invalido]
@@ -504,9 +505,9 @@ def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_co
             if coluna in df.columns:
                 mask_ausente = (
                     df[coluna].isna() | 
-                    (df[coluna].astype(str).str.strip() == '') |
-                    (df[coluna].astype(str).str.strip() == 'NaN') |
-                    (df[coluna].astype(str).str.strip() == 'None')
+                    (df[coluna].astize(str).str.strip() == '') |
+                    (df[coluna].astize(str).str.strip() == 'NaN') |
+                    (df[coluna].astize(str).str.strip() == 'None')
                 )
                 ausentes = df[mask_ausente]
                 if len(ausentes) > 0:
@@ -597,16 +598,16 @@ def processar_colunas_valor(df):
             if df_processed['Valor'].dtype == 'object':
                 df_processed['Valor_Limpo'] = (
                     df_processed['Valor']
-                    .astype(str)
+                    .astize(str)
                     .str.replace('R$', '')
                     .str.replace('R$ ', '')
                     .str.replace('.', '')
                     .str.replace(',', '.')
                     .str.replace(' ', '')
-                    .astype(float)
+                    .astize(float)
                 )
             else:
-                df_processed['Valor_Limpo'] = df_processed['Valor'].astype(float)
+                df_processed['Valor_Limpo'] = df_processed['Valor'].astize(float)
                 
         except Exception as e:
             st.warning(f"⚠️ Erro ao processar valores: {str(e)}")
@@ -614,7 +615,7 @@ def processar_colunas_valor(df):
     
     return df_processed
 
-# ATUALIZADA: Gerar PDF Executivo com informações de duplicidades
+# ATUALIZADA: Gerar PDF Executivo com informações COMPLETAS das duplicidades
 def gerar_pdf_executivo(dados, metrics, nomes_arquivos):
     """Gera relatório PDF executivo profissional"""
     try:
@@ -720,6 +721,26 @@ def gerar_pdf_executivo(dados, metrics, nomes_arquivos):
                 pdf.cell(0, 6, f'- Valor total em duplicidades: {formatar_brasileiro(duplicidades["valor_total_duplicados"], "monetario")}', 0, 1)
             
             pdf.ln(4)
+            
+            # NOVO: Detalhes dos pagamentos duplicados
+            pdf.set_font('Arial', 'B', 10)
+            pdf.cell(0, 6, 'DETALHES DOS PAGAMENTOS DUPLICADOS:', 0, 1)
+            pdf.set_font('Arial', '', 8)
+            
+            if not duplicidades.get('detalhes_completos_duplicidades', pd.DataFrame()).empty:
+                df_detalhes = duplicidades['detalhes_completos_duplicidades']
+                for _, row in df_detalhes.iterrows():
+                    conta = row.get('Num Cartao') or row.get('Num_Cartao') or row.get('Conta', 'N/A')
+                    nome = row.get('Beneficiario') or row.get('Beneficiário') or row.get('Nome', 'N/A')
+                    cpf = row.get('CPF', 'N/A')
+                    data_pagto = row.get('Data') or row.get('Data Pagto') or row.get('Data_Pagto') or row.get('DataPagto', 'N/A')
+                    valor = row.get('Valor', 'N/A')
+                    ocorrencia = row.get('Ocorrencia', '')
+                    total_ocorrencias = row.get('Total_Ocorrencias', '')
+                    
+                    pdf.cell(0, 4, f'  Conta: {conta} | Nome: {nome} | CPF: {cpf} | Data: {data_pagto} | Valor: {valor} | Ocorrência: {ocorrencia}/{total_ocorrencias}', 0, 1)
+            
+            pdf.ln(2)
         
         if metrics.get('total_registros_criticos', 0) > 0:
             tem_alertas = True
@@ -817,8 +838,8 @@ def gerar_excel_completo(dados, metrics):
             
             # NOVA ABA: Duplicidades Detalhadas
             duplicidades = metrics.get('duplicidades_detalhadas', {})
-            if not duplicidades.get('contas_duplicadas', pd.DataFrame()).empty:
-                duplicidades['contas_duplicadas'].to_excel(writer, sheet_name='Duplicidades_Detalhadas', index=False)
+            if not duplicidades.get('detalhes_completos_duplicidades', pd.DataFrame()).empty:
+                duplicidades['detalhes_completos_duplicidades'].to_excel(writer, sheet_name='Duplicidades_Detalhadas', index=False)
             
             if not duplicidades.get('resumo_duplicidades', pd.DataFrame()).empty:
                 duplicidades['resumo_duplicidades'].to_excel(writer, sheet_name='Resumo_Duplicidades', index=False)
@@ -1067,16 +1088,44 @@ def main():
                 df_resumo = duplicidades['resumo_duplicidades'].sort_values('Total_Pagamentos', ascending=False)
                 st.dataframe(df_resumo, use_container_width=True)
             
-            st.subheader("📄 Detalhes Completos dos Pagamentos Duplicados")
-            if not duplicidades.get('contas_duplicadas', pd.DataFrame()).empty:
-                st.dataframe(duplicidades['contas_duplicadas'], use_container_width=True)
+            # NOVO: Detalhes completos dos pagamentos duplicados
+            st.subheader("📄 DETALHES COMPLETOS DOS PAGAMENTOS DUPLICADOS")
+            st.write("**Abaixo estão todos os registros de pagamentos duplicados com dados completos:**")
+            
+            if not duplicidades.get('detalhes_completos_duplicidades', pd.DataFrame()).empty:
+                df_detalhes = duplicidades['detalhes_completos_duplicidades']
                 
-                # CORREÇÃO: Botão para exportar apenas as duplicidades
-                if st.button("📥 Exportar Duplicidades para Excel"):
+                # Garantir que as colunas importantes estejam presentes
+                colunas_importantes = []
+                if 'Num Cartao' in df_detalhes.columns or 'Num_Cartao' in df_detalhes.columns or 'Conta' in df_detalhes.columns:
+                    colunas_importantes.extend(['Num Cartao', 'Num_Cartao', 'Conta'])
+                if 'Beneficiario' in df_detalhes.columns or 'Beneficiário' in df_detalhes.columns or 'Nome' in df_detalhes.columns:
+                    colunas_importantes.extend(['Beneficiario', 'Beneficiário', 'Nome'])
+                if 'CPF' in df_detalhes.columns:
+                    colunas_importantes.append('CPF')
+                if 'Data' in df_detalhes.columns or 'Data Pagto' in df_detalhes.columns or 'Data_Pagto' in df_detalhes.columns or 'DataPagto' in df_detalhes.columns:
+                    colunas_importantes.extend(['Data', 'Data Pagto', 'Data_Pagto', 'DataPagto'])
+                if 'Valor' in df_detalhes.columns:
+                    colunas_importantes.append('Valor')
+                if 'Valor_Limpo' in df_detalhes.columns:
+                    colunas_importantes.append('Valor_Limpo')
+                if 'Ocorrencia' in df_detalhes.columns:
+                    colunas_importantes.append('Ocorrencia')
+                if 'Total_Ocorrencias' in df_detalhes.columns:
+                    colunas_importantes.append('Total_Ocorrencias')
+                
+                # Filtrar apenas colunas existentes
+                colunas_existentes = [col for col in colunas_importantes if col in df_detalhes.columns]
+                df_exibicao = df_detalhes[colunas_existentes]
+                
+                st.dataframe(df_exibicao, use_container_width=True)
+                
+                # NOVO: Botão para exportar apenas as duplicidades
+                if st.button("📥 Exportar Duplicidades para Excel", key="export_duplicidades"):
                     output = io.BytesIO()
                     with pd.ExcelWriter(output, engine='openpyxl') as writer:
                         duplicidades['resumo_duplicidades'].to_excel(writer, sheet_name='Resumo_Duplicidades', index=False)
-                        duplicidades['contas_duplicadas'].to_excel(writer, sheet_name='Detalhes_Duplicidades', index=False)
+                        duplicidades['detalhes_completos_duplicidades'].to_excel(writer, sheet_name='Detalhes_Completos_Duplicidades', index=False)
                     
                     output.seek(0)
                     b64 = base64.b64encode(output.getvalue()).decode()
