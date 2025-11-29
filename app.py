@@ -2,7 +2,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-from datetime import datetime
+from datetime import datetime, timezone
 import io
 from fpdf import FPDF
 import numpy as np
@@ -15,6 +15,25 @@ st.set_page_config(
     page_icon="🏛️",
     layout="wide"
 )
+
+# Função para obter data/hora no fuso horário de Brasília (São Paulo)
+def agora_brasilia():
+    """Retorna a data e hora atual no fuso horário de Brasília"""
+    # Fuso horário de Brasília (UTC-3) - mesmo de São Paulo
+    fuso_brasilia = timezone.utc.offset(datetime.now()) - timezone(timedelta(hours=-3)).utcoffset(datetime.now())
+    return datetime.now(timezone.utc).astimezone(timezone(fuso_brasilia))
+
+def data_atual_brasilia():
+    """Retorna a data atual no formato dd/mm/aaaa no fuso de Brasília"""
+    return agora_brasilia().strftime("%d/%m/%Y")
+
+def data_hora_atual_brasilia():
+    """Retorna a data e hora atual no formato dd/mm/aaaa às HH:MM no fuso de Brasília"""
+    return agora_brasilia().strftime("%d/%m/%Y às %H:%M")
+
+def data_hora_arquivo_brasilia():
+    """Retorna a data e hora atual no formato para nome de arquivo no fuso de Brasília"""
+    return agora_brasilia().strftime("%Y%m%d_%H%M")
 
 # Sistema de autenticação simples
 def autenticar():
@@ -436,7 +455,7 @@ def gerar_pdf_executivo(dados, metrics, nomes_arquivos):
         pdf.cell(0, 8, 'INFORMACOES DO RELATORIO', 0, 1)
         pdf.set_font('Arial', '', 10)
         
-        pdf.cell(0, 6, f'Data de emissao: {datetime.now().strftime("%d/%m/%Y as %H:%M")}', 0, 1)
+        pdf.cell(0, 6, f'Data de emissao: {data_hora_atual_brasilia()}', 0, 1)
         if nomes_arquivos.get('pagamentos'):
             # Remover caracteres especiais do nome do arquivo
             nome_arquivo = nomes_arquivos["pagamentos"].encode('latin-1', 'ignore').decode('latin-1')
@@ -543,7 +562,7 @@ def gerar_pdf_executivo(dados, metrics, nomes_arquivos):
         pdf.set_font('Arial', 'I', 8)
         pdf.cell(0, 10, 'Secretaria Municipal do Desenvolvimento Economico e Trabalho - SMDET', 0, 0, 'C')
         pdf.ln(4)
-        pdf.cell(0, 10, f'Relatorio gerado automaticamente pelo Sistema de Monitoramento do POT em {datetime.now().strftime("%d/%m/%Y")}', 0, 0, 'C')
+        pdf.cell(0, 10, f'Relatorio gerado automaticamente pelo Sistema de Monitoramento do POT em {data_atual_brasilia()}', 0, 0, 'C')
         
         return pdf.output(dest='S').encode('latin-1')
     
@@ -630,454 +649,4 @@ def carregar_dados():
             dados['pagamentos'] = df_pagamentos
             st.sidebar.success(f"✅ Pagamentos: {len(dados['pagamentos'])} registros - {upload_pagamentos.name}")
         except Exception as e:
-            st.sidebar.error(f"❌ Erro ao carregar pagamentos: {str(e)}")
-            dados['pagamentos'] = pd.DataFrame()
-    else:
-        dados['pagamentos'] = pd.DataFrame()
-        st.sidebar.info("📁 Aguardando planilha de pagamentos")
-    
-    # Carregar dados de abertura de contas
-    if upload_contas is not None:
-        try:
-            if upload_contas.name.endswith('.xlsx'):
-                df_contas = pd.read_excel(upload_contas)
-            else:
-                df_contas = pd.read_csv(upload_contas, encoding='utf-8', sep=';')
-            
-            nomes_arquivos['contas'] = upload_contas.name
-            
-            df_contas = processar_colunas_data(df_contas)
-            df_contas = padronizar_documentos(df_contas)
-            
-            dados['contas'] = df_contas
-            st.sidebar.success(f"✅ Contas: {len(dados['contas'])} registros - {upload_contas.name}")
-        except Exception as e:
-            st.sidebar.error(f"❌ Erro ao carregar contas: {str(e)}")
-            dados['contas'] = pd.DataFrame()
-    else:
-        dados['contas'] = pd.DataFrame()
-        st.sidebar.info("📁 Aguardando planilha de abertura de contas")
-    
-    return dados, nomes_arquivos
-
-def mostrar_dashboard(dados, nomes_arquivos=None):
-    # CABEÇALHO PRINCIPAL CORRETO
-    st.markdown("<h1 style='text-align: center;'>🏛️ PREFEITURA DE SÃO PAULO</h1>", unsafe_allow_html=True)
-    st.markdown("<h2 style='text-align: center;'>Secretaria Municipal do Desenvolvimento Econômico e Trabalho - SMDET</h2>", unsafe_allow_html=True)
-    st.markdown("<h3 style='text-align: center;'>Programa Operação Trabalho (POT)</h3>", unsafe_allow_html=True)
-    st.markdown("<h4 style='text-align: center;'>Sistema de Monitoramento de Pagamentos</h4>", unsafe_allow_html=True)
-    st.markdown("---")
-    
-    metrics = processar_dados(dados, nomes_arquivos)
-    
-    dados_carregados = any([not df.empty for df in dados.values()])
-    
-    if not dados_carregados:
-        st.warning("📁 **Nenhum dado carregado ainda**")
-        st.info("""
-        **Para ver o dashboard:**
-        1. Use o menu lateral para carregar as planilhas de Pagamentos e Abertura de Contas
-        2. Formato suportado: XLSX ou CSV
-        3. Os gráficos serão atualizados automaticamente
-        """)
-        return
-    
-    # Mostrar nomes dos arquivos carregados
-    if nomes_arquivos:
-        col_arq1, col_arq2 = st.columns(2)
-        with col_arq1:
-            if 'pagamentos' in nomes_arquivos:
-                st.info(f"📋 **Planilha de Pagamentos:** {nomes_arquivos['pagamentos']}")
-        with col_arq2:
-            if 'contas' in nomes_arquivos:
-                st.info(f"🏦 **Planilha de Contas:** {nomes_arquivos['contas']}")
-    
-    # CORREÇÃO: Alertas com informações sobre TODAS as letras em RGs
-    if metrics.get('total_registros_criticos', 0) > 0:
-        st.error(f"🚨 **DADOS CRÍTICOS AUSENTES** - {formatar_brasileiro(metrics.get('total_registros_criticos', 0), 'numero')} registros com dados essenciais ausentes")
-        
-        col_alert1, col_alert2 = st.columns([3, 1])
-        
-        with col_alert1:
-            st.warning("""
-            **Apenas problemas críticos identificados:**
-            - CPF completamente ausente
-            - Número da conta ausente  
-            - Valor ausente ou zerado
-            
-            **📍 Localização na planilha:** 
-            - A coluna 'Linha_Planilha' mostra a linha exata na planilha original
-            - A coluna 'Planilha_Origem' mostra o arquivo de origem
-            """)
-            
-        with col_alert2:
-            if not metrics['registros_problema_detalhados'].empty:
-                df_export = metrics['registros_problema_detalhados'].copy()
-                if 'Linha_Planilha_Original' not in df_export.columns:
-                    df_export['Linha_Planilha_Original'] = df_export.index + 2
-                df_export['Planilha_Origem'] = metrics.get('nome_arquivo_pagamentos', 'Pagamentos')
-                
-                csv_problemas = df_export.to_csv(index=False, sep=';')
-                st.download_button(
-                    label="📥 Exportar para Correção",
-                    data=csv_problemas,
-                    file_name=f"dados_criticos_ausentes_{datetime.now().strftime('%Y%m%d')}.csv",
-                    mime="text/csv",
-                    help="Baixe esta lista com informações da planilha original para correção"
-                )
-        
-        with st.expander("🔍 **Ver Detalhes dos Dados Ausentes com Localização na Planilha**", expanded=False):
-            if not metrics['resumo_ausencias'].empty:
-                colunas_ordenadas = ['Linha_Planilha', 'Planilha_Origem', 'Problemas_Identificados']
-                colunas_restantes = [col for col in metrics['resumo_ausencias'].columns if col not in colunas_ordenadas]
-                colunas_exibir = colunas_ordenadas + colunas_restantes
-                
-                st.dataframe(
-                    metrics['resumo_ausencias'][colunas_exibir],
-                    use_container_width=True,
-                    hide_index=True,
-                    height=400
-                )
-                
-                st.info(f"📍 **Localização para correção:** Mostrando {len(metrics['resumo_ausencias'])} de {metrics['total_registros_criticos']} registros problemáticos. Use a coluna 'Linha_Planilha' para encontrar rapidamente os registros na planilha original.")
-    
-    # CORREÇÃO: Informações sobre RGs com TODAS as letras válidas
-    if metrics.get('registros_validos_com_letras', 0) > 0:
-        st.success(f"✅ **RGS VÁLIDOS IDENTIFICADOS** - {formatar_brasileiro(metrics.get('registros_validos_com_letras', 0), 'numero')} RGs com letras válidas processados")
-        
-        # NOVO: Mostrar detalhes das letras específicas encontradas
-        if metrics.get('rgs_com_letras_especificas'):
-            letras_info = []
-            for letra, quantidade in metrics['rgs_com_letras_especificas'].items():
-                letras_info.append(f"{letra}: {quantidade}")
-            
-            if letras_info:
-                st.info(f"🔤 **Letras encontradas em RGs:** {', '.join(letras_info)}")
-    
-    if metrics.get('cpfs_com_zeros_adicional', 0) > 0:
-        st.success(f"✅ **CPFS NORMALIZADOS** - {formatar_brasileiro(metrics.get('cpfs_com_zeros_adicional', 0), 'numero')} CPFs receberam zeros à esquerda")
-    
-    if metrics.get('cpfs_formatos_diferentes', 0) > 0:
-        st.info(f"ℹ️ **CPFS DE OUTROS ESTADOS** - {formatar_brasileiro(metrics.get('cpfs_formatos_diferentes', 0), 'numero')} CPFs com formatos especiais processados")
-    
-    if metrics.get('documentos_padronizados', 0) > 0:
-        st.success(f"✅ **DOCUMENTOS PROCESSADOS** - {formatar_brasileiro(metrics.get('documentos_padronizados', 0), 'numero')} documentos padronizados")
-
-    # CORREÇÃO: Métricas principais - AGORA mostra contas de ambas as planilhas
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        # Mostrar beneficiários da planilha apropriada
-        if metrics.get('beneficiarios_contas', 0) > 0 and dados['pagamentos'].empty:
-            st.metric("Beneficiários Cadastrados", formatar_brasileiro(metrics.get('beneficiarios_contas', 0), 'numero'))
-        else:
-            st.metric("Beneficiários Únicos", formatar_brasileiro(metrics.get('beneficiarios_unicos', 0), 'numero'))
-    
-    with col2:
-        st.metric("Total de Pagamentos", formatar_brasileiro(metrics.get('total_pagamentos', 0), 'numero'))
-    
-    with col3:
-        # CORREÇÃO: Mostrar contas da planilha apropriada
-        if metrics.get('total_contas_abertas', 0) > 0:
-            if dados['pagamentos'].empty:
-                st.metric("Contas Abertas", formatar_brasileiro(metrics.get('total_contas_abertas', 0), 'numero'))
-            else:
-                st.metric("Contas Únicas", formatar_brasileiro(metrics.get('contas_unicas', 0), 'numero'))
-        else:
-            st.metric("Contas Únicas", formatar_brasileiro(metrics.get('contas_unicas', 0), 'numero'))
-    
-    with col4:
-        st.metric("Projetos Ativos", formatar_brasileiro(metrics.get('projetos_ativos', 0), 'numero'))
-    
-    # CORREÇÃO: Mostrar informações específicas da planilha de contas
-    if metrics.get('total_contas_abertas', 0) > 0 and not dados['contas'].empty:
-        st.success(f"🏦 **PLANILHA DE ABERTURA DE CONTAS:** {formatar_brasileiro(metrics.get('total_contas_abertas', 0), 'numero')} contas abertas identificadas")
-        
-        if metrics.get('beneficiarios_contas', 0) > 0:
-            st.info(f"👥 **BENEFICIÁRIOS CADASTRADOS:** {formatar_brasileiro(metrics.get('beneficiarios_contas', 0), 'numero')} beneficiários na planilha de contas")
-    
-    if metrics.get('valor_total', 0) > 0:
-        st.metric("Valor Total dos Pagamentos", formatar_brasileiro(metrics['valor_total'], 'monetario'))
-    
-    if metrics.get('pagamentos_duplicados', 0) > 0:
-        st.error("🚨 **ALERTA: PAGAMENTOS DUPLICADOS IDENTIFICADOS**")
-        
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            st.metric(
-                "Contas com Duplicidade", 
-                formatar_brasileiro(metrics.get('pagamentos_duplicados', 0), 'numero'),
-                delta=f"{formatar_brasileiro(metrics.get('pagamentos_duplicados', 0), 'numero')} contas"
-            )
-        
-        with col2:
-            diff = metrics.get('total_pagamentos', 0) - metrics.get('contas_unicas', 0)
-            st.metric(
-                "Diferença Identificada", 
-                formatar_brasileiro(diff, 'numero'),
-                delta=f"{formatar_brasileiro(diff, 'numero')} pagamentos extras"
-            )
-        
-        with col3:
-            if metrics.get('valor_total_duplicados', 0) > 0:
-                st.metric(
-                    "Valor em Duplicidades", 
-                    formatar_brasileiro(metrics.get('valor_total_duplicados', 0), 'monetario'),
-                    delta="Valor a investigar"
-                )
-
-def mostrar_importacao():
-    st.markdown("<h1 style='text-align: center;'>🏛️ PREFEITURA DE SÃO PAULO</h1>", unsafe_allow_html=True)
-    st.markdown("<h2 style='text-align: center;'>Secretaria Municipal do Desenvolvimento Econômico e Trabalho - SMDET</h2>", unsafe_allow_html=True)
-    st.markdown("<h3 style='text-align: center;'>Programa Operação Trabalho (POT)</h3>", unsafe_allow_html=True)
-    st.markdown("<h4 style='text-align: center;'>Sistema de Monitoramento de Pagamentos</h4>", unsafe_allow_html=True)
-    st.markdown("---")
-    
-    st.header("📥 Estrutura das Planilhas")
-    
-    st.info("""
-    **💡 USE O MENU LATERAL PARA CARREGAR AS PLANILHAS!**
-    
-    **📍 NOVO:** O sistema agora mostra a linha exata da planilha original onde estão os dados ausentes!
-    
-    **🔤 MELHORIA:** Aceita TODAS as letras válidas em RGs (X, V, W, Y, Z, etc.)
-    """)
-    
-    with st.expander("📋 Estrutura das Planilhas Necessárias"):
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown("**📋 Planilha de Pagamentos:**")
-            st.code("""
-Data ou Data Pagto (dd/mm/aaaa)
-Beneficiário (texto)
-CPF (número - aceita formatos de todos os estados)
-RG (número, pode conter X, V, W, Y, Z, etc.)
-Projeto (texto)
-Valor (número)
-Num Cartao (número da conta) ← CRITÉRIO PARA DUPLICIDADE
-Status (texto)
-*Outras colunas opcionais*
-            """)
-        
-        with col2:
-            st.markdown("**🏦 Planilha de Abertura de Contas:**")
-            st.code("""
-Data (dd/mm/aaaa)
-Nome (texto)
-CPF (número - aceita formatos de todos os estados)
-RG (número, pode conter X, V, W, Y, Z, etc.)
-Projeto (texto)
-Agência (texto/número)
-*Outras colunas opcionais*
-            """)
-
-def mostrar_consultas(dados):
-    st.markdown("<h1 style='text-align: center;'>🏛️ PREFEITURA DE SÃO PAULO</h1>", unsafe_allow_html=True)
-    st.markdown("<h2 style='text-align: center;'>Secretaria Municipal do Desenvolvimento Econômico e Trabalho - SMDET</h2>", unsafe_allow_html=True)
-    st.markdown("<h3 style='text-align: center;'>Programa Operação Trabalho (POT)</h3>", unsafe_allow_html=True)
-    st.markdown("<h4 style='text-align: center;'>Sistema de Monitoramento de Pagamentos</h4>", unsafe_allow_html=True)
-    st.markdown("---")
-    
-    st.header("🔍 Consultas de Dados")
-    
-    opcao_consulta = st.radio(
-        "Tipo de consulta:",
-        ["Por CPF", "Por Projeto", "Por Número da Conta"],
-        horizontal=True
-    )
-    
-    if opcao_consulta == "Por CPF":
-        col1, col2 = st.columns([2, 1])
-        with col1:
-            cpf = st.text_input("Digite o CPF (qualquer formato):", placeholder="123.456.789-00 ou 12345678900")
-        with col2:
-            if st.button("🔍 Buscar CPF", use_container_width=True):
-                if cpf:
-                    resultados = {}
-                    if not dados['pagamentos'].empty and 'CPF' in dados['pagamentos'].columns:
-                        cpf_busca = processar_cpf(cpf)
-                        resultados['pagamentos'] = dados['pagamentos'][dados['pagamentos']['CPF'].astype(str).str.contains(cpf_busca)]
-                    if not dados['contas'].empty and 'CPF' in dados['contas'].columns:
-                        cpf_busca = processar_cpf(cpf)
-                        resultados['contas'] = dados['contas'][dados['contas']['CPF'].astype(str).str.contains(cpf_busca)]
-                    
-                    st.session_state.resultados_consulta = resultados
-                else:
-                    st.warning("Por favor, digite um CPF para buscar")
-    
-    elif opcao_consulta == "Por Projeto":
-        projeto = st.text_input("Digite o nome do projeto:")
-        if st.button("🏢 Buscar por Projeto"):
-            if projeto:
-                resultados = {}
-                if not dados['pagamentos'].empty and 'Projeto' in dados['pagamentos'].columns:
-                    resultados['pagamentos'] = dados['pagamentos'][dados['pagamentos']['Projeto'].str.contains(projeto, case=False, na=False)]
-                if not dados['contas'].empty and 'Projeto' in dados['contas'].columns:
-                    resultados['contas'] = dados['contas'][dados['contas']['Projeto'].str.contains(projeto, case=False, na=False)]
-                
-                st.session_state.resultados_consulta = resultados
-            else:
-                st.warning("Por favor, digite um projeto para buscar")
-    
-    else:
-        col1, col2 = st.columns([2, 1])
-        with col1:
-            numero_conta = st.text_input("Digite o número da conta:")
-        with col2:
-            if st.button("💳 Buscar por Conta", use_container_width=True):
-                if numero_conta:
-                    resultados = {}
-                    coluna_conta = obter_coluna_conta(dados['pagamentos'])
-                    if not dados['pagamentos'].empty and coluna_conta:
-                        resultados['pagamentos'] = dados['pagamentos'][dados['pagamentos'][coluna_conta].astype(str).str.contains(numero_conta)]
-                    
-                    st.session_state.resultados_consulta = resultados
-                else:
-                    st.warning("Por favor, digite um número da conta para buscar")
-    
-    st.markdown("---")
-    st.subheader("Resultados da Consulta")
-    
-    if 'resultados_consulta' in st.session_state:
-        resultados = st.session_state.resultados_consulta
-        
-        if resultados.get('pagamentos') is not None and not resultados['pagamentos'].empty:
-            st.markdown("**📋 Pagamentos Encontrados:**")
-            
-            colunas_display = [col for col in ['Data', 'Data Pagto', 'Beneficiário', 'CPF', 'Projeto', 'Valor', 'Status'] 
-                             if col in resultados['pagamentos'].columns]
-            
-            coluna_conta = obter_coluna_conta(resultados['pagamentos'])
-            if coluna_conta:
-                colunas_display.append(coluna_conta)
-            
-            if colunas_display:
-                st.dataframe(resultados['pagamentos'][colunas_display], use_container_width=True)
-            else:
-                st.dataframe(resultados['pagamentos'], use_container_width=True)
-        
-        if resultados.get('contas') is not None and not resultados['contas'].empty:
-            st.markdown("**🏦 Contas Encontradas:**")
-            st.dataframe(resultados['contas'], use_container_width=True)
-        
-        if not any([not df.empty if df is not None else False for df in resultados.values()]):
-            st.info("Nenhum resultado encontrado para a consulta.")
-    else:
-        st.info("Os resultados aparecerão aqui após a busca")
-
-def mostrar_relatorios(dados, nomes_arquivos=None):
-    st.markdown("<h1 style='text-align: center;'>🏛️ PREFEITURA DE SÃO PAULO</h1>", unsafe_allow_html=True)
-    st.markdown("<h2 style='text-align: center;'>Secretaria Municipal do Desenvolvimento Econômico e Trabalho - SMDET</h2>", unsafe_allow_html=True)
-    st.markdown("<h3 style='text-align: center;'>Programa Operação Trabalho (POT)</h3>", unsafe_allow_html=True)
-    st.markdown("<h4 style='text-align: center;'>Sistema de Monitoramento de Pagamentos</h4>", unsafe_allow_html=True)
-    st.markdown("---")
-    
-    st.header("📋 Gerar Relatórios")
-    
-    metrics = processar_dados(dados, nomes_arquivos)
-    
-    if metrics.get('pagamentos_duplicados', 0) > 0:
-        st.warning(f"🚨 **ALERTA:** Foram identificados {formatar_brasileiro(metrics.get('pagamentos_duplicados', 0), 'numero')} contas com pagamentos duplicados")
-    
-    if metrics.get('total_registros_criticos', 0) > 0:
-        st.error(f"🚨 **ALERTA:** {formatar_brasileiro(metrics.get('total_registros_criticos', 0), 'numero')} registros com dados críticos ausentes")
-    
-    # CORREÇÃO: Informações sobre RGs com todas as letras
-    if metrics.get('registros_validos_com_letras', 0) > 0:
-        st.success(f"✅ **INFORMAÇÃO:** {formatar_brasileiro(metrics.get('registros_validos_com_letras', 0), 'numero')} RGs com letras válidas identificados")
-    
-    if metrics.get('cpfs_com_zeros_adicional', 0) > 0:
-        st.success(f"✅ **INFORMAÇÃO:** {formatar_brasileiro(metrics.get('cpfs_com_zeros_adicional', 0), 'numero')} CPFs receberam zeros à esquerda")
-    
-    if metrics.get('total_cpfs_duplicados', 0) > 0:
-        st.info(f"ℹ️ **INFORMAÇÃO:** {formatar_brasileiro(metrics.get('total_cpfs_duplicados', 0), 'numero')} CPFs com múltiplas ocorrências")
-    
-    # CORREÇÃO: Mostrar informações da planilha de contas
-    if metrics.get('total_contas_abertas', 0) > 0:
-        st.success(f"🏦 **INFORMAÇÃO:** {formatar_brasileiro(metrics.get('total_contas_abertas', 0), 'numero')} contas abertas identificadas na planilha de contas")
-    
-    st.info("""
-    **Escolha o formato do relatório:**
-    - **📄 PDF Executivo**: Relatório visual e profissional para apresentações
-    - **📊 Excel Completo**: Dados detalhados para análise técnica
-    """)
-    
-    tipo_relatorio = st.selectbox(
-        "Selecione o tipo de relatório:",
-        [
-            "Relatório Geral Completo",
-            "Relatório de Pagamentos", 
-            "Relatório de Abertura de Contas",
-            "Relatório por Projeto",
-            "Dashboard Executivo"
-        ]
-    )
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        if st.button("📄 Gerar PDF Executivo", use_container_width=True):
-            pdf_data = gerar_pdf_executivo(dados, metrics, nomes_arquivos)
-            if pdf_data:
-                st.success("✅ PDF gerado com sucesso!")
-                st.download_button(
-                    label="📥 Baixar PDF",
-                    data=pdf_data,
-                    file_name=f"relatorio_executivo_pot_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
-                    mime="application/pdf"
-                )
-    
-    with col2:
-        if st.button("📊 Gerar Excel Completo", use_container_width=True):
-            excel_data = gerar_excel_completo(dados, metrics)
-            if excel_data:
-                st.success("✅ Excel gerado com sucesso!")
-                st.download_button(
-                    label="📥 Baixar Excel",
-                    data=excel_data,
-                    file_name=f"relatorio_completo_pot_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-
-# Função principal
-def main():
-    # Autenticação
-    email = autenticar()
-    
-    if email:
-        st.sidebar.success(f"👤 Logado como: {email}")
-        
-        # Carregar dados
-        dados, nomes_arquivos = carregar_dados()
-        
-        # Menu de navegação
-        st.sidebar.markdown("---")
-        pagina = st.sidebar.radio(
-            "Navegação:",
-            ["📊 Dashboard", "📥 Importar Dados", "🔍 Consultas", "📋 Relatórios"]
-        )
-        
-        # Navegação entre páginas
-        if pagina == "📊 Dashboard":
-            mostrar_dashboard(dados, nomes_arquivos)
-        elif pagina == "📥 Importar Dados":
-            mostrar_importacao()
-        elif pagina == "🔍 Consultas":
-            mostrar_consultas(dados)
-        elif pagina == "📋 Relatórios":
-            mostrar_relatorios(dados, nomes_arquivos)
-    
-    # Rodapé
-    st.sidebar.markdown("---")
-    st.sidebar.markdown(
-        "**Sistema POT - SMDET**  \n"
-        "Prefeitura de São Paulo  \n"
-        "Secretaria Municipal do Desenvolvimento Econômico e Trabalho  \n"
-        "Programa Operação Trabalho (POT)  \n"
-        f"© {datetime.now().year} - Versão 2.0"
-    )
-
-if __name__ == "__main__":
-    main()
+            st.sidebar.error(f"❌ Erro ao carregar pag
