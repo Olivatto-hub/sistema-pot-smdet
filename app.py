@@ -90,7 +90,7 @@ def processar_dados(dados, nomes_arquivos=None):
     metrics.update(analise_ausencia)
     
     # CORREÇÃO: Processar planilha de PAGAMENTOS
-    if not dados['pagamentos'].empty:
+    if 'pagamentos' in dados and not dados['pagamentos'].empty:
         df = dados['pagamentos']
         
         # Beneficiários únicos
@@ -129,7 +129,7 @@ def processar_dados(dados, nomes_arquivos=None):
             metrics['total_cpfs_duplicados'] = cpfs_duplicados['CPF'].nunique()
     
     # CORREÇÃO: Processar planilha de ABERTURA DE CONTAS
-    if not dados['contas'].empty:
+    if 'contas' in dados and not dados['contas'].empty:
         df_contas = dados['contas']
         
         # Total de contas abertas
@@ -141,7 +141,7 @@ def processar_dados(dados, nomes_arquivos=None):
             metrics['beneficiarios_contas'] = df_contas[coluna_nome].nunique()
         
         # Se não há planilha de pagamentos, usar contas como referência
-        if dados['pagamentos'].empty:
+        if 'pagamentos' not in dados or dados['pagamentos'].empty:
             metrics['contas_unicas'] = metrics['total_contas_abertas']
             if 'Projeto' in df_contas.columns:
                 metrics['projetos_ativos'] = df_contas['Projeto'].nunique()
@@ -212,7 +212,7 @@ def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_co
         'rgs_com_letras_especificas': {}  # NOVO: Detalha quais letras foram encontradas
     }
     
-    if not dados['pagamentos'].empty:
+    if 'pagamentos' in dados and not dados['pagamentos'].empty:
         df = dados['pagamentos'].copy()
         
         # NOVO: Adicionar coluna com número da linha original (considerando que a planilha começa na linha 2 - linha 1 é cabeçalho)
@@ -579,11 +579,11 @@ def gerar_excel_completo(dados, metrics):
         # Criar um arquivo Excel simples usando pandas
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             # Aba de Pagamentos
-            if not dados['pagamentos'].empty:
+            if 'pagamentos' in dados and not dados['pagamentos'].empty:
                 dados['pagamentos'].to_excel(writer, sheet_name='Pagamentos', index=False)
             
             # Aba de Contas
-            if not dados['contas'].empty:
+            if 'contas' in dados and not dados['contas'].empty:
                 dados['contas'].to_excel(writer, sheet_name='Contas', index=False)
             
             # Aba de Métricas
@@ -686,8 +686,11 @@ def main():
     # Carregar dados
     dados, nomes_arquivos = carregar_dados()
     
-    # Verificar se há dados para processar
-    if not dados.get('pagamentos') and not dados.get('contas'):
+    # CORREÇÃO: Verificar se há dados para processar de forma segura
+    tem_dados_pagamentos = 'pagamentos' in dados and not dados['pagamentos'].empty
+    tem_dados_contas = 'contas' in dados and not dados['contas'].empty
+    
+    if not tem_dados_pagamentos and not tem_dados_contas:
         st.info("📊 Faça o upload das planilhas de pagamentos e/ou abertura de contas para iniciar a análise")
         return
     
@@ -738,11 +741,11 @@ def main():
         st.header("Visão Geral dos Dados")
         
         # Visualização de dados
-        if not dados['pagamentos'].empty:
+        if tem_dados_pagamentos:
             st.subheader("Dados de Pagamentos")
             st.dataframe(dados['pagamentos'].head(100), use_container_width=True)
         
-        if not dados['contas'].empty:
+        if tem_dados_contas:
             st.subheader("Dados de Abertura de Contas")
             st.dataframe(dados['contas'].head(100), use_container_width=True)
     
