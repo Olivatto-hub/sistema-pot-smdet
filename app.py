@@ -148,7 +148,7 @@ def remover_linha_totais(df):
 
 # FUNÇÃO CORRIGIDA: Filtrar apenas pagamentos válidos (com número de conta)
 def filtrar_pagamentos_validos(df):
-    """Filtra apenas os registros que possuem número de conta (pagamentos válidos)"""
+    """Filtra apenas os registros que possuem número da conta (pagamentos válidos)"""
     coluna_conta = obter_coluna_conta(df)
     
     if not coluna_conta:
@@ -474,8 +474,8 @@ def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_co
     }
     
     if 'pagamentos' in dados and not dados['pagamentos'].empty:
-        # CORREÇÃO: Usar dados originais para análise de ausência
-        df = dados['pagamentos'].copy()
+        # CORREÇÃO: Usar dados SEM linha de totais para análise de ausência
+        df = dados['pagamentos_sem_totais'] if 'pagamentos_sem_totais' in dados else dados['pagamentos']
         
         # NOVO: Adicionar coluna com número da linha original
         df['Linha_Planilha_Original'] = df.index + 2
@@ -692,7 +692,7 @@ def identificar_cpfs_problematicos(df):
     
     return problemas_cpf
 
-# CORREÇÃO: Função para processar dados principais - Considera apenas pagamentos válidos
+# CORREÇÃO: Função para processar dados principais - Considera apenas pagamentos válidos SEM TOTAIS
 def processar_dados(dados, nomes_arquivos=None):
     """Processa os dados para gerar métricas e análises"""
     metrics = {
@@ -710,19 +710,24 @@ def processar_dados(dados, nomes_arquivos=None):
         'pagamentos_pendentes': {},
         'total_registros_invalidos': 0,
         'problemas_cpf': {},  # NOVO: Análise de problemas com CPF
-        'linha_totais_removida': False  # NOVO: Indicador se linha de totais foi removida
+        'linha_totais_removida': False,  # NOVO: Indicador se linha de totais foi removida
+        'total_registros_originais': 0,  # NOVO: Total original antes de remover totais
+        'total_registros_sem_totais': 0  # NOVO: Total após remover totais
     }
     
     # Combinar com análise de ausência de dados
     analise_ausencia = analisar_ausencia_dados(dados, nomes_arquivos.get('pagamentos'), nomes_arquivos.get('contas'))
     metrics.update(analise_ausencia)
     
-    # CORREÇÃO: Processar planilha de PAGAMENTOS - apenas válidos
+    # CORREÇÃO: Processar planilha de PAGAMENTOS - apenas válidos SEM TOTAIS
     if 'pagamentos' in dados and not dados['pagamentos'].empty:
         df_original = dados['pagamentos']
+        metrics['total_registros_originais'] = len(df_original)
         
         # NOVO: Remover linha de totais antes de qualquer processamento
         df_sem_totais = remover_linha_totais(df_original)
+        metrics['total_registros_sem_totais'] = len(df_sem_totais)
+        
         if len(df_sem_totais) < len(df_original):
             metrics['linha_totais_removida'] = True
         
@@ -750,7 +755,7 @@ def processar_dados(dados, nomes_arquivos=None):
         if coluna_beneficiario:
             metrics['beneficiarios_unicos'] = df[coluna_beneficiario].nunique()
         
-        # Total de pagamentos VÁLIDOS
+        # Total de pagamentos VÁLIDOS (já sem linha de totais)
         metrics['total_pagamentos'] = len(df)
         
         # Contas únicas (da planilha de pagamentos VÁLIDOS)
@@ -832,19 +837,23 @@ def carregar_dados():
             
             nomes_arquivos['pagamentos'] = upload_pagamentos.name
             
-            # NOVO: Remover linha de totais antes do processamento
-            df_pagamentos = remover_linha_totais(df_pagamentos)
+            # NOVO: Guardar versão original e versão sem totais
+            dados['pagamentos_original'] = df_pagamentos.copy()
             
-            df_pagamentos = processar_colunas_data(df_pagamentos)
-            df_pagamentos = processar_colunas_valor(df_pagamentos)
-            df_pagamentos = padronizar_documentos(df_pagamentos)
+            # Remover linha de totais antes do processamento
+            df_pagamentos_sem_totais = remover_linha_totais(df_pagamentos)
+            dados['pagamentos'] = df_pagamentos_sem_totais
             
-            dados['pagamentos'] = df_pagamentos
+            df_pagamentos_sem_totais = processar_colunas_data(df_pagamentos_sem_totais)
+            df_pagamentos_sem_totais = processar_colunas_valor(df_pagamentos_sem_totais)
+            df_pagamentos_sem_totais = padronizar_documentos(df_pagamentos_sem_totais)
             
-            # CORREÇÃO: Mostrar estatísticas de pagamentos válidos vs inválidos
-            df_pagamentos_validos = filtrar_pagamentos_validos(df_pagamentos)
+            dados['pagamentos'] = df_pagamentos_sem_totais
+            
+            # CORREÇÃO: Mostrar estatísticas de pagamentos válidos vs inválidos (JÁ SEM TOTAIS)
+            df_pagamentos_validos = filtrar_pagamentos_validos(df_pagamentos_sem_totais)
             total_validos = len(df_pagamentos_validos)
-            total_invalidos = len(df_pagamentos) - total_validos
+            total_invalidos = len(df_pagamentos_sem_totais) - total_validos
             
             st.sidebar.success(f"✅ Pagamentos: {total_validos} válidos + {total_invalidos} sem conta - {upload_pagamentos.name}")
             
@@ -920,7 +929,7 @@ def main():
     
     # NOVO: Mostrar informação sobre linha de totais removida
     if metrics.get('linha_totais_removida', False):
-        st.info("📝 **Nota:** Linha de totais da planilha foi identificada e excluída da análise")
+        st.info(f"📝 **Nota:** Linha de totais da planilha foi identificada e excluída da análise ({metrics['total_registros_originais']} → {metrics['total_registros_sem_totais']} registros)")
     
     st.markdown("---")
     
@@ -931,7 +940,7 @@ def main():
         st.metric(
             "Total de Pagamentos", 
             formatar_brasileiro(metrics['total_pagamentos']),
-            help="Pagamentos válidos com número de conta"
+            help="Pagamentos válidos com número de conta (já excluindo linha de totais)"
         )
     
     with col2:
@@ -998,13 +1007,16 @@ def main():
         
         if tem_dados_pagamentos:
             st.write(f"**Planilha de Pagamentos:** {nomes_arquivos.get('pagamentos', 'N/A')}")
-            st.write(f"**Total de registros:** {len(dados['pagamentos'])}")
+            
+            # CORREÇÃO: Mostrar apenas total SEM linha de totais
+            st.write(f"**Total de registros válidos:** {metrics['total_registros_sem_totais']}")
+            
+            # NOVO: Mostrar informação sobre remoção de totais se aplicável
+            if metrics.get('linha_totais_removida', False):
+                st.write(f"🔍 **Observação:** Linha de totais removida (originalmente {metrics['total_registros_originais']} registros)")
+            
             st.write(f"**Pagamentos válidos:** {metrics['total_pagamentos']}")
             st.write(f"**Registros sem conta:** {metrics['total_registros_invalidos']}")
-            
-            # NOVO: Informação sobre linha de totais
-            if metrics.get('linha_totais_removida', False):
-                st.write("🔍 **Linha de totais:** Identificada e removida da análise")
         
         if tem_dados_contas:
             st.write(f"**Planilha de Contas:** {nomes_arquivos.get('contas', 'N/A')}")
