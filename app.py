@@ -698,9 +698,9 @@ def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_co
     
     return analise_ausencia
 
-# NOVA FUNÇÃO: Identificar CPFs problemáticos
+# FUNÇÃO CORRIGIDA: Identificar CPFs problemáticos - USANDO APENAS COLUNAS EXISTENTES
 def identificar_cpfs_problematicos(df):
-    """Identifica CPFs com problemas de formatação"""
+    """Identifica CPFs com problemas de formatação usando apenas colunas existentes"""
     problemas_cpf = {
         'cpfs_com_caracteres_invalidos': [],
         'cpfs_com_tamanho_incorreto': [],
@@ -747,12 +747,21 @@ def identificar_cpfs_problematicos(df):
             
             # Adicionar informações adicionais para identificação - APENAS COLUNAS EXISTENTES
             coluna_conta = obter_coluna_conta(df)
-            if coluna_conta and coluna_conta in row:
+            if coluna_conta and coluna_conta in df.columns and pd.notna(row.get(coluna_conta)):
                 info_problema['Numero_Conta'] = row[coluna_conta]
             
             coluna_nome = obter_coluna_nome(df)
-            if coluna_nome and coluna_nome in row:
+            if coluna_nome and coluna_nome in df.columns and pd.notna(row.get(coluna_nome)):
                 info_problema['Nome'] = row[coluna_nome]
+            
+            # Adicionar outras colunas importantes que existam na planilha
+            colunas_adicionais = ['Projeto', 'Valor', 'Data', 'Status']
+            for coluna in colunas_adicionais:
+                if coluna in df.columns and pd.notna(row.get(coluna)):
+                    valor = str(row[coluna])
+                    if len(valor) > 30:  # Limitar tamanho para exibição
+                        valor = valor[:27] + "..."
+                    info_problema[coluna] = valor
             
             # Corrigir a concatenação do DataFrame
             if problemas_cpf['detalhes_cpfs_problematicos'].empty:
@@ -1167,6 +1176,7 @@ def main():
             
             if not metrics['problemas_cpf']['detalhes_cpfs_problematicos'].empty:
                 st.write("**Detalhes dos CPFs Problemáticos:**")
+                # CORREÇÃO: Mostrar apenas colunas que realmente existem
                 st.dataframe(metrics['problemas_cpf']['detalhes_cpfs_problematicos'])
 
 if __name__ == "__main__":
