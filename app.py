@@ -408,7 +408,7 @@ def processar_colunas_valor(df):
     
     return df_processed
 
-# NOVA FUNÇÃO: Gerar PDF Executivo MELHORADO
+# NOVA FUNÇÃO: Gerar PDF Executivo CORRIGIDA
 def gerar_pdf_executivo(dados, metrics, nomes_arquivos):
     """Gera relatório PDF executivo profissional"""
     try:
@@ -420,12 +420,12 @@ def gerar_pdf_executivo(dados, metrics, nomes_arquivos):
         
         # CABEÇALHO OFICIAL
         # Logo/Texto da Prefeitura
-        pdf.cell(0, 10, 'PREFEITURA DE SÃO PAULO', 0, 1, 'C')
+        pdf.cell(0, 10, 'PREFEITURA DE SAO PAULO', 0, 1, 'C')
         pdf.set_font('Arial', 'B', 14)
-        pdf.cell(0, 10, 'SECRETARIA MUNICIPAL DO DESENVOLVIMENTO ECONÔMICO E TRABALHO', 0, 1, 'C')
+        pdf.cell(0, 10, 'SECRETARIA MUNICIPAL DO DESENVOLVIMENTO ECONOMICO E TRABALHO', 0, 1, 'C')
         pdf.set_font('Arial', 'B', 16)
-        pdf.cell(0, 10, 'PROGRAMA DE OPERAÇÕES DO TRABALHO - POT', 0, 1, 'C')
-        pdf.cell(0, 10, 'RELATÓRIO DE MONITORAMENTO DE PAGAMENTOS', 0, 1, 'C')
+        pdf.cell(0, 10, 'PROGRAMA DE OPERACOES DO TRABALHO - POT', 0, 1, 'C')
+        pdf.cell(0, 10, 'RELATORIO DE MONITORAMENTO DE PAGAMENTOS', 0, 1, 'C')
         
         # Linha divisória
         pdf.line(10, pdf.get_y(), 200, pdf.get_y())
@@ -433,20 +433,24 @@ def gerar_pdf_executivo(dados, metrics, nomes_arquivos):
         
         # Informações do relatório
         pdf.set_font('Arial', 'B', 12)
-        pdf.cell(0, 8, 'INFORMAÇÕES DO RELATÓRIO', 0, 1)
+        pdf.cell(0, 8, 'INFORMACOES DO RELATORIO', 0, 1)
         pdf.set_font('Arial', '', 10)
         
-        pdf.cell(0, 6, f'Data de emissão: {datetime.now().strftime("%d/%m/%Y às %H:%M")}', 0, 1)
+        pdf.cell(0, 6, f'Data de emissao: {datetime.now().strftime("%d/%m/%Y as %H:%M")}', 0, 1)
         if nomes_arquivos.get('pagamentos'):
-            pdf.cell(0, 6, f'Planilha de Pagamentos: {nomes_arquivos["pagamentos"]}', 0, 1)
+            # Remover caracteres especiais do nome do arquivo
+            nome_arquivo = nomes_arquivos["pagamentos"].encode('latin-1', 'ignore').decode('latin-1')
+            pdf.cell(0, 6, f'Planilha de Pagamentos: {nome_arquivo}', 0, 1)
         if nomes_arquivos.get('contas'):
-            pdf.cell(0, 6, f'Planilha de Abertura de Contas: {nomes_arquivos["contas"]}', 0, 1)
+            # Remover caracteres especiais do nome do arquivo
+            nome_arquivo = nomes_arquivos["contas"].encode('latin-1', 'ignore').decode('latin-1')
+            pdf.cell(0, 6, f'Planilha de Abertura de Contas: {nome_arquivo}', 0, 1)
         
         pdf.ln(8)
         
         # MÉTRICAS PRINCIPAIS - COM DESTAQUE
         pdf.set_font('Arial', 'B', 12)
-        pdf.cell(0, 8, 'MÉTRICAS PRINCIPAIS', 0, 1)
+        pdf.cell(0, 8, 'METRICAS PRINCIPAIS', 0, 1)
         pdf.set_font('Arial', '', 10)
         
         # Criar tabela de métricas
@@ -454,13 +458,13 @@ def gerar_pdf_executivo(dados, metrics, nomes_arquivos):
         metrics_data = []
         
         if metrics.get('beneficiarios_unicos', 0) > 0:
-            metrics_data.append(('Beneficiários Únicos', formatar_brasileiro(metrics["beneficiarios_unicos"], "numero")))
+            metrics_data.append(('Beneficiarios Unicos', formatar_brasileiro(metrics["beneficiarios_unicos"], "numero")))
         
         if metrics.get('total_pagamentos', 0) > 0:
             metrics_data.append(('Total de Pagamentos', formatar_brasileiro(metrics["total_pagamentos"], "numero")))
         
         if metrics.get('contas_unicas', 0) > 0:
-            metrics_data.append(('Contas Únicas', formatar_brasileiro(metrics["contas_unicas"], "numero")))
+            metrics_data.append(('Contas Unicas', formatar_brasileiro(metrics["contas_unicas"], "numero")))
         
         if metrics.get('total_contas_abertas', 0) > 0:
             metrics_data.append(('Contas Abertas', formatar_brasileiro(metrics["total_contas_abertas"], "numero")))
@@ -489,11 +493,11 @@ def gerar_pdf_executivo(dados, metrics, nomes_arquivos):
             tem_alertas = True
             pdf.set_font('Arial', 'B', 12)
             pdf.set_text_color(255, 0, 0)  # Vermelho para alertas
-            pdf.cell(0, 8, 'ALERTAS CRÍTICOS IDENTIFICADOS', 0, 1)
+            pdf.cell(0, 8, 'ALERTAS CRITICOS IDENTIFICADOS', 0, 1)
             pdf.set_text_color(0, 0, 0)  # Voltar para preto
             pdf.set_font('Arial', '', 10)
-            pdf.cell(0, 6, f'• Registros com dados críticos ausentes: {formatar_brasileiro(metrics["total_registros_criticos"], "numero")}', 0, 1)
-            pdf.cell(0, 6, '  (CPF, número da conta ou valor ausentes/zerados)', 0, 1)
+            pdf.cell(0, 6, f'- Registros com dados criticos ausentes: {formatar_brasileiro(metrics["total_registros_criticos"], "numero")}', 0, 1)
+            pdf.cell(0, 6, '  (CPF, numero da conta ou valor ausentes/zerados)', 0, 1)
             pdf.ln(4)
         
         if metrics.get('pagamentos_duplicados', 0) > 0:
@@ -503,45 +507,45 @@ def gerar_pdf_executivo(dados, metrics, nomes_arquivos):
             pdf.cell(0, 8, 'DUPLICIDADES IDENTIFICADAS', 0, 1)
             pdf.set_text_color(0, 0, 0)
             pdf.set_font('Arial', '', 10)
-            pdf.cell(0, 6, f'• Contas com pagamentos duplicados: {formatar_brasileiro(metrics["pagamentos_duplicados"], "numero")}', 0, 1)
+            pdf.cell(0, 6, f'- Contas com pagamentos duplicados: {formatar_brasileiro(metrics["pagamentos_duplicados"], "numero")}', 0, 1)
             if metrics.get('valor_total_duplicados', 0) > 0:
-                pdf.cell(0, 6, f'• Valor total em duplicidades: {formatar_brasileiro(metrics["valor_total_duplicados"], "monetario")}', 0, 1)
+                pdf.cell(0, 6, f'- Valor total em duplicidades: {formatar_brasileiro(metrics["valor_total_duplicados"], "monetario")}', 0, 1)
             pdf.ln(4)
         
         if not tem_alertas:
             pdf.set_font('Arial', 'B', 12)
             pdf.set_text_color(0, 128, 0)  # Verde para OK
-            pdf.cell(0, 8, '✓ NENHUM ALERTA CRÍTICO IDENTIFICADO', 0, 1)
+            pdf.cell(0, 8, 'OK - NENHUM ALERTA CRITICO IDENTIFICADO', 0, 1)
             pdf.set_text_color(0, 0, 0)
         
         pdf.ln(8)
         
         # INFORMAÇÕES DE PROCESSAMENTO
         pdf.set_font('Arial', 'B', 12)
-        pdf.cell(0, 8, 'INFORMAÇÕES DE PROCESSAMENTO', 0, 1)
+        pdf.cell(0, 8, 'INFORMACOES DE PROCESSAMENTO', 0, 1)
         pdf.set_font('Arial', '', 10)
         
         if metrics.get('documentos_padronizados', 0) > 0:
-            pdf.cell(0, 6, f'• Documentos processados: {formatar_brasileiro(metrics["documentos_padronizados"], "numero")}', 0, 1)
+            pdf.cell(0, 6, f'- Documentos processados: {formatar_brasileiro(metrics["documentos_padronizados"], "numero")}', 0, 1)
         
         if metrics.get('registros_validos_com_letras', 0) > 0:
-            pdf.cell(0, 6, f'• RGs com letras válidas processados: {formatar_brasileiro(metrics["registros_validos_com_letras"], "numero")}', 0, 1)
+            pdf.cell(0, 6, f'- RGs com letras validas processados: {formatar_brasileiro(metrics["registros_validos_com_letras"], "numero")}', 0, 1)
         
         if metrics.get('cpfs_com_zeros_adicional', 0) > 0:
-            pdf.cell(0, 6, f'• CPFs normalizados com zeros: {formatar_brasileiro(metrics["cpfs_com_zeros_adicional"], "numero")}', 0, 1)
+            pdf.cell(0, 6, f'- CPFs normalizados com zeros: {formatar_brasileiro(metrics["cpfs_com_zeros_adicional"], "numero")}', 0, 1)
         
         if metrics.get('cpfs_formatos_diferentes', 0) > 0:
-            pdf.cell(0, 6, f'• CPFs de outros estados processados: {formatar_brasileiro(metrics["cpfs_formatos_diferentes"], "numero")}', 0, 1)
+            pdf.cell(0, 6, f'- CPFs de outros estados processados: {formatar_brasileiro(metrics["cpfs_formatos_diferentes"], "numero")}', 0, 1)
         
         pdf.ln(10)
         
         # RODAPÉ OFICIAL
         pdf.set_font('Arial', 'I', 8)
-        pdf.cell(0, 10, 'Secretaria Municipal do Desenvolvimento Econômico e Trabalho - SMDET', 0, 0, 'C')
+        pdf.cell(0, 10, 'Secretaria Municipal do Desenvolvimento Economico e Trabalho - SMDET', 0, 0, 'C')
         pdf.ln(4)
-        pdf.cell(0, 10, f'Relatório gerado automaticamente pelo Sistema de Monitoramento do POT em {datetime.now().strftime("%d/%m/%Y")}', 0, 0, 'C')
+        pdf.cell(0, 10, f'Relatorio gerado automaticamente pelo Sistema de Monitoramento do POT em {datetime.now().strftime("%d/%m/%Y")}', 0, 0, 'C')
         
-        return pdf.output(dest='S').encode('latin1')
+        return pdf.output(dest='S').encode('latin-1')
     
     except Exception as e:
         st.error(f"Erro ao gerar PDF: {str(e)}")
