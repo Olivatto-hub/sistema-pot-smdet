@@ -1118,7 +1118,10 @@ def processar_dados(dados, nomes_arquivos=None):
         
         # CORREÇÃO CRÍTICA: Valor total - SOMA DE TODOS OS PAGAMENTOS VÁLIDOS
         if 'Valor_Limpo' in df.columns:
-            metrics['valor_total'] = df['Valor_Limpo'].sum()
+            # CORREÇÃO: Garantir que estamos somando apenas valores válidos
+            valores_validos = df['Valor_Limpo'].fillna(0)
+            metrics['valor_total'] = valores_validos.sum()
+            
             # Informar qual coluna foi usada para o cálculo
             coluna_valor_origem = obter_coluna_valor(df)
             if coluna_valor_origem:
@@ -1622,8 +1625,6 @@ def carregar_dados(conn):
             
             nomes_arquivos['pagamentos'] = upload_pagamentos.name
             
-            # REMOVIDO: Mostrar colunas disponíveis para debug (não precisa aparecer na visão geral)
-            
             # Guardar versão original e versão sem totais
             dados['pagamentos_original'] = df_pagamentos.copy()
             
@@ -1927,8 +1928,6 @@ def main():
                     
                     st.write(f"**Pagamentos válidos:** {metrics['total_pagamentos']}")
                     st.write(f"**Registros sem conta:** {metrics['total_registros_invalidos']}")
-                    
-                    # REMOVIDO: Mostrar colunas disponíveis na planilha (não precisa aparecer na visão geral)
                 
                 if tem_dados_contas:
                     st.write(f"**Planilha de Inscrições:** {nomes_arquivos.get('contas', 'N/A')}")
