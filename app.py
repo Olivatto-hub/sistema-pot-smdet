@@ -78,6 +78,74 @@ def formatar_brasileiro(valor, tipo='numero'):
     else:
         return str(valor)
 
+# NOVA FUNÇÃO: Identificar e remover linha de totais
+def remover_linha_totais(df):
+    """Identifica e remove a linha de totais da planilha (última linha com valores somados)"""
+    if df.empty:
+        return df
+    
+    df_limpo = df.copy()
+    
+    # Padrões que indicam linha de totais
+    padroes_totais = [
+        'total', 'Total', 'TOTAL', 'soma', 'Soma', 'SOMA',
+        'geral', 'Geral', 'GERAL', 'resultado', 'Resultado', 'RESULTADO'
+    ]
+    
+    # Verificar a última linha
+    ultima_linha = df_limpo.iloc[-1]
+    
+    # Critérios para identificar linha de totais:
+    linha_eh_total = False
+    
+    # 1. Verificar se há texto indicando total em qualquer coluna
+    for coluna in df_limpo.columns:
+        if df_limpo[coluna].dtype == 'object':
+            valor = str(ultima_linha[coluna]) if pd.notna(ultima_linha[coluna]) else ''
+            if any(padrao in valor for padrao in padroes_totais):
+                linha_eh_total = True
+                break
+    
+    # 2. Verificar se a linha tem muitos campos vazios mas valores numéricos altos
+    if not linha_eh_total:
+        campos_vazios = 0
+        campos_preenchidos = 0
+        valor_total_linha = 0
+        
+        for coluna in df_limpo.columns:
+            valor = ultima_linha[coluna]
+            if pd.isna(valor) or str(valor).strip() in ['', 'NaN', 'None']:
+                campos_vazios += 1
+            else:
+                campos_preenchidos += 1
+                # Verificar se é valor monetário alto
+                if coluna in ['Valor', 'Valor_Limpo'] and pd.notna(valor):
+                    try:
+                        valor_num = float(valor)
+                        valor_total_linha = valor_num
+                    except:
+                        pass
+        
+        # Se tem muitos campos vazios mas um valor alto, provavelmente é linha de total
+        if campos_vazios > campos_preenchidos and valor_total_linha > 1000:
+            linha_eh_total = True
+    
+    # 3. Verificar se a linha tem número de conta vazio mas valor preenchido
+    coluna_conta = obter_coluna_conta(df_limpo)
+    if not linha_eh_total and coluna_conta:
+        conta_vazia = pd.isna(ultima_linha[coluna_conta]) or str(ultima_linha[coluna_conta]).strip() == ''
+        valor_preenchido = 'Valor' in df_limpo.columns and pd.notna(ultima_linha['Valor'])
+        
+        if conta_vazia and valor_preenchido:
+            linha_eh_total = True
+    
+    # Remover a linha se for identificada como total
+    if linha_eh_total:
+        df_limpo = df_limpo.iloc[:-1].copy()
+        st.sidebar.info(f"📝 Linha de totais identificada e removida: {len(df)} → {len(df_limpo)} registros")
+    
+    return df_limpo
+
 # FUNÇÃO CORRIGIDA: Filtrar apenas pagamentos válidos (com número de conta)
 def filtrar_pagamentos_validos(df):
     """Filtra apenas os registros que possuem número de conta (pagamentos válidos)"""
@@ -641,7 +709,8 @@ def processar_dados(dados, nomes_arquivos=None):
         'duplicidades_detalhadas': {},
         'pagamentos_pendentes': {},
         'total_registros_invalidos': 0,
-        'problemas_cpf': {}  # NOVO: Análise de problemas com CPF
+        'problemas_cpf': {},  # NOVO: Análise de problemas com CPF
+        'linha_totais_removida': False  # NOVO: Indicador se linha de totais foi removida
     }
     
     # Combinar com análise de ausência de dados
@@ -652,15 +721,20 @@ def processar_dados(dados, nomes_arquivos=None):
     if 'pagamentos' in dados and not dados['pagamentos'].empty:
         df_original = dados['pagamentos']
         
+        # NOVO: Remover linha de totais antes de qualquer processamento
+        df_sem_totais = remover_linha_totais(df_original)
+        if len(df_sem_totais) < len(df_original):
+            metrics['linha_totais_removida'] = True
+        
         # CORREÇÃO: Filtrar apenas pagamentos válidos (com número de conta)
-        df = filtrar_pagamentos_validos(df_original)
+        df = filtrar_pagamentos_validos(df_sem_totais)
         
         # NOVO: Contar registros inválidos (sem número de conta)
-        coluna_conta = obter_coluna_conta(df_original)
+        coluna_conta = obter_coluna_conta(df_sem_totais)
         if coluna_conta:
-            registros_invalidos = df_original[
-                df_original[coluna_conta].isna() | 
-                (df_original[coluna_conta].astype(str).str.strip() == '')
+            registros_invalidos = df_sem_totais[
+                df_sem_totais[coluna_conta].isna() | 
+                (df_sem_totais[coluna_conta].astype(str).str.strip() == '')
             ]
             metrics['total_registros_invalidos'] = len(registros_invalidos)
         
@@ -758,6 +832,9 @@ def carregar_dados():
             
             nomes_arquivos['pagamentos'] = upload_pagamentos.name
             
+            # NOVO: Remover linha de totais antes do processamento
+            df_pagamentos = remover_linha_totais(df_pagamentos)
+            
             df_pagamentos = processar_colunas_data(df_pagamentos)
             df_pagamentos = processar_colunas_valor(df_pagamentos)
             df_pagamentos = padronizar_documentos(df_pagamentos)
@@ -840,6 +917,11 @@ def main():
     st.title("🏛️ Sistema POT - SMDET")
     st.markdown("### Análise de Pagamentos e Contas")
     st.markdown(f"**Data da análise:** {data_hora_atual_brasilia()}")
+    
+    # NOVO: Mostrar informação sobre linha de totais removida
+    if metrics.get('linha_totais_removida', False):
+        st.info("📝 **Nota:** Linha de totais da planilha foi identificada e excluída da análise")
+    
     st.markdown("---")
     
     # Métricas principais
@@ -919,6 +1001,10 @@ def main():
             st.write(f"**Total de registros:** {len(dados['pagamentos'])}")
             st.write(f"**Pagamentos válidos:** {metrics['total_pagamentos']}")
             st.write(f"**Registros sem conta:** {metrics['total_registros_invalidos']}")
+            
+            # NOVO: Informação sobre linha de totais
+            if metrics.get('linha_totais_removida', False):
+                st.write("🔍 **Linha de totais:** Identificada e removida da análise")
         
         if tem_dados_contas:
             st.write(f"**Planilha de Contas:** {nomes_arquivos.get('contas', 'N/A')}")
