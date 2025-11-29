@@ -53,7 +53,7 @@ def init_database():
         )
     ''')
     
-    # Tabela para métricas consolidadas - VERIFICAR E ATUALIZAR SE NECESSÁRIO
+    # Tabela para métricas consolidadas
     conn.execute('''
         CREATE TABLE IF NOT EXISTS metricas_mensais (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -73,7 +73,7 @@ def init_database():
         )
     ''')
     
-    # Verificar se a coluna cpfs_ajuste existe, se não, adicionar
+    # Verificar e adicionar colunas faltantes
     try:
         conn.execute("SELECT cpfs_ajuste FROM metricas_mensais LIMIT 1")
     except sqlite3.OperationalError:
@@ -218,7 +218,6 @@ def salvar_metricas_db(conn, tipo, mes_ref, ano_ref, metrics):
         conn.commit()
     except sqlite3.OperationalError as e:
         # Se houver erro, tentar versão sem cpfs_ajuste
-        st.warning("⚠️ Atualizando estrutura do banco de dados...")
         try:
             conn.execute("ALTER TABLE metricas_mensais ADD COLUMN cpfs_ajuste INTEGER")
             conn.commit()
@@ -298,7 +297,7 @@ def carregar_metricas_db(conn, tipo=None, periodo=None):
 # Função auxiliar para obter coluna de conta
 def obter_coluna_conta(df):
     """Identifica a coluna que contém o número da conta"""
-    colunas_conta = ['Num Cartao', 'Num_Cartao', 'Conta', 'Número da Conta', 'Numero_Conta']
+    colunas_conta = ['Num Cartao', 'Num_Cartao', 'Conta', 'Número da Conta', 'Numero_Conta', 'Número do Cartão']
     for coluna in colunas_conta:
         if coluna in df.columns:
             return coluna
@@ -307,7 +306,7 @@ def obter_coluna_conta(df):
 # Função auxiliar para obter coluna de nome/beneficiário
 def obter_coluna_nome(df):
     """Identifica a coluna que contém o nome do beneficiário"""
-    colunas_nome = ['Beneficiario', 'Beneficiário', 'Nome', 'Nome Completo']
+    colunas_nome = ['Beneficiario', 'Beneficiário', 'Nome', 'Nome Completo', 'Nome do Beneficiário']
     for coluna in colunas_nome:
         if coluna in df.columns:
             return coluna
@@ -316,23 +315,58 @@ def obter_coluna_nome(df):
 # Função auxiliar para formatar valores no padrão brasileiro
 def formatar_brasileiro(valor, tipo='numero'):
     """Formata valores no padrão brasileiro"""
+    if pd.isna(valor):
+        valor = 0
+    
     if tipo == 'monetario':
-        return f"R$ {valor:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
+        return f"R$ {float(valor):,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
     elif tipo == 'numero':
-        return f"{valor:,}".replace(',', '.')
+        return f"{int(valor):,}".replace(',', '.')
     else:
         return str(valor)
 
-# FUNÇÃO CORRIGIDA: Identificar e remover linha de totais - SEMPRE REMOVE A ÚLTIMA LINHA
+# FUNÇÃO CORRIGIDA: Identificar e remover linha de totais
 def remover_linha_totais(df):
-    """Identifica e remove a linha de totais da planilha (última linha com valores somados)"""
+    """Identifica e remove a linha de totais da planilha de forma inteligente"""
     if df.empty or len(df) <= 1:
         return df
     
     df_limpo = df.copy()
     
-    # SEMPRE remover a última linha (linha de totais)
-    df_limpo = df_limpo.iloc[:-1].copy()
+    # Verificar se a última linha parece ser uma linha de totais
+    ultima_linha = df_limpo.iloc[-1]
+    
+    # Critérios para identificar linha de totais:
+    # 1. Contém palavras como "TOTAL", "SOMA", "TOTAL GERAL"
+    # 2. Valores numéricos muito altos comparados com a média
+    # 3. Campos de texto vazios ou com palavras de total
+    
+    criterios_totais = 0
+    
+    # Verificar colunas de texto
+    colunas_texto = [col for col in df_limpo.columns if df_limpo[col].dtype == 'object']
+    for coluna in colunas_texto[:3]:  # Verificar apenas as primeiras colunas de texto
+        if pd.notna(ultima_linha[coluna]):
+            valor = str(ultima_linha[coluna]).upper()
+            if any(palavra in valor for palavra in ['TOTAL', 'SOMA', 'GERAL', 'TOTAL GERAL']):
+                criterios_totais += 2
+                break
+    
+    # Verificar colunas numéricas
+    colunas_numericas = [col for col in df_limpo.columns if df_limpo[col].dtype in ['int64', 'float64']]
+    if colunas_numericas:
+        # Calcular médias das colunas numéricas (excluindo a última linha)
+        medias = df_limpo.iloc[:-1][colunas_numericas].mean()
+        
+        for coluna in colunas_numericas:
+            if pd.notna(ultima_linha[coluna]) and pd.notna(medias[coluna]):
+                if ultima_linha[coluna] > medias[coluna] * 10:  # Valor muito acima da média
+                    criterios_totais += 1
+    
+    # Se atende a pelo menos 2 critérios, remover a última linha
+    if criterios_totais >= 2:
+        df_limpo = df_limpo.iloc[:-1].copy()
+        st.sidebar.info("📝 Linha de totais identificada e removida automaticamente")
     
     return df_limpo
 
@@ -347,11 +381,17 @@ def filtrar_pagamentos_validos(df):
     # Filtrar apenas registros com número de conta preenchido
     df_filtrado = df[df[coluna_conta].notna() & (df[coluna_conta].astype(str).str.strip() != '')].copy()
     
+    # Remover possíveis valores "TOTAL", "SOMA", etc. que passaram pela filtragem anterior
+    palavras_totais = ['TOTAL', 'SOMA', 'GERAL', 'TOTAL GERAL']
+    for palavra in palavras_totais:
+        mask = df_filtrado[coluna_conta].astype(str).str.upper().str.contains(palavra, na=False)
+        df_filtrado = df_filtrado[~mask]
+    
     return df_filtrado
 
-# FUNÇÃO CORRIGIDA: Detectar pagamentos duplicados com detalhes COMPLETOS
+# FUNÇÃO CORRIGIDA: Detectar pagamentos duplicados
 def detectar_pagamentos_duplicados(df):
-    """Detecta pagamentos duplicados por número de conta e retorna detalhes completos"""
+    """Detecta pagamentos duplicados por número de conta"""
     duplicidades = {
         'contas_duplicadas': pd.DataFrame(),
         'total_contas_duplicadas': 0,
@@ -388,7 +428,7 @@ def detectar_pagamentos_duplicados(df):
     
     # Ordenar por conta e data (se disponível)
     colunas_ordenacao = [coluna_conta]
-    colunas_data = ['Data', 'Data Pagto', 'Data_Pagto', 'DataPagto']
+    colunas_data = ['Data', 'Data Pagto', 'Data_Pagto', 'DataPagto', 'Data Pagamento']
     for col_data in colunas_data:
         if col_data in df_duplicados.columns:
             colunas_ordenacao.append(col_data)
@@ -400,7 +440,7 @@ def detectar_pagamentos_duplicados(df):
     df_duplicados['Ocorrencia'] = df_duplicados.groupby(coluna_conta).cumcount() + 1
     df_duplicados['Total_Ocorrencias'] = df_duplicados.groupby(coluna_conta)[coluna_conta].transform('count')
     
-    # Preparar dados completos para exibição - APENAS COLUNAS EXISTENTES
+    # Preparar dados completos para exibição
     colunas_exibicao_completas = [coluna_conta, 'Ocorrencia', 'Total_Ocorrencias']
     
     if coluna_nome and coluna_nome in df_duplicados.columns:
@@ -598,7 +638,7 @@ def processar_colunas_data(df):
     """Converte colunas de data de formato numérico do Excel para datas legíveis"""
     df_processed = df.copy()
     
-    colunas_data = ['Data', 'Data Pagto', 'Data_Pagto', 'DataPagto']
+    colunas_data = ['Data', 'Data Pagto', 'Data_Pagto', 'DataPagto', 'Data Pagamento']
     
     for coluna in colunas_data:
         if coluna in df_processed.columns:
@@ -628,29 +668,33 @@ def processar_colunas_valor(df):
     """Processa colunas de valor para formato brasileiro"""
     df_processed = df.copy()
     
-    if 'Valor' in df_processed.columns:
-        try:
-            if df_processed['Valor'].dtype == 'object':
-                df_processed['Valor_Limpo'] = (
-                    df_processed['Valor']
-                    .astype(str)
-                    .str.replace('R$', '')
-                    .str.replace('R$ ', '')
-                    .str.replace('.', '')
-                    .str.replace(',', '.')
-                    .str.replace(' ', '')
-                    .astype(float)
-                )
-            else:
-                df_processed['Valor_Limpo'] = df_processed['Valor'].astype(float)
-                
-        except Exception as e:
-            st.warning(f"⚠️ Erro ao processar valores: {str(e)}")
-            df_processed['Valor_Limpo'] = 0.0
+    colunas_valor = ['Valor', 'Valor_Pago', 'Valor Pagamento']
+    
+    for coluna_valor in colunas_valor:
+        if coluna_valor in df_processed.columns:
+            try:
+                if df_processed[coluna_valor].dtype == 'object':
+                    df_processed['Valor_Limpo'] = (
+                        df_processed[coluna_valor]
+                        .astype(str)
+                        .str.replace('R$', '')
+                        .str.replace('R$ ', '')
+                        .str.replace('.', '')
+                        .str.replace(',', '.')
+                        .str.replace(' ', '')
+                        .astype(float)
+                    )
+                else:
+                    df_processed['Valor_Limpo'] = df_processed[coluna_valor].astype(float)
+                    
+            except Exception as e:
+                st.warning(f"⚠️ Erro ao processar valores da coluna '{coluna_valor}': {str(e)}")
+                df_processed['Valor_Limpo'] = 0.0
+            break  # Usar apenas a primeira coluna de valor encontrada
     
     return df_processed
 
-# FUNÇÃO MELHORADA: Analisar ausência de dados considerando apenas pagamentos válidos
+# FUNÇÃO MELHORADA: Analisar ausência de dados
 def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_contas=None):
     """Analisa e reporta apenas dados críticos realmente ausentes com info da planilha original"""
     analise_ausencia = {
@@ -730,26 +774,15 @@ def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_co
                     registros_problematicos.append(idx)
         
         # 2. Valor ausente ou zero - APENAS SE A COLUNA EXISTIR - ESTE É CRÍTICO
-        if 'Valor' in df.columns:
+        if 'Valor_Limpo' in df.columns:
             mask_valor_invalido = (
-                df['Valor'].isna() | 
-                (df['Valor'].astype(str).str.strip() == '') |
+                df['Valor_Limpo'].isna() | 
                 (df['Valor_Limpo'] == 0)
             )
             valores_invalidos = df[mask_valor_invalido]
             for idx in valores_invalidos.index:
                 if idx not in registros_problematicos:
                     registros_problematicos.append(idx)
-        
-        # CORREÇÃO: CPF AUSENTE NÃO É MAIS CONSIDERADO CRÍTICO - APENAS PRECISA DE AJUSTE
-        # 3. CPF COMPLETAMENTE AUSENTE - APENAS SE A COLUNA EXISTIR - AGORA É "PRECISA DE AJUSTE"
-        if 'CPF' in df.columns:
-            mask_cpf_ausente = (
-                df['CPF'].isna() | 
-                (df['CPF'].astype(str).str.strip() == '')
-            )
-            cpfs_ausentes = df[mask_cpf_ausente]
-            # NÃO adicionamos aos registros problemáticos críticos - apenas marcamos para ajuste
         
         # Atualizar análise
         analise_ausencia['registros_criticos_problematicos'] = registros_problematicos
@@ -759,7 +792,7 @@ def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_co
             analise_ausencia['registros_problema_detalhados'] = df.loc[registros_problematicos].copy()
         
         # Analisar ausência por coluna crítica - APENAS COLUNAS EXISTENTES
-        colunas_criticas = ['Num Cartao', 'Num_Cartao', 'Valor']  # REMOVIDO CPF DAS COLUNAS CRÍTICAS
+        colunas_criticas = ['Num Cartao', 'Num_Cartao', 'Conta', 'Valor_Limpo']
         for coluna in colunas_criticas:
             if coluna in df.columns:
                 mask_ausente = (
@@ -821,7 +854,7 @@ def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_co
                 if coluna_conta and (pd.isna(registro[coluna_conta]) or str(registro[coluna_conta]).strip() == ''):
                     problemas.append('Número da conta ausente')
                 
-                if 'Valor' in df.columns and (pd.isna(registro['Valor']) or registro.get('Valor_Limpo', 0) == 0):
+                if 'Valor_Limpo' in df.columns and (pd.isna(registro['Valor_Limpo']) or registro.get('Valor_Limpo', 0) == 0):
                     problemas.append('Valor ausente ou zero')
                 
                 info_ausencia['Problemas_Identificados'] = ', '.join(problemas) if problemas else 'Dados OK'
@@ -1118,6 +1151,64 @@ def criar_dashboard_evolucao(conn, periodo='mensal'):
         'dados': metricas
     }
 
+def criar_dashboard_estatisticas(metrics, dados):
+    """Cria dashboard com estatísticas detalhadas dos dados atuais"""
+    if 'pagamentos' not in dados or dados['pagamentos'].empty:
+        return None
+    
+    df = dados['pagamentos']
+    
+    # Gráfico de distribuição de valores
+    fig_valores = px.histogram(
+        df, 
+        x='Valor_Limpo' if 'Valor_Limpo' in df.columns else 'Valor',
+        title='Distribuição de Valores dos Pagamentos',
+        labels={'Valor_Limpo': 'Valor (R$)', 'count': 'Quantidade'},
+        nbins=20
+    )
+    
+    # Gráfico de projetos (se disponível)
+    if 'Projeto' in df.columns:
+        projetos_count = df['Projeto'].value_counts().head(10)
+        fig_projetos = px.bar(
+            x=projetos_count.index,
+            y=projetos_count.values,
+            title='Top 10 Projetos por Quantidade de Pagamentos',
+            labels={'x': 'Projeto', 'y': 'Quantidade de Pagamentos'}
+        )
+    else:
+        fig_projetos = None
+    
+    # Gráfico de status (se disponível)
+    if 'Status' in df.columns:
+        status_count = df['Status'].value_counts()
+        fig_status = px.pie(
+            values=status_count.values,
+            names=status_count.index,
+            title='Distribuição por Status'
+        )
+    else:
+        fig_status = None
+    
+    # Métricas estatísticas
+    if 'Valor_Limpo' in df.columns:
+        estatisticas_valores = {
+            'Média': df['Valor_Limpo'].mean(),
+            'Mediana': df['Valor_Limpo'].median(),
+            'Desvio Padrão': df['Valor_Limpo'].std(),
+            'Valor Mínimo': df['Valor_Limpo'].min(),
+            'Valor Máximo': df['Valor_Limpo'].max()
+        }
+    else:
+        estatisticas_valores = {}
+    
+    return {
+        'valores': fig_valores,
+        'projetos': fig_projetos,
+        'status': fig_status,
+        'estatisticas': estatisticas_valores
+    }
+
 def gerar_relatorio_comparativo(conn, periodo):
     """Gera relatório comparativo entre períodos"""
     metricas = carregar_metricas_db(conn, 'pagamentos', periodo)
@@ -1365,7 +1456,7 @@ def gerar_planilha_ajustes(metrics, tipo_relatorio='pagamentos'):
     
     return output.getvalue()
 
-# Sistema de upload de dados MELHORADO: capturar nomes dos arquivos
+# Sistema de upload de dados MELHORADO
 def carregar_dados(conn):
     st.sidebar.header("📤 Carregar Dados Mensais")
     
@@ -1415,7 +1506,7 @@ def carregar_dados(conn):
             # Guardar versão original e versão sem totais
             dados['pagamentos_original'] = df_pagamentos.copy()
             
-            # Remover linha de totais antes do processamento - SEMPRE REMOVE
+            # Remover linha de totais antes do processamento
             df_pagamentos_sem_totais = remover_linha_totais(df_pagamentos)
             dados['pagamentos'] = df_pagamentos_sem_totais
             
@@ -1506,11 +1597,12 @@ def main():
     tem_dados_contas = 'contas' in dados and not dados['contas'].empty
     
     # Abas principais do sistema
-    tab_principal, tab_dashboard, tab_relatorios, tab_historico = st.tabs([
+    tab_principal, tab_dashboard, tab_relatorios, tab_historico, tab_estatisticas = st.tabs([
         "📊 Análise Mensal", 
         "📈 Dashboard Evolutivo", 
         "📋 Relatórios Comparativos", 
-        "🗃️ Dados Históricos"
+        "🗃️ Dados Históricos",
+        "📊 Estatísticas Detalhadas"
     ])
     
     with tab_principal:
@@ -1915,6 +2007,45 @@ def main():
                             )
         else:
             st.info(f"ℹ️ Não há dados históricos de {tipo_dados.lower()} no sistema.")
+    
+    with tab_estatisticas:
+        st.header("📊 Estatísticas Detalhadas")
+        
+        if tem_dados_pagamentos:
+            dashboard_estatisticas = criar_dashboard_estatisticas(metrics, dados)
+            
+            if dashboard_estatisticas:
+                # Gráfico de distribuição de valores
+                st.subheader("Distribuição de Valores")
+                st.plotly_chart(dashboard_estatisticas['valores'], use_container_width=True)
+                
+                # Gráficos de projetos e status
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    if dashboard_estatisticas['projetos']:
+                        st.plotly_chart(dashboard_estatisticas['projetos'], use_container_width=True)
+                
+                with col2:
+                    if dashboard_estatisticas['status']:
+                        st.plotly_chart(dashboard_estatisticas['status'], use_container_width=True)
+                
+                # Estatísticas descritivas
+                if dashboard_estatisticas['estatisticas']:
+                    st.subheader("Estatísticas Descritivas dos Valores")
+                    estat_df = pd.DataFrame.from_dict(
+                        dashboard_estatisticas['estatisticas'], 
+                        orient='index', 
+                        columns=['Valor']
+                    )
+                    estat_df['Valor Formatado'] = estat_df['Valor'].apply(
+                        lambda x: formatar_brasileiro(x, 'monetario') if 'Valor' in estat_df.index[estat_df.index.get_loc(x)] else formatar_brasileiro(x)
+                    )
+                    st.dataframe(estat_df[['Valor Formatado']])
+            else:
+                st.info("ℹ️ Não há dados suficientes para gerar estatísticas detalhadas.")
+        else:
+            st.info("ℹ️ Carregue dados de pagamentos para visualizar estatísticas detalhadas.")
 
     # Fechar conexão com o banco de dados
     conn.close()
