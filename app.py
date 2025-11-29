@@ -1262,4 +1262,21 @@ def main():
                 with st.spinner("Gerando relatório PDF..."):
                     pdf_bytes = gerar_pdf_executivo(dados, metrics, nomes_arquivos)
                     if pdf_bytes:
-                        st.success("✅ Relatório PDF
+                        st.success("✅ Relatório PDF gerado com sucesso!")
+                        b64 = base64.b64encode(pdf_bytes).decode()
+                        href = f'<a href="data:application/pdf;base64,{b64}" download="relatorio_pot_{data_hora_arquivo_brasilia()}.pdf">📥 Baixar Relatório PDF</a>'
+                        st.markdown(href, unsafe_allow_html=True)
+        
+        with col2:
+            st.subheader("Dados Completos (Excel)")
+            if st.button("📊 Gerar Excel Completo"):
+                with st.spinner("Gerando arquivo Excel..."):
+                    excel_bytes = gerar_excel_completo(dados, metrics)
+                    if excel_bytes:
+                        st.success("✅ Arquivo Excel gerado com sucesso!")
+                        b64 = base64.b64encode(excel_bytes).decode()
+                        href = f'<a href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}" download="dados_pot_{data_hora_arquivo_brasilia()}.xlsx">📥 Baixar Excel Completo</a>'
+                        st.markdown(href, unsafe_allow_html=True)
+
+if __name__ == "__main__":
+    main()
