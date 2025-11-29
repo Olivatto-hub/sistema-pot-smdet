@@ -1151,6 +1151,7 @@ def criar_dashboard_evolucao(conn, periodo='mensal'):
         'dados': metricas
     }
 
+# FUNÇÃO CORRIGIDA: Criar dashboard de estatísticas
 def criar_dashboard_estatisticas(metrics, dados):
     """Cria dashboard com estatísticas detalhadas dos dados atuais"""
     if 'pagamentos' not in dados or dados['pagamentos'].empty:
@@ -1158,56 +1159,71 @@ def criar_dashboard_estatisticas(metrics, dados):
     
     df = dados['pagamentos']
     
-    # Gráfico de distribuição de valores
-    fig_valores = px.histogram(
-        df, 
-        x='Valor_Limpo' if 'Valor_Limpo' in df.columns else 'Valor',
-        title='Distribuição de Valores dos Pagamentos',
-        labels={'Valor_Limpo': 'Valor (R$)', 'count': 'Quantidade'},
-        nbins=20
-    )
+    # Verificar se temos dados válidos para gráficos
+    dashboard_data = {}
+    
+    # Gráfico de distribuição de valores (se disponível)
+    if 'Valor_Limpo' in df.columns and not df['Valor_Limpo'].empty:
+        try:
+            # Filtrar valores válidos e positivos
+            valores_validos = df[df['Valor_Limpo'] > 0]['Valor_Limpo']
+            if len(valores_validos) > 0:
+                fig_valores = px.histogram(
+                    x=valores_validos,
+                    title='Distribuição de Valores dos Pagamentos',
+                    labels={'x': 'Valor (R$)', 'y': 'Quantidade'},
+                    nbins=20
+                )
+                dashboard_data['valores'] = fig_valores
+        except Exception as e:
+            st.warning(f"Não foi possível criar gráfico de distribuição de valores: {e}")
     
     # Gráfico de projetos (se disponível)
-    if 'Projeto' in df.columns:
-        projetos_count = df['Projeto'].value_counts().head(10)
-        fig_projetos = px.bar(
-            x=projetos_count.index,
-            y=projetos_count.values,
-            title='Top 10 Projetos por Quantidade de Pagamentos',
-            labels={'x': 'Projeto', 'y': 'Quantidade de Pagamentos'}
-        )
-    else:
-        fig_projetos = None
+    if 'Projeto' in df.columns and not df['Projeto'].empty:
+        try:
+            projetos_count = df['Projeto'].value_counts().head(10)
+            if len(projetos_count) > 0:
+                fig_projetos = px.bar(
+                    x=projetos_count.index,
+                    y=projetos_count.values,
+                    title='Top 10 Projetos por Quantidade de Pagamentos',
+                    labels={'x': 'Projeto', 'y': 'Quantidade de Pagamentos'}
+                )
+                dashboard_data['projetos'] = fig_projetos
+        except Exception as e:
+            st.warning(f"Não foi possível criar gráfico de projetos: {e}")
     
     # Gráfico de status (se disponível)
-    if 'Status' in df.columns:
-        status_count = df['Status'].value_counts()
-        fig_status = px.pie(
-            values=status_count.values,
-            names=status_count.index,
-            title='Distribuição por Status'
-        )
-    else:
-        fig_status = None
+    if 'Status' in df.columns and not df['Status'].empty:
+        try:
+            status_count = df['Status'].value_counts()
+            if len(status_count) > 0:
+                fig_status = px.pie(
+                    values=status_count.values,
+                    names=status_count.index,
+                    title='Distribuição por Status'
+                )
+                dashboard_data['status'] = fig_status
+        except Exception as e:
+            st.warning(f"Não foi possível criar gráfico de status: {e}")
     
     # Métricas estatísticas
-    if 'Valor_Limpo' in df.columns:
-        estatisticas_valores = {
-            'Média': df['Valor_Limpo'].mean(),
-            'Mediana': df['Valor_Limpo'].median(),
-            'Desvio Padrão': df['Valor_Limpo'].std(),
-            'Valor Mínimo': df['Valor_Limpo'].min(),
-            'Valor Máximo': df['Valor_Limpo'].max()
-        }
-    else:
-        estatisticas_valores = {}
+    if 'Valor_Limpo' in df.columns and not df['Valor_Limpo'].empty:
+        try:
+            valores_validos = df[df['Valor_Limpo'] > 0]['Valor_Limpo']
+            if len(valores_validos) > 0:
+                estatisticas_valores = {
+                    'Média': valores_validos.mean(),
+                    'Mediana': valores_validos.median(),
+                    'Desvio Padrão': valores_validos.std(),
+                    'Valor Mínimo': valores_validos.min(),
+                    'Valor Máximo': valores_validos.max()
+                }
+                dashboard_data['estatisticas'] = estatisticas_valores
+        except Exception as e:
+            st.warning(f"Não foi possível calcular estatísticas: {e}")
     
-    return {
-        'valores': fig_valores,
-        'projetos': fig_projetos,
-        'status': fig_status,
-        'estatisticas': estatisticas_valores
-    }
+    return dashboard_data
 
 def gerar_relatorio_comparativo(conn, periodo):
     """Gera relatório comparativo entre períodos"""
@@ -2016,22 +2032,23 @@ def main():
             
             if dashboard_estatisticas:
                 # Gráfico de distribuição de valores
-                st.subheader("Distribuição de Valores")
-                st.plotly_chart(dashboard_estatisticas['valores'], use_container_width=True)
+                if 'valores' in dashboard_estatisticas:
+                    st.subheader("Distribuição de Valores")
+                    st.plotly_chart(dashboard_estatisticas['valores'], use_container_width=True)
                 
                 # Gráficos de projetos e status
                 col1, col2 = st.columns(2)
                 
                 with col1:
-                    if dashboard_estatisticas['projetos']:
+                    if 'projetos' in dashboard_estatisticas:
                         st.plotly_chart(dashboard_estatisticas['projetos'], use_container_width=True)
                 
                 with col2:
-                    if dashboard_estatisticas['status']:
+                    if 'status' in dashboard_estatisticas:
                         st.plotly_chart(dashboard_estatisticas['status'], use_container_width=True)
                 
                 # Estatísticas descritivas
-                if dashboard_estatisticas['estatisticas']:
+                if 'estatisticas' in dashboard_estatisticas:
                     st.subheader("Estatísticas Descritivas dos Valores")
                     estat_df = pd.DataFrame.from_dict(
                         dashboard_estatisticas['estatisticas'], 
@@ -2039,7 +2056,7 @@ def main():
                         columns=['Valor']
                     )
                     estat_df['Valor Formatado'] = estat_df['Valor'].apply(
-                        lambda x: formatar_brasileiro(x, 'monetario') if 'Valor' in estat_df.index[estat_df.index.get_loc(x)] else formatar_brasileiro(x)
+                        lambda x: formatar_brasileiro(x, 'monetario') if x > 1000 else formatar_brasileiro(x)
                     )
                     st.dataframe(estat_df[['Valor Formatado']])
             else:
