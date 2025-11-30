@@ -73,11 +73,31 @@ def init_database():
         )
     ''')
     
+    # Tabela para usuários autorizados
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS usuarios (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT UNIQUE NOT NULL,
+            nome TEXT NOT NULL,
+            tipo TEXT NOT NULL DEFAULT 'usuario',
+            data_criacao TEXT NOT NULL,
+            ativo INTEGER DEFAULT 1
+        )
+    ''')
+    
     # Verificar e adicionar colunas faltantes
     try:
         conn.execute("SELECT cpfs_ajuste FROM metricas_mensais LIMIT 1")
     except sqlite3.OperationalError:
         conn.execute("ALTER TABLE metricas_mensais ADD COLUMN cpfs_ajuste INTEGER")
+    
+    # Inserir administrador padrão se não existir
+    cursor = conn.execute("SELECT * FROM usuarios WHERE email = 'admin@prefeitura.sp.gov.br'")
+    if cursor.fetchone() is None:
+        conn.execute('''
+            INSERT INTO usuarios (email, nome, tipo, data_criacao, ativo)
+            VALUES (?, ?, ?, ?, ?)
+        ''', ('admin@prefeitura.sp.gov.br', 'Administrador', 'admin', data_hora_atual_brasilia(), 1))
     
     conn.commit()
     return conn
@@ -89,6 +109,7 @@ def hash_senha(senha):
 
 # Senha autorizada (Smdetpot2025)
 SENHA_AUTORIZADA_HASH = hash_senha("Smdetpot2025")
+SENHA_ADMIN_HASH = hash_senha("AdminSmdet2025")
 
 # Função para obter data/hora no fuso horário de Brasília (São Paulo)
 def agora_brasilia():
@@ -108,8 +129,19 @@ def data_hora_arquivo_brasilia():
     """Retorna a data e hora atual no formato para nome de arquivo no fuso de Brasília"""
     return agora_brasilia().strftime("%Y%m%d_%H%M")
 
-# Sistema de autenticação seguro MELHORADO
-def autenticar():
+# SISTEMA DE AUTENTICAÇÃO MELHORADO
+def verificar_usuario_autorizado(conn, email):
+    """Verifica se o usuário está autorizado no banco de dados"""
+    cursor = conn.execute("SELECT * FROM usuarios WHERE email = ? AND ativo = 1", (email,))
+    return cursor.fetchone() is not None
+
+def obter_tipo_usuario(conn, email):
+    """Obtém o tipo do usuário (admin ou usuario)"""
+    cursor = conn.execute("SELECT tipo FROM usuarios WHERE email = ? AND ativo = 1", (email,))
+    resultado = cursor.fetchone()
+    return resultado[0] if resultado else None
+
+def autenticar(conn):
     st.sidebar.title("Sistema POT - SMDET")
     st.sidebar.markdown("**Prefeitura de São Paulo**")
     st.sidebar.markdown("**Secretaria Municipal do Desenvolvimento Econômico e Trabalho**")
@@ -124,22 +156,28 @@ def autenticar():
         st.session_state.bloqueado = False
     if 'email_autorizado' not in st.session_state:
         st.session_state.email_autorizado = None
+    if 'tipo_usuario' not in st.session_state:
+        st.session_state.tipo_usuario = None
     
     # Verificar se está bloqueado
     if st.session_state.bloqueado:
         st.sidebar.error("🚫 Sistema temporariamente bloqueado. Tente novamente mais tarde.")
-        return None
+        return None, None
     
     # Se já está autenticado, mostrar informações
     if st.session_state.autenticado and st.session_state.email_autorizado:
+        tipo_usuario = "👑 Administrador" if st.session_state.tipo_usuario == 'admin' else "👤 Usuário"
         st.sidebar.success(f"✅ Acesso autorizado")
-        st.sidebar.info(f"👤 {st.session_state.email_autorizado}")
+        st.sidebar.info(f"{tipo_usuario}: {st.session_state.email_autorizado}")
+        
         if st.sidebar.button("🚪 Sair"):
             st.session_state.autenticado = False
             st.session_state.email_autorizado = None
+            st.session_state.tipo_usuario = None
             st.session_state.tentativas_login = 0
             st.rerun()
-        return st.session_state.email_autorizado
+        
+        return st.session_state.email_autorizado, st.session_state.tipo_usuario
     
     # Formulário de login
     with st.sidebar.form("login_form"):
@@ -155,13 +193,27 @@ def autenticar():
             elif not email.endswith('@prefeitura.sp.gov.br'):
                 st.sidebar.error("🚫 Acesso restrito aos servidores da Prefeitura de São Paulo")
                 st.session_state.tentativas_login += 1
-            elif hash_senha(senha) != SENHA_AUTORIZADA_HASH:
-                st.sidebar.error("❌ Senha incorreta")
+            elif not verificar_usuario_autorizado(conn, email):
+                st.sidebar.error("🚫 Usuário não autorizado. Contate o administrador.")
                 st.session_state.tentativas_login += 1
+            elif hash_senha(senha) != SENHA_AUTORIZADA_HASH:
+                # Verificar se é admin tentando login
+                if email == 'admin@prefeitura.sp.gov.br' and hash_senha(senha) == SENHA_ADMIN_HASH:
+                    # Login de admin bem-sucedido
+                    st.session_state.autenticado = True
+                    st.session_state.email_autorizado = email
+                    st.session_state.tipo_usuario = 'admin'
+                    st.session_state.tentativas_login = 0
+                    st.sidebar.success("✅ Login de administrador realizado com sucesso!")
+                    st.rerun()
+                else:
+                    st.sidebar.error("❌ Senha incorreta")
+                    st.session_state.tentativas_login += 1
             else:
-                # Login bem-sucedido
+                # Login de usuário normal bem-sucedido
                 st.session_state.autenticado = True
                 st.session_state.email_autorizado = email
+                st.session_state.tipo_usuario = obter_tipo_usuario(conn, email)
                 st.session_state.tentativas_login = 0
                 st.sidebar.success("✅ Login realizado com sucesso!")
                 st.rerun()
@@ -171,129 +223,224 @@ def autenticar():
                 st.session_state.bloqueado = True
                 st.sidebar.error("🚫 Muitas tentativas falhas. Sistema bloqueado temporariamente.")
     
-    return None
+    return None, None
 
-# FUNÇÃO MELHORADA: LIMPAR BANCO DE DADOS COMPLETAMENTE (ESCONDIDA)
-def limpar_banco_dados_completo(conn):
-    """Remove TODOS os dados do banco para recomeçar do zero - FUNÇÃO CRÍTICA"""
-    try:
-        # Esta função agora está mais escondida e requer confirmação explícita
-        with st.sidebar.expander("🚨 ÁREA DE ADMINISTRAÇÃO DO BANCO (APENAS PARA TESTES)", expanded=False):
-            st.error("**ATENÇÃO CRÍTICA:** Esta operação é IRREVERSÍVEL e deve ser usada APENAS durante testes!")
-            st.warning("""
-            **Efeitos desta operação:**
-            - ❌ Todos os dados de pagamentos serão PERDIDOS
-            - ❌ Todos os dados de inscrições serão PERDIDOS  
-            - ❌ Todas as métricas históricas serão PERDIDAS
-            - 🔄 O sistema recomeçará do ZERO
-            """)
-            
-            # Dupla confirmação
-            senha_confirmacao1 = st.text_input("Digite 'LIMPAR TUDO' para confirmar:", type="password", key="confirm1")
-            senha_confirmacao2 = st.text_input("Digite novamente 'LIMPAR TUDO':", type="password", key="confirm2")
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                botao_limpar = st.button("🗑️ LIMPAR TODOS OS DADOS", type="secondary", use_container_width=True)
-            with col2:
-                botao_cancelar = st.button("❌ Cancelar", use_container_width=True)
-            
-            if botao_limpar:
-                if senha_confirmacao1 == "LIMPAR TUDO" and senha_confirmacao2 == "LIMPAR TUDO":
-                    # Executar limpeza COMPLETA
-                    conn.execute("DELETE FROM pagamentos")
-                    conn.execute("DELETE FROM inscricoes")
-                    conn.execute("DELETE FROM metricas_mensais")
-                    
-                    # Reiniciar sequências de ID
-                    conn.execute("DELETE FROM sqlite_sequence WHERE name='pagamentos'")
-                    conn.execute("DELETE FROM sqlite_sequence WHERE name='inscricoes'") 
-                    conn.execute("DELETE FROM sqlite_sequence WHERE name='metricas_mensais'")
-                    
+# FUNÇÃO PARA GERENCIAR USUÁRIOS (APENAS ADMIN)
+def gerenciar_usuarios(conn):
+    """Interface para gerenciamento de usuários - APENAS ADMIN"""
+    st.header("👥 Gerenciamento de Usuários")
+    
+    # Listar usuários existentes
+    st.subheader("Usuários Cadastrados")
+    usuarios_df = pd.read_sql_query("SELECT id, email, nome, tipo, data_criacao, ativo FROM usuarios ORDER BY tipo, email", conn)
+    
+    if not usuarios_df.empty:
+        st.dataframe(usuarios_df, use_container_width=True)
+    else:
+        st.info("Nenhum usuário cadastrado.")
+    
+    # Adicionar novo usuário
+    st.subheader("Adicionar Novo Usuário")
+    
+    with st.form("adicionar_usuario"):
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            novo_email = st.text_input("Email institucional", placeholder="novo.usuario@prefeitura.sp.gov.br")
+            novo_nome = st.text_input("Nome completo")
+        
+        with col2:
+            novoTipo = st.selectbox("Tipo de usuário", ["usuario", "admin"])
+            ativo = st.checkbox("Usuário ativo", value=True)
+        
+        adicionar = st.form_submit_button("Adicionar Usuário")
+        
+        if adicionar:
+            if not novo_email or not novo_nome:
+                st.error("Preencha todos os campos obrigatórios.")
+            elif not novo_email.endswith('@prefeitura.sp.gov.br'):
+                st.error("O email deve ser institucional (@prefeitura.sp.gov.br).")
+            else:
+                try:
+                    conn.execute('''
+                        INSERT INTO usuarios (email, nome, tipo, data_criacao, ativo)
+                        VALUES (?, ?, ?, ?, ?)
+                    ''', (novo_email, novo_nome, novoTipo, data_hora_atual_brasilia(), 1 if ativo else 0))
                     conn.commit()
-                    
-                    st.success("✅ Banco de dados limpo COMPLETAMENTE!")
-                    st.info("🔄 Recarregue a página para começar novamente")
-                    # NÃO LIMPA A SESSÃO DE AUTENTICAÇÃO
-                    return True
-                else:
-                    st.error("❌ Confirmação incorreta. Operação cancelada.")
-                    return False
-            
-            if botao_cancelar:
-                st.info("Operação de limpeza cancelada.")
-                return False
+                    st.success(f"✅ Usuário {novo_email} adicionado com sucesso!")
+                    st.rerun()
+                except sqlite3.IntegrityError:
+                    st.error("❌ Este email já está cadastrado.")
+    
+    # Gerenciar usuários existentes
+    st.subheader("Gerenciar Usuários Existentes")
+    
+    if not usuarios_df.empty:
+        usuario_selecionado = st.selectbox("Selecione um usuário:", usuarios_df['email'].tolist())
+        usuario_info = usuarios_df[usuarios_df['email'] == usuario_selecionado].iloc[0]
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.write(f"**ID:** {usuario_info['id']}")
+            st.write(f"**Email:** {usuario_info['email']}")
+            st.write(f"**Nome:** {usuario_info['nome']}")
+        
+        with col2:
+            st.write(f"**Tipo:** {usuario_info['tipo']}")
+            st.write(f"**Data de criação:** {usuario_info['data_criacao']}")
+            st.write(f"**Status:** {'Ativo' if usuario_info['ativo'] else 'Inativo'}")
+        
+        col3, col4, col5 = st.columns(3)
+        
+        with col3:
+            if st.button("🔒 Tornar Admin", key="tornar_admin"):
+                conn.execute("UPDATE usuarios SET tipo = 'admin' WHERE email = ?", (usuario_selecionado,))
+                conn.commit()
+                st.success(f"✅ {usuario_selecionado} agora é administrador!")
+                st.rerun()
+        
+        with col4:
+            if st.button("👤 Tornar Usuário", key="tornar_usuario"):
+                conn.execute("UPDATE usuarios SET tipo = 'usuario' WHERE email = ?", (usuario_selecionado,))
+                conn.commit()
+                st.success(f"✅ {usuario_selecionado} agora é usuário normal!")
+                st.rerun()
+        
+        with col5:
+            if st.button("🗑️ Excluir Usuário", type="secondary"):
+                conn.execute("DELETE FROM usuarios WHERE email = ?", (usuario_selecionado,))
+                conn.commit()
+                st.success(f"✅ Usuário {usuario_selecionado} excluído!")
+                st.rerun()
+
+# FUNÇÃO MELHORADA: LIMPAR BANCO DE DADOS COMPLETAMENTE (APENAS ADMIN)
+def limpar_banco_dados_completo(conn, tipo_usuario):
+    """Remove TODOS os dados do banco para recomeçar do zero - APENAS ADMIN"""
+    
+    if tipo_usuario != 'admin':
+        st.error("🚫 Acesso negado. Apenas administradores podem executar esta operação.")
+        return False
+    
+    try:
+        st.error("**ATENÇÃO CRÍTICA:** Esta operação é IRREVERSÍVEL e deve ser usada APENAS durante testes!")
+        st.warning("""
+        **Efeitos desta operação:**
+        - ❌ Todos os dados de pagamentos serão PERDIDOS
+        - ❌ Todos os dados de inscrições serão PERDIDOS  
+        - ❌ Todas as métricas históricas serão PERDIDAS
+        - 🔄 O sistema recomeçará do ZERO
+        """)
+        
+        # Dupla confirmação
+        senha_confirmacao1 = st.text_input("Digite 'LIMPAR TUDO' para confirmar:", type="password", key="confirm1")
+        senha_confirmacao2 = st.text_input("Digite novamente 'LIMPAR TUDO':", type="password", key="confirm2")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            botao_limpar = st.button("🗑️ LIMPAR TODOS OS DADOS", type="secondary", use_container_width=True)
+        with col2:
+            botao_cancelar = st.button("❌ Cancelar", use_container_width=True)
+        
+        if botao_limpar:
+            if senha_confirmacao1 == "LIMPAR TUDO" and senha_confirmacao2 == "LIMPAR TUDO":
+                # Executar limpeza COMPLETA
+                conn.execute("DELETE FROM pagamentos")
+                conn.execute("DELETE FROM inscricoes")
+                conn.execute("DELETE FROM metricas_mensais")
                 
+                # Reiniciar sequências de ID
+                conn.execute("DELETE FROM sqlite_sequence WHERE name='pagamentos'")
+                conn.execute("DELETE FROM sqlite_sequence WHERE name='inscricoes'") 
+                conn.execute("DELETE FROM sqlite_sequence WHERE name='metricas_mensais'")
+                
+                conn.commit()
+                
+                st.success("✅ Banco de dados limpo COMPLETAMENTE!")
+                st.info("🔄 Recarregue a página para começar novamente")
+                return True
+            else:
+                st.error("❌ Confirmação incorreta. Operação cancelada.")
+                return False
+        
+        if botao_cancelar:
+            st.info("Operação de limpeza cancelada.")
+            return False
+            
     except Exception as e:
         st.error(f"❌ Erro ao limpar banco: {str(e)}")
         return False
 
-# FUNÇÃO PARA VISUALIZAR E EXCLUIR REGISTROS ESPECÍFICOS (ESCONDIDA)
-def gerenciar_registros(conn):
+# FUNÇÃO PARA VISUALIZAR E EXCLUIR REGISTROS ESPECÍFICOS (APENAS ADMIN)
+def gerenciar_registros(conn, tipo_usuario):
     """Permite visualizar e excluir registros específicos - APENAS ADMIN"""
+    
+    if tipo_usuario != 'admin':
+        st.error("🚫 Acesso negado. Apenas administradores podem executar esta operação.")
+        return
+    
     try:
-        with st.sidebar.expander("🔍 Gerenciar Registros (Admin)", expanded=False):
-            st.warning("Área administrativa - Use com cuidado!")
+        st.warning("Área administrativa - Use com cuidado!")
+        
+        # Selecionar tipo de dados
+        tipo_dados = st.selectbox("Tipo de dados:", ["Pagamentos", "Inscrições", "Métricas"])
+        
+        if tipo_dados == "Pagamentos":
+            dados = carregar_pagamentos_db(conn)
+        elif tipo_dados == "Inscrições":
+            dados = carregar_inscricoes_db(conn)
+        else:
+            dados = carregar_metricas_db(conn)
+        
+        if not dados.empty:
+            st.write(f"**Total de registros:** {len(dados)}")
             
-            # Selecionar tipo de dados
-            tipo_dados = st.selectbox("Tipo de dados:", ["Pagamentos", "Inscrições", "Métricas"])
-            
-            if tipo_dados == "Pagamentos":
-                dados = carregar_pagamentos_db(conn)
-            elif tipo_dados == "Inscrições":
-                dados = carregar_inscricoes_db(conn)
-            else:
-                dados = carregar_metricas_db(conn)
-            
-            if not dados.empty:
-                st.write(f"**Total de registros:** {len(dados)}")
+            # Mostrar resumo
+            if tipo_dados in ["Pagamentos", "Inscrições"]:
+                resumo = dados[['id', 'mes_referencia', 'ano_referencia', 'nome_arquivo', 'data_importacao']].copy()
+                st.dataframe(resumo.head(10))
                 
-                # Mostrar resumo
-                if tipo_dados in ["Pagamentos", "Inscrições"]:
-                    resumo = dados[['id', 'mes_referencia', 'ano_referencia', 'nome_arquivo', 'data_importacao']].copy()
-                    st.dataframe(resumo.head(10))
-                    
-                    # Opção de excluir por ID específico
-                    st.subheader("Excluir Registro Específico")
-                    id_excluir = st.number_input("ID do registro a excluir:", min_value=1, step=1)
-                    
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        if st.button("🗑️ Excluir por ID", type="secondary", use_container_width=True):
-                            if id_excluir:
-                                if tipo_dados == "Pagamentos":
-                                    conn.execute("DELETE FROM pagamentos WHERE id = ?", (int(id_excluir),))
-                                    # Excluir métricas correspondentes se existirem
-                                    registro = dados[dados['id'] == int(id_excluir)]
-                                    if not registro.empty:
-                                        mes = registro.iloc[0]['mes_referencia']
-                                        ano = registro.iloc[0]['ano_referencia']
-                                        conn.execute("DELETE FROM metricas_mensais WHERE mes_referencia = ? AND ano_referencia = ? AND tipo = 'pagamentos'", 
-                                                   (mes, ano))
-                                else:
-                                    conn.execute("DELETE FROM inscricoes WHERE id = ?", (int(id_excluir),))
-                                    # Excluir métricas correspondentes se existirem
-                                    registro = dados[dados['id'] == int(id_excluir)]
-                                    if not registro.empty:
-                                        mes = registro.iloc[0]['mes_referencia']
-                                        ano = registro.iloc[0]['ano_referencia']
-                                        conn.execute("DELETE FROM metricas_mensais WHERE mes_referencia = ? AND ano_referencia = ? AND tipo = 'inscricoes'", 
-                                                   (mes, ano))
-                                
-                                conn.commit()
-                                st.success(f"✅ Registro ID {id_excluir} excluído!")
-                                st.rerun()
-                    
-                    with col2:
-                        if st.button("🔄 Atualizar Lista", use_container_width=True):
+                # Opção de excluir por ID específico
+                st.subheader("Excluir Registro Específico")
+                id_excluir = st.number_input("ID do registro a excluir:", min_value=1, step=1)
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("🗑️ Excluir por ID", type="secondary", use_container_width=True):
+                        if id_excluir:
+                            if tipo_dados == "Pagamentos":
+                                conn.execute("DELETE FROM pagamentos WHERE id = ?", (int(id_excluir),))
+                                # Excluir métricas correspondentes se existirem
+                                registro = dados[dados['id'] == int(id_excluir)]
+                                if not registro.empty:
+                                    mes = registro.iloc[0]['mes_referencia']
+                                    ano = registro.iloc[0]['ano_referencia']
+                                    conn.execute("DELETE FROM metricas_mensais WHERE mes_referencia = ? AND ano_referencia = ? AND tipo = 'pagamentos'", 
+                                               (mes, ano))
+                            else:
+                                conn.execute("DELETE FROM inscricoes WHERE id = ?", (int(id_excluir),))
+                                # Excluir métricas correspondentes se existirem
+                                registro = dados[dados['id'] == int(id_excluir)]
+                                if not registro.empty:
+                                    mes = registro.iloc[0]['mes_referencia']
+                                    ano = registro.iloc[0]['ano_referencia']
+                                    conn.execute("DELETE FROM metricas_mensais WHERE mes_referencia = ? AND ano_referencia = ? AND tipo = 'inscricoes'", 
+                                               (mes, ano))
+                            
+                            conn.commit()
+                            st.success(f"✅ Registro ID {id_excluir} excluído!")
                             st.rerun()
                 
-                elif tipo_dados == "Métricas":
-                    st.dataframe(dados.head(10))
+                with col2:
+                    if st.button("🔄 Atualizar Lista", use_container_width=True):
+                        st.rerun()
             
-            else:
-                st.info("Nenhum registro encontrado.")
-                
+            elif tipo_dados == "Métricas":
+                st.dataframe(dados.head(10))
+        
+        else:
+            st.info("Nenhum registro encontrado.")
+            
     except Exception as e:
         st.error(f"Erro no gerenciamento: {str(e)}")
 
@@ -2260,7 +2407,7 @@ def main():
     conn = init_database()
     
     # Autenticação
-    email_autorizado = autenticar()
+    email_autorizado, tipo_usuario = autenticar(conn)
     
     # Se não está autenticado, não mostra o conteúdo principal
     if not email_autorizado:
@@ -2273,6 +2420,7 @@ def main():
         st.write("**Credenciais necessárias:**")
         st.write("- Email institucional @prefeitura.sp.gov.br")
         st.write("- Senha de acesso autorizada")
+        st.write("- Usuário cadastrado pelo administrador")
         return
     
     # A partir daqui, só usuários autenticados têm acesso
@@ -2378,20 +2526,28 @@ def main():
     else:
         st.sidebar.info("📊 Faça upload dos dados para gerar relatórios")
     
-    # ÁREAS ADMINISTRATIVAS
+    # ÁREAS ADMINISTRATIVAS - APENAS PARA ADMIN
     st.sidebar.markdown("---")
     
-    # Expander para funções administrativas
-    with st.sidebar.expander("⚙️ Administração do Sistema", expanded=False):
-        st.warning("**ÁREA RESTRITA** - Apenas para administradores do sistema")
-        
-        # Sub-expander para limpeza de dados
-        with st.expander("🚨 Limpeza do Banco de Dados (APENAS EM TESTES)", expanded=False):
-            limpar_banco_dados_completo(conn)
-        
-        # Sub-expander para gerenciamento de registros
-        with st.expander("🔍 Gerenciamento de Registros", expanded=False):
-            gerenciar_registros(conn)
+    if tipo_usuario == 'admin':
+        # Expander para funções administrativas
+        with st.sidebar.expander("⚙️ Administração do Sistema", expanded=False):
+            st.success("👑 **MODO ADMINISTRADOR**")
+            
+            # Sub-expander para gerenciamento de usuários
+            with st.expander("👥 Gerenciar Usuários", expanded=False):
+                if st.button("Abrir Gerenciador de Usuários"):
+                    st.session_state.gerenciar_usuarios = True
+            
+            # Sub-expander para limpeza de dados
+            with st.expander("🚨 Limpeza do Banco de Dados", expanded=False):
+                if st.button("Abrir Limpeza de Dados"):
+                    st.session_state.limpar_dados = True
+            
+            # Sub-expander para gerenciamento de registros
+            with st.expander("🔍 Gerenciamento de Registros", expanded=False):
+                if st.button("Abrir Gerenciador de Registros"):
+                    st.session_state.gerenciar_registros = True
     
     # Abas principais do sistema - TODAS IMPLEMENTADAS
     tab_principal, tab_dashboard, tab_relatorios, tab_historico, tab_estatisticas = st.tabs([
@@ -2401,6 +2557,29 @@ def main():
         "🗃️ Dados Históricos",
         "📊 Estatísticas Detalhadas"
     ])
+    
+    # Aba administrativa apenas para admin
+    if tipo_usuario == 'admin':
+        if hasattr(st.session_state, 'gerenciar_usuarios') and st.session_state.gerenciar_usuarios:
+            gerenciar_usuarios(conn)
+            if st.button("Voltar para Análise Principal"):
+                st.session_state.gerenciar_usuarios = False
+                st.rerun()
+            return
+        
+        if hasattr(st.session_state, 'limpar_dados') and st.session_state.limpar_dados:
+            limpar_banco_dados_completo(conn, tipo_usuario)
+            if st.button("Voltar para Análise Principal"):
+                st.session_state.limpar_dados = False
+                st.rerun()
+            return
+        
+        if hasattr(st.session_state, 'gerenciar_registros') and st.session_state.gerenciar_registros:
+            gerenciar_registros(conn, tipo_usuario)
+            if st.button("Voltar para Análise Principal"):
+                st.session_state.gerenciar_registros = False
+                st.rerun()
+            return
     
     with tab_principal:
         if not tem_dados_pagamentos and not tem_dados_contas:
