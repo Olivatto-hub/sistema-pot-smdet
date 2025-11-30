@@ -1245,10 +1245,88 @@ def processar_dados(dados, nomes_arquivos=None):
     
     return metrics
 
-# FUNÇÃO MELHORADA: Gerar PDF Executivo COM DADOS COMPLETOS DOS REGISTROS
+# CLASSE PDF MELHORADA COM TABELAS
+class PDFWithTables(FPDF):
+    def __init__(self):
+        super().__init__()
+        self.set_auto_page_break(auto=True, margin=15)
+    
+    def add_table_header(self, headers, col_widths):
+        """Adiciona cabeçalho da tabela"""
+        self.set_fill_color(200, 200, 200)
+        self.set_font('Arial', 'B', 10)
+        for i, header in enumerate(headers):
+            self.cell(col_widths[i], 10, header, 1, 0, 'C', True)
+        self.ln()
+    
+    def add_table_row(self, data, col_widths, row_height=10):
+        """Adiciona linha da tabela com quebra de texto"""
+        self.set_font('Arial', '', 8)
+        
+        # Calcular altura necessária para a linha
+        max_lines = 1
+        for i, cell_data in enumerate(data):
+            if cell_data:
+                text_width = self.get_string_width(str(cell_data))
+                available_width = col_widths[i] - 2  # Margem interna
+                if text_width > available_width:
+                    lines = self._split_text(str(cell_data), available_width)
+                    max_lines = max(max_lines, len(lines))
+        
+        # Desenhar células
+        y_start = self.get_y()
+        for i, cell_data in enumerate(data):
+            x = self.get_x()
+            y = y_start
+            
+            if cell_data:
+                text_width = self.get_string_width(str(cell_data))
+                available_width = col_widths[i] - 2
+                
+                if text_width <= available_width:
+                    # Texto cabe em uma linha
+                    self.set_xy(x, y)
+                    self.cell(col_widths[i], row_height, str(cell_data), 1, 0, 'L')
+                else:
+                    # Texto precisa de múltiplas linhas
+                    lines = self._split_text(str(cell_data), available_width)
+                    for j, line in enumerate(lines):
+                        self.set_xy(x, y + (j * row_height/2))
+                        self.cell(col_widths[i], row_height/2, line, 1, 0, 'L')
+            
+            else:
+                self.set_xy(x, y)
+                self.cell(col_widths[i], row_height, '', 1, 0, 'L')
+            
+            self.set_xy(x + col_widths[i], y_start)
+        
+        # Mover para próxima linha
+        self.set_y(y_start + (max_lines * row_height/2))
+    
+    def _split_text(self, text, max_width):
+        """Divide texto em múltiplas linhas para caber na célula"""
+        words = text.split(' ')
+        lines = []
+        current_line = []
+        
+        for word in words:
+            test_line = ' '.join(current_line + [word])
+            if self.get_string_width(test_line) < max_width:
+                current_line.append(word)
+            else:
+                if current_line:
+                    lines.append(' '.join(current_line))
+                current_line = [word]
+        
+        if current_line:
+            lines.append(' '.join(current_line))
+        
+        return lines
+
+# FUNÇÃO MELHORADA: Gerar PDF Executivo COM TABELAS ORGANIZADAS
 def gerar_pdf_executivo(metrics, dados, nomes_arquivos, tipo_relatorio='pagamentos'):
-    """Gera relatório executivo em PDF com todas as tabelas de problemas"""
-    pdf = FPDF()
+    """Gera relatório executivo em PDF com tabelas organizadas"""
+    pdf = PDFWithTables()
     pdf.add_page()
     
     # Configurar fonte
@@ -1345,75 +1423,94 @@ def gerar_pdf_executivo(metrics, dados, nomes_arquivos, tipo_relatorio='pagament
                 if cpfs_com_contas_diferentes:
                     pdf.cell(0, 10, f"    * {len(cpfs_com_contas_diferentes)} CPFs com contas diferentes", 0, 1)
             
-            pdf.ln(5)
+            pdf.ln(10)
             
-            # MELHORIA: TABELAS DETALHADAS COM DADOS COMPLETOS DOS REGISTROS
+            # TABELA PARA CPFs COM PROBLEMAS DE FORMATAÇÃO
             detalhes_cpfs_problematicos = problemas_cpf.get('detalhes_cpfs_problematicos', pd.DataFrame())
             if not detalhes_cpfs_problematicos.empty:
                 pdf.set_font("Arial", 'B', 12)
                 pdf.cell(0, 10, "CPFs com Problemas de Formatação:", 0, 1)
-                pdf.set_font("Arial", '', 10)
-                
-                # Adicionar tabela detalhada com dados completos
-                for idx, row in detalhes_cpfs_problematicos.head(20).iterrows():
-                    linha_texto = f"Linha {row['Linha_Planilha']}: "
-                    
-                    # Adicionar informações completas do registro
-                    if 'Nome' in row and pd.notna(row['Nome']):
-                        linha_texto += f"Nome: {row['Nome']}, "
-                    
-                    if 'Numero_Conta' in row and pd.notna(row['Numero_Conta']):
-                        linha_texto += f"Conta: {row['Numero_Conta']}, "
-                    
-                    if 'Projeto' in row and pd.notna(row['Projeto']):
-                        linha_texto += f"Projeto: {row['Projeto']}, "
-                    
-                    if 'Valor' in row and pd.notna(row['Valor']):
-                        linha_texto += f"Valor: {row['Valor']}, "
-                    
-                    # Informação específica do CPF
-                    if row['CPF_Original'] == '':
-                        linha_texto += "CPF: '' - CPF vazio"
-                    else:
-                        linha_texto += f"CPF: '{row['CPF_Original']}' - {row['Problemas_Formatacao']}"
-                    
-                    # Limitar o tamanho da linha para caber na página
-                    if len(linha_texto) > 120:
-                        linha_texto = linha_texto[:117] + "..."
-                    
-                    pdf.cell(0, 8, linha_texto, 0, 1)
-                
-                if len(detalhes_cpfs_problematicos) > 20:
-                    pdf.cell(0, 8, f"... e mais {len(detalhes_cpfs_problematicos) - 20} registros", 0, 1)
-                
                 pdf.ln(5)
+                
+                # Preparar dados para tabela
+                table_data = []
+                for idx, row in detalhes_cpfs_problematicos.head(15).iterrows():
+                    linha_data = [
+                        str(row.get('Linha_Planilha', '')),
+                        str(row.get('Nome', ''))[:30],  # Limitar tamanho do nome
+                        str(row.get('Numero_Conta', ''))[:15],
+                        str(row.get('Projeto', ''))[:20],
+                        str(row.get('CPF_Original', ''))[:15],
+                        str(row.get('Problemas_Formatacao', ''))
+                    ]
+                    table_data.append(linha_data)
+                
+                # Definir larguras das colunas
+                col_widths = [15, 40, 25, 30, 25, 55]
+                headers = ['Linha', 'Nome', 'Conta', 'Projeto', 'CPF', 'Problema']
+                
+                # Adicionar tabela
+                pdf.add_table_header(headers, col_widths)
+                for data_row in table_data:
+                    if pdf.get_y() > 250:  # Verificar se precisa de nova página
+                        pdf.add_page()
+                    pdf.add_table_row(data_row, col_widths, row_height=8)
+                
+                if len(detalhes_cpfs_problematicos) > 15:
+                    pdf.ln(5)
+                    pdf.set_font("Arial", 'I', 10)
+                    pdf.cell(0, 10, f"... e mais {len(detalhes_cpfs_problematicos) - 15} registros", 0, 1)
+                
+                pdf.ln(10)
             
+            # TABELA PARA CPFs COM INCONSISTÊNCIAS CRÍTICAS
             detalhes_inconsistencias = problemas_cpf.get('detalhes_inconsistencias', pd.DataFrame())
             if not detalhes_inconsistencias.empty:
+                # Verificar se precisa de nova página
+                if pdf.get_y() > 150:
+                    pdf.add_page()
+                
                 pdf.set_font("Arial", 'B', 12)
                 pdf.cell(0, 10, "CPFs com Inconsistências Críticas:", 0, 1)
-                pdf.set_font("Arial", '', 10)
+                pdf.ln(5)
                 
+                # Preparar dados para tabela
+                table_data = []
                 for idx, row in detalhes_inconsistencias.head(10).iterrows():
-                    linha_texto = f"CPF {row['CPF']} (Linha {row['Linha_Planilha']}): "
-                    
-                    if 'Nome' in row and pd.notna(row['Nome']):
-                        linha_texto += f"Nome: {row['Nome']}, "
-                    
-                    if 'Numero_Conta' in row and pd.notna(row['Numero_Conta']):
-                        linha_texto += f"Conta: {row['Numero_Conta']}, "
-                    
-                    linha_texto += f"{row['Problemas_Inconsistencia']}"
-                    
-                    pdf.cell(0, 8, linha_texto, 0, 1)
+                    linha_data = [
+                        str(row.get('CPF', ''))[:15],
+                        str(row.get('Linha_Planilha', '')),
+                        str(row.get('Ocorrencia_CPF', '')),
+                        str(row.get('Nome', ''))[:25],
+                        str(row.get('Numero_Conta', ''))[:15],
+                        str(row.get('Problemas_Inconsistencia', ''))[:40]
+                    ]
+                    table_data.append(linha_data)
+                
+                # Definir larguras das colunas
+                col_widths = [25, 15, 20, 35, 25, 50]
+                headers = ['CPF', 'Linha', 'Ocorrência', 'Nome', 'Conta', 'Problemas']
+                
+                # Adicionar tabela
+                pdf.add_table_header(headers, col_widths)
+                for data_row in table_data:
+                    if pdf.get_y() > 250:  # Verificar se precisa de nova página
+                        pdf.add_page()
+                    pdf.add_table_row(data_row, col_widths, row_height=8)
                 
                 if len(detalhes_inconsistencias) > 10:
-                    pdf.cell(0, 8, f"... e mais {len(detalhes_inconsistencias) - 10} registros", 0, 1)
+                    pdf.ln(5)
+                    pdf.set_font("Arial", 'I', 10)
+                    pdf.cell(0, 10, f"... e mais {len(detalhes_inconsistencias) - 10} registros", 0, 1)
                 
-                pdf.ln(5)
+                pdf.ln(10)
         
         total_registros_criticos = metrics.get('total_registros_criticos', 0)
         if total_registros_criticos > 0:
+            # Verificar se precisa de nova página
+            if pdf.get_y() > 150:
+                pdf.add_page()
+            
             pdf.set_font("Arial", 'B', 12)
             pdf.set_text_color(255, 165, 0)
             pdf.cell(0, 10, f"ATENÇÃO: {total_registros_criticos} registros com problemas críticos", 0, 1)
@@ -1423,27 +1520,35 @@ def gerar_pdf_executivo(metrics, dados, nomes_arquivos, tipo_relatorio='pagament
             if not resumo_ausencias.empty:
                 pdf.set_font("Arial", 'B', 12)
                 pdf.cell(0, 10, "Registros Críticos (sem conta ou valor):", 0, 1)
-                pdf.set_font("Arial", '', 10)
+                pdf.ln(5)
                 
+                # Preparar dados para tabela
+                table_data = []
                 for idx, row in resumo_ausencias.head(10).iterrows():
-                    linha_texto = f"Linha {row['Linha_Planilha']}: "
-                    
-                    # Adicionar informações disponíveis
-                    if 'Nome' in row and pd.notna(row['Nome']) and row['Nome'] != '':
-                        linha_texto += f"Nome: {row['Nome']}, "
-                    
-                    if 'CPF' in row and pd.notna(row['CPF']) and row['CPF'] != '':
-                        linha_texto += f"CPF: {row['CPF']}, "
-                    
-                    if 'Projeto' in row and pd.notna(row['Projeto']) and row['Projeto'] != '':
-                        linha_texto += f"Projeto: {row['Projeto']}, "
-                    
-                    linha_texto += f"Problemas: {row['Problemas_Identificados']}"
-                    
-                    pdf.cell(0, 8, linha_texto, 0, 1)
+                    linha_data = [
+                        str(row.get('Linha_Planilha', '')),
+                        str(row.get('Nome', ''))[:25],
+                        str(row.get('CPF', ''))[:15],
+                        str(row.get('Projeto', ''))[:20],
+                        str(row.get('Problemas_Identificados', ''))[:40]
+                    ]
+                    table_data.append(linha_data)
+                
+                # Definir larguras das colunas
+                col_widths = [15, 35, 25, 30, 65]
+                headers = ['Linha', 'Nome', 'CPF', 'Projeto', 'Problemas']
+                
+                # Adicionar tabela
+                pdf.add_table_header(headers, col_widths)
+                for data_row in table_data:
+                    if pdf.get_y() > 250:  # Verificar se precisa de nova página
+                        pdf.add_page()
+                    pdf.add_table_row(data_row, col_widths, row_height=8)
                 
                 if len(resumo_ausencias) > 10:
-                    pdf.cell(0, 8, f"... e mais {len(resumo_ausencias) - 10} registros", 0, 1)
+                    pdf.ln(5)
+                    pdf.set_font("Arial", 'I', 10)
+                    pdf.cell(0, 10, f"... e mais {len(resumo_ausencias) - 10} registros", 0, 1)
     
     return pdf.output(dest='S').encode('latin1')
 
