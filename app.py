@@ -170,52 +170,67 @@ def autenticar():
     
     return None
 
-# FUNÇÃO PARA LIMPAR BANCO DE DADOS
-def limpar_banco_dados(conn):
-    """Remove todos os dados do banco para recomeçar do zero"""
+# FUNÇÃO MELHORADA: LIMPAR BANCO DE DADOS COMPLETAMENTE
+def limpar_banco_dados_completo(conn):
+    """Remove TODOS os dados do banco para recomeçar do zero - FUNÇÃO CRÍTICA"""
     try:
-        # Confirmar com o usuário antes de limpar
-        st.sidebar.markdown("---")
-        st.sidebar.header("🗑️ Limpar Banco de Dados")
-        
-        with st.sidebar.expander("⚠️ ÁREA DE LIMPEZA (CLIQUE PARA EXPANDIR)"):
-            st.warning("**ATENÇÃO:** Esta operação é IRREVERSÍVEL!")
-            st.info("""
-            **Use esta função para:**
-            - Remover dados duplicados
-            - Recomeçar análises do zero
-            - Corrigir problemas de importação
+        # Esta função agora está mais escondida e requer confirmação explícita
+        with st.sidebar.expander("🚨 ÁREA DE ADMINISTRAÇÃO DO BANCO (APENAS PARA TESTES)", expanded=False):
+            st.error("**ATENÇÃO CRÍTICA:** Esta operação é IRREVERSÍVEL e deve ser usada APENAS durante testes!")
+            st.warning("""
+            **Efeitos desta operação:**
+            - ❌ Todos os dados de pagamentos serão PERDIDOS
+            - ❌ Todos os dados de inscrições serão PERDIDOS  
+            - ❌ Todas as métricas históricas serão PERDIDAS
+            - 🔄 O sistema recomeçará do ZERO
             """)
             
-            senha_confirmacao = st.text_input("Digite 'LIMPAR' para confirmar:", type="password")
-            botao_limpar = st.button("🚨 LIMPAR TODOS OS DADOS", type="secondary")
+            # Dupla confirmação
+            senha_confirmacao1 = st.text_input("Digite 'LIMPAR TUDO' para confirmar:", type="password", key="confirm1")
+            senha_confirmacao2 = st.text_input("Digite novamente 'LIMPAR TUDO':", type="password", key="confirm2")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                botao_limpar = st.button("🗑️ LIMPAR TODOS OS DADOS", type="secondary", use_container_width=True)
+            with col2:
+                botao_cancelar = st.button("❌ Cancelar", use_container_width=True)
             
             if botao_limpar:
-                if senha_confirmacao == "LIMPAR":
-                    # Executar limpeza
+                if senha_confirmacao1 == "LIMPAR TUDO" and senha_confirmacao2 == "LIMPAR TUDO":
+                    # Executar limpeza COMPLETA
                     conn.execute("DELETE FROM pagamentos")
                     conn.execute("DELETE FROM inscricoes")
                     conn.execute("DELETE FROM metricas_mensais")
+                    
+                    # Reiniciar sequências de ID
+                    conn.execute("DELETE FROM sqlite_sequence WHERE name='pagamentos'")
+                    conn.execute("DELETE FROM sqlite_sequence WHERE name='inscricoes'") 
+                    conn.execute("DELETE FROM sqlite_sequence WHERE name='metricas_mensais'")
+                    
                     conn.commit()
                     
-                    st.sidebar.success("✅ Banco de dados limpo com sucesso!")
-                    st.sidebar.info("🔄 Recarregue a página para começar novamente")
+                    st.success("✅ Banco de dados limpo COMPLETAMENTE!")
+                    st.info("🔄 Recarregue a página para começar novamente")
                     return True
                 else:
-                    st.sidebar.error("❌ Confirmação incorreta. Operação cancelada.")
+                    st.error("❌ Confirmação incorreta. Operação cancelada.")
                     return False
+            
+            if botao_cancelar:
+                st.info("Operação de limpeza cancelada.")
+                return False
+                
     except Exception as e:
-        st.sidebar.error(f"❌ Erro ao limpar banco: {str(e)}")
+        st.error(f"❌ Erro ao limpar banco: {str(e)}")
         return False
 
 # FUNÇÃO PARA VISUALIZAR E EXCLUIR REGISTROS ESPECÍFICOS
 def gerenciar_registros(conn):
-    """Permite visualizar e excluir registros específicos"""
+    """Permite visualizar e excluir registros específicos - APENAS ADMIN"""
     try:
-        st.sidebar.markdown("---")
-        st.sidebar.header("🔍 Gerenciar Registros")
-        
-        with st.sidebar.expander("Visualizar/Excluir Registros Específicos"):
+        with st.sidebar.expander("🔍 Gerenciar Registros (Admin)", expanded=False):
+            st.warning("Área administrativa - Use com cuidado!")
+            
             # Selecionar tipo de dados
             tipo_dados = st.selectbox("Tipo de dados:", ["Pagamentos", "Inscrições", "Métricas"])
             
@@ -231,35 +246,43 @@ def gerenciar_registros(conn):
                 
                 # Mostrar resumo
                 if tipo_dados in ["Pagamentos", "Inscrições"]:
-                    resumo = dados[['mes_referencia', 'ano_referencia', 'nome_arquivo', 'data_importacao']].copy()
+                    resumo = dados[['id', 'mes_referencia', 'ano_referencia', 'nome_arquivo', 'data_importacao']].copy()
                     st.dataframe(resumo.head(10))
                     
-                    # Opção de excluir por mês/ano
-                    st.subheader("Excluir por Período")
-                    meses_unicos = dados['mes_referencia'].unique()
-                    anos_unicos = dados['ano_referencia'].unique()
+                    # Opção de excluir por ID específico
+                    st.subheader("Excluir Registro Específico")
+                    id_excluir = st.number_input("ID do registro a excluir:", min_value=1, step=1)
                     
                     col1, col2 = st.columns(2)
                     with col1:
-                        mes_excluir = st.selectbox("Mês:", meses_unicos)
-                    with col2:
-                        ano_excluir = st.selectbox("Ano:", anos_unicos)
+                        if st.button("🗑️ Excluir por ID", type="secondary", use_container_width=True):
+                            if id_excluir:
+                                if tipo_dados == "Pagamentos":
+                                    conn.execute("DELETE FROM pagamentos WHERE id = ?", (int(id_excluir),))
+                                    # Excluir métricas correspondentes se existirem
+                                    registro = dados[dados['id'] == int(id_excluir)]
+                                    if not registro.empty:
+                                        mes = registro.iloc[0]['mes_referencia']
+                                        ano = registro.iloc[0]['ano_referencia']
+                                        conn.execute("DELETE FROM metricas_mensais WHERE mes_referencia = ? AND ano_referencia = ? AND tipo = 'pagamentos'", 
+                                                   (mes, ano))
+                                else:
+                                    conn.execute("DELETE FROM inscricoes WHERE id = ?", (int(id_excluir),))
+                                    # Excluir métricas correspondentes se existirem
+                                    registro = dados[dados['id'] == int(id_excluir)]
+                                    if not registro.empty:
+                                        mes = registro.iloc[0]['mes_referencia']
+                                        ano = registro.iloc[0]['ano_referencia']
+                                        conn.execute("DELETE FROM metricas_mensais WHERE mes_referencia = ? AND ano_referencia = ? AND tipo = 'inscricoes'", 
+                                                   (mes, ano))
+                                
+                                conn.commit()
+                                st.success(f"✅ Registro ID {id_excluir} excluído!")
+                                st.rerun()
                     
-                    if st.button("🗑️ Excluir Período Selecionado", type="secondary"):
-                        if tipo_dados == "Pagamentos":
-                            conn.execute("DELETE FROM pagamentos WHERE mes_referencia = ? AND ano_referencia = ?", 
-                                       (mes_excluir, ano_excluir))
-                        else:
-                            conn.execute("DELETE FROM inscricoes WHERE mes_referencia = ? AND ano_referencia = ?", 
-                                       (mes_excluir, ano_excluir))
-                        
-                        # Excluir métricas correspondentes
-                        conn.execute("DELETE FROM metricas_mensais WHERE mes_referencia = ? AND ano_referencia = ?", 
-                                   (mes_excluir, ano_excluir))
-                        
-                        conn.commit()
-                        st.success(f"✅ Período {mes_excluir}/{ano_excluir} excluído!")
-                        st.rerun()
+                    with col2:
+                        if st.button("🔄 Atualizar Lista", use_container_width=True):
+                            st.rerun()
                 
                 elif tipo_dados == "Métricas":
                     st.dataframe(dados.head(10))
@@ -268,7 +291,7 @@ def gerenciar_registros(conn):
                 st.info("Nenhum registro encontrado.")
                 
     except Exception as e:
-        st.sidebar.error(f"Erro no gerenciamento: {str(e)}")
+        st.error(f"Erro no gerenciamento: {str(e)}")
 
 # Funções de banco de dados
 def salvar_pagamentos_db(conn, mes_ref, ano_ref, nome_arquivo, dados_df, metadados):
@@ -940,7 +963,7 @@ def detectar_pagamentos_pendentes(dados):
 def processar_cpf(cpf):
     """Processa CPF, mantendo apenas números e completando com zeros à esquerda"""
     if pd.isna(cpf) or cpf in ['', 'NaN', 'None', 'nan', 'None', 'NULL']:
-        return ''  # Manter como string vazia para campos em branco
+        return ''  # Manver como string vazia para campos em branco
     
     cpf_str = str(cpf).strip()
     
@@ -1786,6 +1809,65 @@ def gerar_planilha_ajustes(metrics, tipo_relatorio='pagamentos'):
     
     return output.getvalue()
 
+# NOVA FUNÇÃO: Gerar CSV dos dados tratados por projeto
+def gerar_csv_dados_tratados(dados, tipo_dados='pagamentos'):
+    """Gera arquivos CSV com dados tratados, organizados por projeto"""
+    if tipo_dados == 'pagamentos' and 'pagamentos' in dados and not dados['pagamentos'].empty:
+        df = dados['pagamentos'].copy()
+        
+        # Adicionar coluna de projeto se não existir
+        if 'Projeto' not in df.columns:
+            df['Projeto'] = 'Geral'
+        
+        # Processar dados para CSV
+        df_csv = df.copy()
+        
+        # Garantir que todas as colunas importantes estejam presentes
+        colunas_padrao = ['CPF', 'Nome', 'Projeto', 'Valor_Limpo']
+        coluna_conta = obter_coluna_conta(df)
+        if coluna_conta:
+            colunas_padrao.insert(2, coluna_conta)
+        
+        # Selecionar apenas colunas que existem
+        colunas_finais = [col for col in colunas_padrao if col in df_csv.columns]
+        
+        # Adicionar outras colunas relevantes
+        colunas_adicionais = ['RG', 'Data', 'Status', 'Beneficiario', 'Beneficiário']
+        for col in colunas_adicionais:
+            if col in df_csv.columns and col not in colunas_finais:
+                colunas_finais.append(col)
+        
+        return df_csv[colunas_finais]
+    
+    elif tipo_dados == 'inscricoes' and 'contas' in dados and not dados['contas'].empty:
+        df = dados['contas'].copy()
+        
+        # Adicionar coluna de projeto se não existir
+        if 'Projeto' not in df.columns:
+            df['Projeto'] = 'Geral'
+        
+        # Processar dados para CSV
+        df_csv = df.copy()
+        
+        # Garantir que todas as colunas importantes estejam presentes
+        colunas_padrao = ['CPF', 'Nome', 'Projeto']
+        coluna_conta = obter_coluna_conta(df)
+        if coluna_conta:
+            colunas_padrao.insert(2, coluna_conta)
+        
+        # Selecionar apenas colunas que existem
+        colunas_finais = [col for col in colunas_padrao if col in df_csv.columns]
+        
+        # Adicionar outras colunas relevantes
+        colunas_adicionais = ['RG', 'Data', 'Status', 'Beneficiario', 'Beneficiário', 'Data_Abertura']
+        for col in colunas_adicionais:
+            if col in df_csv.columns and col not in colunas_finais:
+                colunas_finais.append(col)
+        
+        return df_csv[colunas_finais]
+    
+    return pd.DataFrame()
+
 # CORREÇÃO: Sistema de upload de dados com detecção automática de mês/ano
 def carregar_dados(conn):
     st.sidebar.header("📤 Carregar Dados Mensais")
@@ -1934,19 +2016,91 @@ def main():
     
     # A partir daqui, só usuários autenticados têm acesso
     
-    # NOVO: Adicionar funções de gerenciamento do banco de dados
-    limpar_banco_dados(conn)
-    gerenciar_registros(conn)
-    
-    st.sidebar.markdown("---")
-    
-    # Resto do código continua igual...
     # Carregar dados
     dados, nomes_arquivos, mes_ref, ano_ref = carregar_dados(conn)
     
     # Verificar se há dados para processar
     tem_dados_pagamentos = 'pagamentos' in dados and not dados['pagamentos'].empty
     tem_dados_contas = 'contas' in dados and not dados['contas'].empty
+    
+    # SEÇÃO MELHORADA: Download de Relatórios - AGORA MAIS VISÍVEL
+    st.sidebar.markdown("---")
+    st.sidebar.header("📥 EXPORTAR RELATÓRIOS")
+    
+    # Botões de download sempre visíveis
+    col1, col2 = st.sidebar.columns(2)
+    
+    with col1:
+        if tem_dados_pagamentos:
+            pdf_bytes = gerar_pdf_executivo({}, dados, nomes_arquivos, 'pagamentos')
+        else:
+            pdf_bytes = gerar_pdf_executivo({}, dados, nomes_arquivos, 'inscricoes')
+        
+        st.download_button(
+            label="📄 PDF Executivo",
+            data=pdf_bytes,
+            file_name=f"relatorio_executivo_pot_{mes_ref}_{ano_ref}_{data_hora_arquivo_brasilia()}.pdf",
+            mime="application/pdf",
+            use_container_width=True
+        )
+    
+    with col2:
+        if tem_dados_pagamentos:
+            excel_bytes = gerar_excel_completo({}, dados, 'pagamentos')
+        else:
+            excel_bytes = gerar_excel_completo({}, dados, 'inscricoes')
+        
+        st.download_button(
+            label="📊 Excel Completo",
+            data=excel_bytes,
+            file_name=f"analise_completa_pot_{mes_ref}_{ano_ref}_{data_hora_arquivo_brasilia()}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
+    
+    # NOVO: Botões para CSV dos dados tratados
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("💾 Dados Tratados (CSV)")
+    
+    col3, col4 = st.sidebar.columns(2)
+    
+    with col3:
+        if tem_dados_pagamentos:
+            csv_pagamentos = gerar_csv_dados_tratados(dados, 'pagamentos')
+            if not csv_pagamentos.empty:
+                st.download_button(
+                    label="📋 Pagamentos CSV",
+                    data=csv_pagamentos.to_csv(index=False, encoding='utf-8-sig'),
+                    file_name=f"pagamentos_tratados_{mes_ref}_{ano_ref}_{data_hora_arquivo_brasilia()}.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+    
+    with col4:
+        if tem_dados_contas:
+            csv_inscricoes = gerar_csv_dados_tratados(dados, 'inscricoes')
+            if not csv_inscricoes.empty:
+                st.download_button(
+                    label="📝 Inscrições CSV",
+                    data=csv_inscricoes.to_csv(index=False, encoding='utf-8-sig'),
+                    file_name=f"inscricoes_tratadas_{mes_ref}_{ano_ref}_{data_hora_arquivo_brasilia()}.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+    
+    # ÁREAS ADMINISTRATIVAS - AGORA MAIS ESCONDIDAS
+    st.sidebar.markdown("---")
+    st.sidebar.header("⚙️ Administração")
+    
+    # Aba expansível para funções administrativas
+    with st.sidebar.expander("🔧 Funções Administrativas (APENAS TESTES)", expanded=False):
+        st.warning("Estas funções devem ser usadas APENAS durante o período de testes")
+        
+        # Gerenciamento de registros
+        gerenciar_registros(conn)
+        
+        # Limpeza completa do banco
+        limpar_banco_dados_completo(conn)
     
     # Abas principais do sistema
     tab_principal, tab_dashboard, tab_relatorios, tab_historico, tab_estatisticas = st.tabs([
@@ -1996,51 +2150,6 @@ def main():
             # Informação sobre linha de totais removida
             if metrics.get('linha_totais_removida', False):
                 st.info(f"📝 **Nota:** Linha de totais da planilha foi identificada e excluída da análise ({metrics['total_registros_originais']} → {metrics['total_registros_sem_totais']} registros)")
-            
-            # SEÇÃO RESTAURADA: Download de Relatórios
-            st.sidebar.markdown("---")
-            st.sidebar.header("📥 Exportar Relatórios")
-            
-            col1, col2, col3 = st.sidebar.columns(3)
-            
-            with col1:
-                if tem_dados_pagamentos:
-                    pdf_bytes = gerar_pdf_executivo(metrics, dados, nomes_arquivos, 'pagamentos')
-                else:
-                    pdf_bytes = gerar_pdf_executivo(metrics, dados, nomes_arquivos, 'inscricoes')
-                
-                st.download_button(
-                    label="📄 PDF",
-                    data=pdf_bytes,
-                    file_name=f"relatorio_executivo_pot_{mes_ref}_{ano_ref}_{data_hora_arquivo_brasilia()}.pdf",
-                    mime="application/pdf"
-                )
-            
-            with col2:
-                if tem_dados_pagamentos:
-                    excel_bytes = gerar_excel_completo(metrics, dados, 'pagamentos')
-                else:
-                    excel_bytes = gerar_excel_completo(metrics, dados, 'inscricoes')
-                
-                st.download_button(
-                    label="📊 Excel",
-                    data=excel_bytes,
-                    file_name=f"analise_completa_pot_{mes_ref}_{ano_ref}_{data_hora_arquivo_brasilia()}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-            
-            with col3:
-                if tem_dados_pagamentos:
-                    ajustes_bytes = gerar_planilha_ajustes(metrics, 'pagamentos')
-                else:
-                    ajustes_bytes = gerar_planilha_ajustes(metrics, 'inscricoes')
-                
-                st.download_button(
-                    label="🔧 Ajustes",
-                    data=ajustes_bytes,
-                    file_name=f"plano_ajustes_pot_{mes_ref}_{ano_ref}_{data_hora_arquivo_brasilia()}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
             
             st.markdown("---")
             
