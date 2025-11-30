@@ -1245,7 +1245,7 @@ def processar_dados(dados, nomes_arquivos=None):
     
     return metrics
 
-# FUNÇÃO CORRIGIDA: Gerar PDF Executivo COM VERIFICAÇÃO DE MÉTRICAS
+# FUNÇÃO MELHORADA: Gerar PDF Executivo COM DADOS COMPLETOS DOS REGISTROS
 def gerar_pdf_executivo(metrics, dados, nomes_arquivos, tipo_relatorio='pagamentos'):
     """Gera relatório executivo em PDF com todas as tabelas de problemas"""
     pdf = FPDF()
@@ -1277,13 +1277,12 @@ def gerar_pdf_executivo(metrics, dados, nomes_arquivos, tipo_relatorio='pagament
         pdf.cell(0, 10, f"Planilha de Inscrições: {nomes_arquivos['contas']}", 0, 1)
     pdf.ln(10)
     
-    # Métricas principais - CORREÇÃO: VERIFICAR SE AS MÉTRICAS EXISTEM
+    # Métricas principais
     pdf.set_font("Arial", 'B', 14)
     pdf.cell(0, 10, "Métricas Principais", 0, 1)
     pdf.set_font("Arial", '', 12)
     
     if tipo_relatorio == 'pagamentos':
-        # CORREÇÃO: Usar get() para evitar KeyError
         metricas = [
             ("Total de Pagamentos", formatar_brasileiro(metrics.get('total_pagamentos', 0))),
             ("Beneficiários Únicos", formatar_brasileiro(metrics.get('beneficiarios_unicos', 0))),
@@ -1308,7 +1307,7 @@ def gerar_pdf_executivo(metrics, dados, nomes_arquivos, tipo_relatorio='pagament
     
     pdf.ln(10)
     
-    # Alertas e problemas - CORREÇÃO: VERIFICAR SE AS MÉTRICAS EXISTEM
+    # Alertas e problemas
     if tipo_relatorio == 'pagamentos':
         pdf.set_font("Arial", 'B', 14)
         pdf.cell(0, 10, "Alertas e Problemas Identificados", 0, 1)
@@ -1323,7 +1322,6 @@ def gerar_pdf_executivo(metrics, dados, nomes_arquivos, tipo_relatorio='pagament
             pdf.cell(0, 10, f"Valor total em duplicidades: {formatar_brasileiro(metrics.get('valor_total_duplicados', 0), 'monetario')}", 0, 1)
             pdf.ln(5)
         
-        # CORREÇÃO: VERIFICAR SE OS PROBLEMAS DE CPF EXISTEM
         problemas_cpf = metrics.get('problemas_cpf', {})
         total_cpfs_ajuste = metrics.get('total_cpfs_ajuste', 0)
         
@@ -1349,19 +1347,44 @@ def gerar_pdf_executivo(metrics, dados, nomes_arquivos, tipo_relatorio='pagament
             
             pdf.ln(5)
             
-            # CORREÇÃO: ADICIONANDO TABELAS DETALHADAS DOS PROBLEMAS DE CPF
+            # MELHORIA: TABELAS DETALHADAS COM DADOS COMPLETOS DOS REGISTROS
             detalhes_cpfs_problematicos = problemas_cpf.get('detalhes_cpfs_problematicos', pd.DataFrame())
             if not detalhes_cpfs_problematicos.empty:
                 pdf.set_font("Arial", 'B', 12)
                 pdf.cell(0, 10, "CPFs com Problemas de Formatação:", 0, 1)
                 pdf.set_font("Arial", '', 10)
                 
-                # Adicionar tabela de CPFs problemáticos
-                for idx, row in detalhes_cpfs_problematicos.head(10).iterrows():
-                    pdf.cell(0, 8, f"Linha {row['Linha_Planilha']}: CPF '{row['CPF_Original']}' - {row['Problemas_Formatacao']}", 0, 1)
+                # Adicionar tabela detalhada com dados completos
+                for idx, row in detalhes_cpfs_problematicos.head(20).iterrows():
+                    linha_texto = f"Linha {row['Linha_Planilha']}: "
+                    
+                    # Adicionar informações completas do registro
+                    if 'Nome' in row and pd.notna(row['Nome']):
+                        linha_texto += f"Nome: {row['Nome']}, "
+                    
+                    if 'Numero_Conta' in row and pd.notna(row['Numero_Conta']):
+                        linha_texto += f"Conta: {row['Numero_Conta']}, "
+                    
+                    if 'Projeto' in row and pd.notna(row['Projeto']):
+                        linha_texto += f"Projeto: {row['Projeto']}, "
+                    
+                    if 'Valor' in row and pd.notna(row['Valor']):
+                        linha_texto += f"Valor: {row['Valor']}, "
+                    
+                    # Informação específica do CPF
+                    if row['CPF_Original'] == '':
+                        linha_texto += "CPF: '' - CPF vazio"
+                    else:
+                        linha_texto += f"CPF: '{row['CPF_Original']}' - {row['Problemas_Formatacao']}"
+                    
+                    # Limitar o tamanho da linha para caber na página
+                    if len(linha_texto) > 120:
+                        linha_texto = linha_texto[:117] + "..."
+                    
+                    pdf.cell(0, 8, linha_texto, 0, 1)
                 
-                if len(detalhes_cpfs_problematicos) > 10:
-                    pdf.cell(0, 8, f"... e mais {len(detalhes_cpfs_problematicos) - 10} registros", 0, 1)
+                if len(detalhes_cpfs_problematicos) > 20:
+                    pdf.cell(0, 8, f"... e mais {len(detalhes_cpfs_problematicos) - 20} registros", 0, 1)
                 
                 pdf.ln(5)
             
@@ -1372,7 +1395,17 @@ def gerar_pdf_executivo(metrics, dados, nomes_arquivos, tipo_relatorio='pagament
                 pdf.set_font("Arial", '', 10)
                 
                 for idx, row in detalhes_inconsistencias.head(10).iterrows():
-                    pdf.cell(0, 8, f"CPF {row['CPF']} (Linha {row['Linha_Planilha']}): {row['Problemas_Inconsistencia']}", 0, 1)
+                    linha_texto = f"CPF {row['CPF']} (Linha {row['Linha_Planilha']}): "
+                    
+                    if 'Nome' in row and pd.notna(row['Nome']):
+                        linha_texto += f"Nome: {row['Nome']}, "
+                    
+                    if 'Numero_Conta' in row and pd.notna(row['Numero_Conta']):
+                        linha_texto += f"Conta: {row['Numero_Conta']}, "
+                    
+                    linha_texto += f"{row['Problemas_Inconsistencia']}"
+                    
+                    pdf.cell(0, 8, linha_texto, 0, 1)
                 
                 if len(detalhes_inconsistencias) > 10:
                     pdf.cell(0, 8, f"... e mais {len(detalhes_inconsistencias) - 10} registros", 0, 1)
@@ -1393,7 +1426,21 @@ def gerar_pdf_executivo(metrics, dados, nomes_arquivos, tipo_relatorio='pagament
                 pdf.set_font("Arial", '', 10)
                 
                 for idx, row in resumo_ausencias.head(10).iterrows():
-                    pdf.cell(0, 8, f"Linha {row['Linha_Planilha']}: {row['Problemas_Identificados']}", 0, 1)
+                    linha_texto = f"Linha {row['Linha_Planilha']}: "
+                    
+                    # Adicionar informações disponíveis
+                    if 'Nome' in row and pd.notna(row['Nome']) and row['Nome'] != '':
+                        linha_texto += f"Nome: {row['Nome']}, "
+                    
+                    if 'CPF' in row and pd.notna(row['CPF']) and row['CPF'] != '':
+                        linha_texto += f"CPF: {row['CPF']}, "
+                    
+                    if 'Projeto' in row and pd.notna(row['Projeto']) and row['Projeto'] != '':
+                        linha_texto += f"Projeto: {row['Projeto']}, "
+                    
+                    linha_texto += f"Problemas: {row['Problemas_Identificados']}"
+                    
+                    pdf.cell(0, 8, linha_texto, 0, 1)
                 
                 if len(resumo_ausencias) > 10:
                     pdf.cell(0, 8, f"... e mais {len(resumo_ausencias) - 10} registros", 0, 1)
@@ -1406,7 +1453,7 @@ def gerar_excel_completo(metrics, dados, tipo_relatorio='pagamentos'):
     output = io.BytesIO()
     
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        # Resumo Executivo - CORREÇÃO: USAR GET() PARA EVITAR ERROS
+        # Resumo Executivo
         if tipo_relatorio == 'pagamentos':
             resumo_data = {
                 'Métrica': [
@@ -1455,19 +1502,19 @@ def gerar_excel_completo(metrics, dados, tipo_relatorio='pagamentos'):
         pd.DataFrame(resumo_data).to_excel(writer, sheet_name='Resumo Executivo', index=False)
         
         if tipo_relatorio == 'pagamentos':
-            # Duplicidades detalhadas - CORREÇÃO: VERIFICAR SE EXISTE
+            # Duplicidades detalhadas
             duplicidades_detalhadas = metrics.get('duplicidades_detalhadas', {})
             resumo_duplicidades = duplicidades_detalhadas.get('resumo_duplicidades', pd.DataFrame())
             if not resumo_duplicidades.empty:
                 resumo_duplicidades.to_excel(writer, sheet_name='Duplicidades', index=False)
             
-            # Pagamentos pendentes - CORREÇÃO: VERIFICAR SE EXISTE
+            # Pagamentos pendentes
             pagamentos_pendentes = metrics.get('pagamentos_pendentes', {})
             contas_sem_pagamento = pagamentos_pendentes.get('contas_sem_pagamento', pd.DataFrame())
             if not contas_sem_pagamento.empty:
                 contas_sem_pagamento.to_excel(writer, sheet_name='Pagamentos Pendentes', index=False)
         
-        # Problemas de CPF UNIFICADOS - CORREÇÃO: VERIFICAR SE EXISTEM
+        # Problemas de CPF UNIFICADOS
         problemas_cpf = metrics.get('problemas_cpf', {})
         
         # CPFs com problemas de formatação
@@ -1495,7 +1542,7 @@ def gerar_planilha_ajustes(metrics, tipo_relatorio='pagamentos'):
     acoes = []
     
     if tipo_relatorio == 'pagamentos':
-        # Ações para duplicidades - CORREÇÃO: USAR GET()
+        # Ações para duplicidades
         pagamentos_duplicados = metrics.get('pagamentos_duplicados', 0)
         if pagamentos_duplicados > 0:
             acoes.append({
@@ -1506,7 +1553,7 @@ def gerar_planilha_ajustes(metrics, tipo_relatorio='pagamentos'):
                 'Impacto Financeiro': formatar_brasileiro(metrics.get('valor_total_duplicados', 0), 'monetario')
             })
         
-        # Ações para CPFs problemáticos (UNIFICADO) - CORREÇÃO: USAR GET()
+        # Ações para CPFs problemáticos (UNIFICADO)
         problemas_cpf = metrics.get('problemas_cpf', {})
         
         total_cpfs_inconsistentes = problemas_cpf.get('total_cpfs_inconsistentes', 0)
@@ -1529,7 +1576,7 @@ def gerar_planilha_ajustes(metrics, tipo_relatorio='pagamentos'):
                 'Impacto Financeiro': 'Risco fiscal/documental'
             })
         
-        # Ações para pagamentos pendentes - CORREÇÃO: USAR GET()
+        # Ações para pagamentos pendentes
         pagamentos_pendentes = metrics.get('pagamentos_pendentes', {})
         total_contas_sem_pagamento = pagamentos_pendentes.get('total_contas_sem_pagamento', 0)
         if total_contas_sem_pagamento > 0:
@@ -1541,7 +1588,7 @@ def gerar_planilha_ajustes(metrics, tipo_relatorio='pagamentos'):
                 'Impacto Financeiro': 'A definir'
             })
     
-    # Ações para problemas CRÍTICOS de dados - CORREÇÃO: USAR GET()
+    # Ações para problemas CRÍTICOS de dados
     total_registros_criticos = metrics.get('total_registros_criticos', 0)
     if total_registros_criticos > 0:
         acoes.append({
@@ -1741,12 +1788,373 @@ def carregar_dados(conn):
     
     return dados, nomes_arquivos, mes_ref, ano_ref
 
+# FUNÇÕES PARA AS OUTRAS ABAS
+def mostrar_dashboard_evolutivo(conn):
+    """Mostra dashboard com evolução temporal dos dados"""
+    st.header("📈 Dashboard Evolutivo")
+    
+    # Carregar métricas históricas
+    metricas_pagamentos = carregar_metricas_db(conn, tipo='pagamentos')
+    metricas_inscricoes = carregar_metricas_db(conn, tipo='inscricoes')
+    
+    if metricas_pagamentos.empty and metricas_inscricoes.empty:
+        st.info("📊 Nenhum dado histórico disponível. Faça upload de dados mensais para ver a evolução.")
+        return
+    
+    # Criar período para exibição
+    if not metricas_pagamentos.empty:
+        metricas_pagamentos['periodo'] = metricas_pagamentos['mes_referencia'] + '/' + metricas_pagamentos['ano_referencia'].astype(str)
+        metricas_pagamentos = metricas_pagamentos.sort_values(['ano_referencia', 'mes_referencia'])
+    
+    if not metricas_inscricoes.empty:
+        metricas_inscricoes['periodo'] = metricas_inscricoes['mes_referencia'] + '/' + metricas_inscricoes['ano_referencia'].astype(str)
+        metricas_inscricoes = metricas_inscricoes.sort_values(['ano_referencia', 'mes_referencia'])
+    
+    # Gráficos de evolução
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if not metricas_pagamentos.empty:
+            st.subheader("Evolução de Pagamentos")
+            
+            fig = px.line(metricas_pagamentos, x='periodo', y='total_registros',
+                         title='Total de Pagamentos por Mês',
+                         labels={'total_registros': 'Total de Pagamentos', 'periodo': 'Período'})
+            st.plotly_chart(fig, use_container_width=True)
+            
+            fig2 = px.line(metricas_pagamentos, x='periodo', y='valor_total',
+                         title='Valor Total dos Pagamentos',
+                         labels={'valor_total': 'Valor Total (R$)', 'periodo': 'Período'})
+            st.plotly_chart(fig2, use_container_width=True)
+    
+    with col2:
+        if not metricas_inscricoes.empty:
+            st.subheader("Evolução de Inscrições")
+            
+            fig = px.line(metricas_inscricoes, x='periodo', y='total_registros',
+                         title='Total de Inscrições por Mês',
+                         labels={'total_registros': 'Total de Inscrições', 'periodo': 'Período'})
+            st.plotly_chart(fig, use_container_width=True)
+            
+            fig2 = px.line(metricas_inscricoes, x='periodo', y='beneficiarios_unicos',
+                         title='Beneficiários Únicos por Mês',
+                         labels={'beneficiarios_unicos': 'Beneficiários Únicos', 'periodo': 'Período'})
+            st.plotly_chart(fig2, use_container_width=True)
+    
+    # Métricas comparativas
+    st.subheader("Métricas Comparativas")
+    
+    if not metricas_pagamentos.empty:
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            ultimo_mes = metricas_pagamentos.iloc[-1]
+            penultimo_mes = metricas_pagamentos.iloc[-2] if len(metricas_pagamentos) > 1 else ultimo_mes
+            
+            variacao = ((ultimo_mes['total_registros'] - penultimo_mes['total_registros']) / penultimo_mes['total_registros']) * 100
+            st.metric("Pagamentos (último mês)", 
+                     formatar_brasileiro(ultimo_mes['total_registros']),
+                     f"{variacao:.1f}%")
+        
+        with col2:
+            variacao_valor = ((ultimo_mes['valor_total'] - penultimo_mes['valor_total']) / penultimo_mes['valor_total']) * 100
+            st.metric("Valor Total (último mês)", 
+                     formatar_brasileiro(ultimo_mes['valor_total'], 'monetario'),
+                     f"{variacao_valor:.1f}%")
+        
+        with col3:
+            variacao_benef = ((ultimo_mes['beneficiarios_unicos'] - penultimo_mes['beneficiarios_unicos']) / penultimo_mes['beneficiarios_unicos']) * 100
+            st.metric("Beneficiários (último mês)", 
+                     formatar_brasileiro(ultimo_mes['beneficiarios_unicos']),
+                     f"{variacao_benef:.1f}%")
+        
+        with col4:
+            variacao_dupl = ((ultimo_mes['pagamentos_duplicados'] - penultimo_mes['pagamentos_duplicados']) / max(penultimo_mes['pagamentos_duplicados'], 1)) * 100
+            st.metric("Duplicidades (último mês)", 
+                     formatar_brasileiro(ultimo_mes['pagamentos_duplicados']),
+                     f"{variacao_dupl:.1f}%")
+
+def mostrar_relatorios_comparativos(conn):
+    """Mostra relatórios comparativos entre períodos"""
+    st.header("📋 Relatórios Comparativos")
+    
+    # Carregar métricas
+    metricas_pagamentos = carregar_metricas_db(conn, tipo='pagamentos')
+    
+    if metricas_pagamentos.empty:
+        st.info("📊 Nenhum dado disponível para comparação. Faça upload de dados mensais.")
+        return
+    
+    # Seleção de períodos para comparação
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        periodos_disponiveis = metricas_pagamentos['mes_referencia'] + '/' + metricas_pagamentos['ano_referencia'].astype(str)
+        periodo1 = st.selectbox("Selecione o primeiro período:", periodos_disponiveis.unique())
+    
+    with col2:
+        periodo2 = st.selectbox("Selecione o segundo período:", periodos_disponiveis.unique(), 
+                               index=1 if len(periodos_disponiveis.unique()) > 1 else 0)
+    
+    if periodo1 == periodo2:
+        st.warning("Selecione períodos diferentes para comparação.")
+        return
+    
+    # Extrair dados dos períodos selecionados
+    dados_periodo1 = metricas_pagamentos[periodos_disponiveis == periodo1].iloc[0]
+    dados_periodo2 = metricas_pagamentos[periodos_disponiveis == periodo2].iloc[0]
+    
+    # Tabela comparativa
+    st.subheader(f"Comparação: {periodo1} vs {periodo2}")
+    
+    comparativo_data = {
+        'Métrica': [
+            'Total de Pagamentos',
+            'Beneficiários Únicos',
+            'Contas Únicas',
+            'Valor Total',
+            'Pagamentos Duplicados',
+            'Valor em Duplicidades',
+            'Projetos Ativos',
+            'CPFs para Ajuste',
+            'Registros Críticos'
+        ],
+        periodo1: [
+            formatar_brasileiro(dados_periodo1['total_registros']),
+            formatar_brasileiro(dados_periodo1['beneficiarios_unicos']),
+            formatar_brasileiro(dados_periodo1['contas_unicas']),
+            formatar_brasileiro(dados_periodo1['valor_total'], 'monetario'),
+            formatar_brasileiro(dados_periodo1['pagamentos_duplicados']),
+            formatar_brasileiro(dados_periodo1['valor_duplicados'], 'monetario'),
+            formatar_brasileiro(dados_periodo1['projetos_ativos']),
+            formatar_brasileiro(dados_periodo1.get('cpfs_ajuste', 0)),
+            formatar_brasileiro(dados_periodo1['registros_problema'])
+        ],
+        periodo2: [
+            formatar_brasileiro(dados_periodo2['total_registros']),
+            formatar_brasileiro(dados_periodo2['beneficiarios_unicos']),
+            formatar_brasileiro(dados_periodo2['contas_unicas']),
+            formatar_brasileiro(dados_periodo2['valor_total'], 'monetario'),
+            formatar_brasileiro(dados_periodo2['pagamentos_duplicados']),
+            formatar_brasileiro(dados_periodo2['valor_duplicados'], 'monetario'),
+            formatar_brasileiro(dados_periodo2['projetos_ativos']),
+            formatar_brasileiro(dados_periodo2.get('cpfs_ajuste', 0)),
+            formatar_brasileiro(dados_periodo2['registros_problema'])
+        ],
+        'Variação (%)': [
+            f"{((dados_periodo2['total_registros'] - dados_periodo1['total_registros']) / dados_periodo1['total_registros'] * 100):.1f}%",
+            f"{((dados_periodo2['beneficiarios_unicos'] - dados_periodo1['beneficiarios_unicos']) / dados_periodo1['beneficiarios_unicos'] * 100):.1f}%",
+            f"{((dados_periodo2['contas_unicas'] - dados_periodo1['contas_unicas']) / dados_periodo1['contas_unicas'] * 100):.1f}%",
+            f"{((dados_periodo2['valor_total'] - dados_periodo1['valor_total']) / dados_periodo1['valor_total'] * 100):.1f}%",
+            f"{((dados_periodo2['pagamentos_duplicados'] - dados_periodo1['pagamentos_duplicados']) / max(dados_periodo1['pagamentos_duplicados'], 1) * 100):.1f}%",
+            f"{((dados_periodo2['valor_duplicados'] - dados_periodo1['valor_duplicados']) / max(dados_periodo1['valor_duplicados'], 1) * 100):.1f}%",
+            f"{((dados_periodo2['projetos_ativos'] - dados_periodo1['projetos_ativos']) / max(dados_periodo1['projetos_ativos'], 1) * 100):.1f}%",
+            f"{((dados_periodo2.get('cpfs_ajuste', 0) - dados_periodo1.get('cpfs_ajuste', 0)) / max(dados_periodo1.get('cpfs_ajuste', 1), 1) * 100):.1f}%",
+            f"{((dados_periodo2['registros_problema'] - dados_periodo1['registros_problema']) / max(dados_periodo1['registros_problema'], 1) * 100):.1f}%"
+        ]
+    }
+    
+    df_comparativo = pd.DataFrame(comparativo_data)
+    st.dataframe(df_comparativo, use_container_width=True)
+    
+    # Gráfico de comparação
+    st.subheader("Gráfico Comparativo")
+    
+    fig = go.Figure()
+    
+    fig.add_trace(go.Bar(
+        name=periodo1,
+        x=comparativo_data['Métrica'],
+        y=[dados_periodo1['total_registros'], dados_periodo1['beneficiarios_unicos'], 
+           dados_periodo1['contas_unicas'], dados_periodo1['valor_total']/1000,  # Dividir valor por 1000 para escala
+           dados_periodo1['pagamentos_duplicados'], dados_periodo1['valor_duplicados']/1000,
+           dados_periodo1['projetos_ativos'], dados_periodo1.get('cpfs_ajuste', 0),
+           dados_periodo1['registros_problema']],
+        marker_color='blue'
+    ))
+    
+    fig.add_trace(go.Bar(
+        name=periodo2,
+        x=comparativo_data['Métrica'],
+        y=[dados_periodo2['total_registros'], dados_periodo2['beneficiarios_unicos'],
+           dados_periodo2['contas_unicas'], dados_periodo2['valor_total']/1000,
+           dados_periodo2['pagamentos_duplicados'], dados_periodo2['valor_duplicados']/1000,
+           dados_periodo2['projetos_ativos'], dados_periodo2.get('cpfs_ajuste', 0),
+           dados_periodo2['registros_problema']],
+        marker_color='red'
+    ))
+    
+    fig.update_layout(
+        title=f"Comparação entre {periodo1} e {periodo2}",
+        xaxis_tickangle=-45,
+        barmode='group'
+    )
+    
+    st.plotly_chart(fig, use_container_width=True)
+
+def mostrar_dados_historicos(conn):
+    """Mostra dados históricos armazenados"""
+    st.header("🗃️ Dados Históricos")
+    
+    # Seleção de tipo de dados
+    tipo_dados = st.radio("Selecione o tipo de dados:", ["Pagamentos", "Inscrições", "Métricas"], horizontal=True)
+    
+    if tipo_dados == "Pagamentos":
+        dados = carregar_pagamentos_db(conn)
+        if not dados.empty:
+            st.subheader("Histórico de Pagamentos")
+            st.write(f"Total de registros: {len(dados)}")
+            
+            # Resumo dos dados
+            resumo = dados[['id', 'mes_referencia', 'ano_referencia', 'nome_arquivo', 'data_importacao']].copy()
+            st.dataframe(resumo, use_container_width=True)
+            
+            # Seleção de registro específico para detalhes
+            if len(dados) > 0:
+                registro_id = st.selectbox("Selecione um registro para ver detalhes:", dados['id'].tolist())
+                registro_selecionado = dados[dados['id'] == registro_id].iloc[0]
+                
+                st.subheader(f"Detalhes do Registro {registro_id}")
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.write(f"**Mês/Ano:** {registro_selecionado['mes_referencia']}/{registro_selecionado['ano_referencia']}")
+                    st.write(f"**Arquivo:** {registro_selecionado['nome_arquivo']}")
+                    st.write(f"**Data de Importação:** {registro_selecionado['data_importacao']}")
+                
+                with col2:
+                    # Carregar dados JSON
+                    try:
+                        dados_json = json.loads(registro_selecionado['dados_json'])
+                        df_detalhes = pd.DataFrame(dados_json)
+                        st.write(f"**Total de registros no arquivo:** {len(df_detalhes)}")
+                        
+                        if len(df_detalhes) > 0:
+                            st.write("**Primeiras linhas:**")
+                            st.dataframe(df_detalhes.head(5), use_container_width=True)
+                    except:
+                        st.write("**Erro ao carregar dados detalhados**")
+        else:
+            st.info("Nenhum dado de pagamentos histórico encontrado.")
+    
+    elif tipo_dados == "Inscrições":
+        dados = carregar_inscricoes_db(conn)
+        if not dados.empty:
+            st.subheader("Histórico de Inscrições")
+            st.write(f"Total de registros: {len(dados)}")
+            
+            resumo = dados[['id', 'mes_referencia', 'ano_referencia', 'nome_arquivo', 'data_importacao']].copy()
+            st.dataframe(resumo, use_container_width=True)
+        else:
+            st.info("Nenhum dado de inscrições histórico encontrado.")
+    
+    else:  # Métricas
+        dados = carregar_metricas_db(conn)
+        if not dados.empty:
+            st.subheader("Histórico de Métricas")
+            st.write(f"Total de registros: {len(dados)}")
+            
+            # Filtrar por tipo
+            tipo_metricas = st.selectbox("Filtrar por tipo:", ["Todos", "pagamentos", "inscricoes"])
+            if tipo_metricas != "Todos":
+                dados = dados[dados['tipo'] == tipo_metricas]
+            
+            st.dataframe(dados, use_container_width=True)
+        else:
+            st.info("Nenhuma métrica histórica encontrada.")
+
+def mostrar_estatisticas_detalhadas(conn):
+    """Mostra estatísticas detalhadas e análises avançadas"""
+    st.header("📊 Estatísticas Detalhadas")
+    
+    # Carregar métricas
+    metricas_pagamentos = carregar_metricas_db(conn, tipo='pagamentos')
+    
+    if metricas_pagamentos.empty:
+        st.info("📊 Nenhum dado disponível para análise estatística. Faça upload de dados mensais.")
+        return
+    
+    # Estatísticas gerais
+    st.subheader("Estatísticas Gerais")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        total_pagamentos = metricas_pagamentos['total_registros'].sum()
+        st.metric("Total de Pagamentos (Histórico)", formatar_brasileiro(total_pagamentos))
+    
+    with col2:
+        valor_total = metricas_pagamentos['valor_total'].sum()
+        st.metric("Valor Total (Histórico)", formatar_brasileiro(valor_total, 'monetario'))
+    
+    with col3:
+        media_mensal = metricas_pagamentos['total_registros'].mean()
+        st.metric("Média Mensal de Pagamentos", formatar_brasileiro(int(media_mensal)))
+    
+    # Distribuição por mês
+    st.subheader("Distribuição por Mês")
+    
+    metricas_pagamentos['periodo'] = metricas_pagamentos['mes_referencia'] + '/' + metricas_pagamentos['ano_referencia'].astype(str)
+    
+    fig = px.bar(metricas_pagamentos, x='periodo', y='total_registros',
+                 title='Distribuição de Pagamentos por Mês',
+                 labels={'total_registros': 'Total de Pagamentos', 'periodo': 'Período'})
+    st.plotly_chart(fig, use_container_width=True)
+    
+    # Análise de tendência
+    st.subheader("Análise de Tendência")
+    
+    # Calcular tendência linear
+    x = np.arange(len(metricas_pagamentos))
+    y = metricas_pagamentos['total_registros'].values
+    
+    if len(metricas_pagamentos) > 1:
+        z = np.polyfit(x, y, 1)
+        p = np.poly1d(z)
+        tendencia = p(x)
+        
+        fig_tendencia = go.Figure()
+        fig_tendencia.add_trace(go.Scatter(x=metricas_pagamentos['periodo'], y=y, mode='lines+markers', name='Pagamentos'))
+        fig_tendencia.add_trace(go.Scatter(x=metricas_pagamentos['periodo'], y=tendencia, mode='lines', name='Tendência', line=dict(dash='dash')))
+        fig_tendencia.update_layout(title='Tendência de Pagamentos')
+        st.plotly_chart(fig_tendencia, use_container_width=True)
+        
+        # Interpretação da tendência
+        inclinacao = z[0]
+        if inclinacao > 0:
+            st.success(f"📈 Tendência de crescimento: {inclinacao:.1f} pagamentos/mês")
+        elif inclinacao < 0:
+            st.warning(f"📉 Tendência de decrescimento: {inclinacao:.1f} pagamentos/mês")
+        else:
+            st.info("➡️ Tendência estável")
+    
+    # Análise de sazonalidade
+    if len(metricas_pagamentos) >= 12:
+        st.subheader("Análise de Sazonalidade")
+        
+        # Agrupar por mês (ignorando ano)
+        metricas_pagamentos['mes_num'] = metricas_pagamentos['mes_referencia'].map({
+            'Janeiro': 1, 'Fevereiro': 2, 'Março': 3, 'Abril': 4, 'Maio': 5, 'Junho': 6,
+            'Julho': 7, 'Agosto': 8, 'Setembro': 9, 'Outubro': 10, 'Novembro': 11, 'Dezembro': 12
+        })
+        
+        media_por_mes = metricas_pagamentos.groupby('mes_num')['total_registros'].mean().reset_index()
+        media_por_mes['mes_nome'] = media_por_mes['mes_num'].map({
+            1: 'Jan', 2: 'Fev', 3: 'Mar', 4: 'Abr', 5: 'Mai', 6: 'Jun',
+            7: 'Jul', 8: 'Ago', 9: 'Set', 10: 'Out', 11: 'Nov', 12: 'Dez'
+        })
+        
+        fig_sazonal = px.line(media_por_mes, x='mes_nome', y='total_registros',
+                             title='Padrão Sazonal - Média de Pagamentos por Mês',
+                             labels={'total_registros': 'Média de Pagamentos', 'mes_nome': 'Mês'})
+        st.plotly_chart(fig_sazonal, use_container_width=True)
+
 # Interface principal do sistema CORRIGIDA
 def main():
     # Inicializar banco de dados
     conn = init_database()
     
-    # Autenticação - AGORA É OBRIGATÓRIA E MELHORADA
+    # Autenticação
     email_autorizado = autenticar()
     
     # Se não está autenticado, não mostra o conteúdo principal
@@ -1771,15 +2179,20 @@ def main():
     tem_dados_pagamentos = 'pagamentos' in dados and not dados['pagamentos'].empty
     tem_dados_contas = 'contas' in dados and not dados['contas'].empty
     
-    # SEÇÃO MELHORADA: Download de Relatórios - AGORA MAIS VISÍVEL E ACESSÍVEL
+    # SEÇÃO MELHORADA: Download de Relatórios
     st.sidebar.markdown("---")
     st.sidebar.header("📥 EXPORTAR RELATÓRIOS")
     
-    # CORREÇÃO: PROCESSAR DADOS ANTES DE GERAR RELATÓRIOS
+    # PROCESSAR DADOS ANTES DE GERAR RELATÓRIOS
     metrics = {}
     if tem_dados_pagamentos or tem_dados_contas:
         with st.spinner("🔄 Processando dados para relatórios..."):
             metrics = processar_dados(dados, nomes_arquivos)
+            # Salvar métricas no banco
+            if tem_dados_pagamentos:
+                salvar_metricas_db(conn, 'pagamentos', mes_ref, ano_ref, metrics)
+            if tem_dados_contas:
+                salvar_metricas_db(conn, 'inscricoes', mes_ref, ano_ref, metrics)
     
     # Botões de download sempre visíveis e organizados
     if tem_dados_pagamentos or tem_dados_contas:
@@ -1860,14 +2273,14 @@ def main():
     else:
         st.sidebar.info("📊 Faça upload dos dados para gerar relatórios")
     
-    # ÁREAS ADMINISTRATIVAS - AGORA MAIS ESCONDIDAS E SEGURAS
+    # ÁREAS ADMINISTRATIVAS
     st.sidebar.markdown("---")
     
-    # Expander para funções administrativas - RECOLHIDO POR PADRÃO
+    # Expander para funções administrativas
     with st.sidebar.expander("⚙️ Administração do Sistema", expanded=False):
         st.warning("**ÁREA RESTRITA** - Apenas para administradores do sistema")
         
-        # Sub-expander para limpeza de dados - AINDA MAIS ESCONDIDO
+        # Sub-expander para limpeza de dados
         with st.expander("🚨 Limpeza do Banco de Dados (APENAS EM TESTES)", expanded=False):
             limpar_banco_dados_completo(conn)
         
@@ -1875,7 +2288,7 @@ def main():
         with st.expander("🔍 Gerenciamento de Registros", expanded=False):
             gerenciar_registros(conn)
     
-    # Abas principais do sistema
+    # Abas principais do sistema - TODAS IMPLEMENTADAS
     tab_principal, tab_dashboard, tab_relatorios, tab_historico, tab_estatisticas = st.tabs([
         "📊 Análise Mensal", 
         "📈 Dashboard Evolutivo", 
@@ -1904,7 +2317,6 @@ def main():
                 st.metric("Valor Total", "R$ 0,00")
             
         else:
-            # CORREÇÃO: JÁ PROCESSAMOS OS DADOS ANTES, AGORA APENAS USAMOS AS MÉTRICAS
             # Interface principal
             st.title("🏛️ Sistema POT - SMDET")
             st.markdown("### Análise de Pagamentos e Inscrições")
@@ -1917,7 +2329,7 @@ def main():
             
             st.markdown("---")
             
-            # Métricas principais - CORREÇÃO: USAR GET() PARA EVITAR ERROS
+            # Métricas principais
             if tem_dados_pagamentos:
                 col1, col2, col3, col4 = st.columns(4)
                 
@@ -2011,7 +2423,7 @@ def main():
             
             st.markdown("---")
             
-            # Abas para análises detalhadas - REORGANIZADA
+            # Abas para análises detalhadas
             tab1, tab2, tab3, tab4, tab5 = st.tabs([
                 "📋 Visão Geral", 
                 "⚠️ Duplicidades", 
@@ -2152,7 +2564,18 @@ def main():
                 else:
                     st.success("✅ Nenhum registro crítico encontrado")
     
-    # [Resto das abas mantido igual...]
+    # IMPLEMENTAÇÃO DAS OUTRAS ABAS
+    with tab_dashboard:
+        mostrar_dashboard_evolutivo(conn)
+    
+    with tab_relatorios:
+        mostrar_relatorios_comparativos(conn)
+    
+    with tab_historico:
+        mostrar_dados_historicos(conn)
+    
+    with tab_estatisticas:
+        mostrar_estatisticas_detalhadas(conn)
 
 if __name__ == "__main__":
     main()
