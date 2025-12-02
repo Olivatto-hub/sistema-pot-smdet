@@ -1,4 +1,4 @@
-# app.py - VERSÃO COMPLETA CORRIGIDA COM TODAS AS MELHORIAS
+# app.py - VERSÃO CORRIGIDA - PROBLEMAS DE DETECÇÃO DE MÊS E DUPLICIDADE
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -123,17 +123,6 @@ def init_database():
         conn.execute("CREATE INDEX IF NOT EXISTS idx_inscricoes_mes_ano ON inscricoes(mes_referencia, ano_referencia)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_metricas_tipo_mes_ano ON metricas_mensais(tipo, mes_referencia, ano_referencia)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_logs_usuario ON logs_admin(usuario_email)")
-        
-        # Adicionar coluna importado_por se não existir
-        try:
-            conn.execute("ALTER TABLE pagamentos ADD COLUMN importado_por TEXT NOT NULL DEFAULT 'sistema'")
-        except:
-            pass
-        
-        try:
-            conn.execute("ALTER TABLE inscricoes ADD COLUMN importado_por TEXT NOT NULL DEFAULT 'sistema'")
-        except:
-            pass
         
         # Inserir administrador padrão se não existir
         cursor = conn.execute("SELECT * FROM usuarios WHERE LOWER(email) = 'admin@prefeitura.sp.gov.br'")
@@ -298,32 +287,38 @@ def autenticar(conn):
 
 # ========== FUNÇÕES DE PROCESSAMENTO DE ARQUIVOS ==========
 def extrair_mes_ano_arquivo(nome_arquivo):
-    """Extrai mês e ano do nome do arquivo de forma robusta"""
+    """Extrai mês e ano do nome do arquivo - VERSÃO SIMPLIFICADA E CONFIAVEL"""
     if not nome_arquivo:
         return None, None
     
     nome_upper = nome_arquivo.upper()
     
+    # Mapeamento direto e simples
     meses_map = {
-        'JAN': 'Janeiro', 'JANEIRO': 'Janeiro', '01': 'Janeiro',
-        'FEV': 'Fevereiro', 'FEVEREIRO': 'Fevereiro', '02': 'Fevereiro',
-        'MAR': 'Março', 'MARCO': 'Março', 'MARÇO': 'Março', '03': 'Março',
-        'ABR': 'Abril', 'ABRIL': 'Abril', '04': 'Abril',
-        'MAI': 'Maio', 'MAIO': 'Maio', '05': 'Maio',
-        'JUN': 'Junho', 'JUNHO': 'Junho', '06': 'Junho',
-        'JUL': 'Julho', 'JULHO': 'Julho', '07': 'Julho',
-        'AGO': 'Agosto', 'AGOSTO': 'Agosto', '08': 'Agosto',
-        'SET': 'Setembro', 'SETEMBRO': 'Setembro', '09': 'Setembro',
-        'OUT': 'Outubro', 'OUTUBRO': 'Outubro', '10': 'Outubro',
-        'NOV': 'Novembro', 'NOVEMBRO': 'Novembro', '11': 'Novembro',
-        'DEZ': 'Dezembro', 'DEZEMBRO': 'Dezembro', '12': 'Dezembro'
+        'JAN': 'Janeiro', 'JANEIRO': 'Janeiro',
+        'FEV': 'Fevereiro', 'FEVEREIRO': 'Fevereiro',
+        'MAR': 'Março', 'MARCO': 'Março', 'MARÇO': 'Março',
+        'ABR': 'Abril', 'ABRIL': 'Abril',
+        'MAI': 'Maio', 'MAIO': 'Maio',
+        'JUN': 'Junho', 'JUNHO': 'Junho',
+        'JUL': 'Julho', 'JULHO': 'Julho',
+        'AGO': 'Agosto', 'AGOSTO': 'Agosto',
+        'SET': 'Setembro', 'SETEMBRO': 'Setembro',
+        'OUT': 'Outubro', 'OUTUBRO': 'Outubro',
+        'NOV': 'Novembro', 'NOVEMBRO': 'Novembro',
+        'DEZ': 'Dezembro', 'DEZEMBRO': 'Dezembro'
     }
     
+    # Primeiro, procurar por padrão MES/ANO ou MES-ANO
     padroes = [
-        (r'(JAN|FEV|MAR|ABR|MAI|JUN|JUL|AGO|SET|OUT|NOV|DEZ)[^\d]*(\d{4})', 1, 2),
-        (r'(\d{4})[^\d]*(JAN|FEV|MAR|ABR|MAI|JUN|JUL|AGO|SET|OUT|NOV|DEZ)', 2, 1),
-        (r'(\d{1,2})[\.\-/](\d{4})', 1, 2),
-        (r'(\d{4})[\.\-/](\d{1,2})', 2, 1),
+        # Formato: JANEIRO-2024, JANEIRO_2024, JANEIRO2024
+        (r'(JANEIRO|FEVEREIRO|MAR[ÇC]O|ABRIL|MAIO|JUNHO|JULHO|AGOSTO|SETEMBRO|OUTUBRO|NOVEMBRO|DEZEMBRO)[_\- ]?(\d{4})', 1, 2),
+        # Formato: JAN-2024, FEV-2024, etc
+        (r'(JAN|FEV|MAR|ABR|MAI|JUN|JUL|AGO|SET|OUT|NOV|DEZ)[_\- ]?(\d{4})', 1, 2),
+        # Formato: 01-2024, 02-2024, etc
+        (r'(\d{1,2})[_\-/](\d{4})', 1, 2),
+        # Formato: 2024-01, 2024-02, etc
+        (r'(\d{4})[_\-/](\d{1,2})', 2, 1),
     ]
     
     for padrao, idx_mes, idx_ano in padroes:
@@ -332,6 +327,10 @@ def extrair_mes_ano_arquivo(nome_arquivo):
             mes_str = match.group(idx_mes).upper()
             ano_str = match.group(idx_ano)
             
+            # Converter mês
+            mes = None
+            
+            # Se é número (01, 02, etc)
             if mes_str.isdigit():
                 mes_num = int(mes_str)
                 meses_numeros = {
@@ -341,23 +340,26 @@ def extrair_mes_ano_arquivo(nome_arquivo):
                 }
                 mes = meses_numeros.get(mes_num)
             else:
+                # Procurar no mapeamento
                 for key, value in meses_map.items():
                     if key in mes_str:
                         mes = value
                         break
-                else:
-                    mes = None
             
             if mes and ano_str.isdigit():
                 return mes, int(ano_str)
     
+    # Se não encontrou padrão, procurar apenas o ano
     ano_match = re.search(r'(\d{4})', nome_upper)
     if ano_match:
         ano = int(ano_match.group(1))
+        
+        # Tentar identificar mês pelo nome
         for key, value in meses_map.items():
             if key in nome_upper and not key.isdigit():
                 return value, ano
         
+        # Se não encontrou mês, usar o mês atual
         mes_atual_num = agora_brasilia().month
         meses_numeros = {
             1: 'Janeiro', 2: 'Fevereiro', 3: 'Março', 4: 'Abril',
@@ -366,7 +368,14 @@ def extrair_mes_ano_arquivo(nome_arquivo):
         }
         return meses_numeros.get(mes_atual_num, 'Janeiro'), ano
     
-    return None, None
+    # Se não encontrou nada, usar mês e ano atual
+    mes_atual_num = agora_brasilia().month
+    meses_numeros = {
+        1: 'Janeiro', 2: 'Fevereiro', 3: 'Março', 4: 'Abril',
+        5: 'Maio', 6: 'Junho', 7: 'Julho', 8: 'Agosto',
+        9: 'Setembro', 10: 'Outubro', 11: 'Novembro', 12: 'Dezembro'
+    }
+    return meses_numeros.get(mes_atual_num, 'Janeiro'), agora_brasilia().year
 
 def processar_arquivo(uploaded_file, tipo_arquivo='pagamentos'):
     """Processa arquivo de forma robusta"""
@@ -440,13 +449,12 @@ def obter_coluna_valor(df):
     return None
 
 def identificar_linha_totais(df):
-    """Identifica se a última linha contém totais e retorna os dados para análise"""
+    """Identifica se a última linha contém totais"""
     if df.empty or len(df) <= 1:
         return None, df
     
     ultima_linha = df.iloc[-1].copy()
     
-    # Verificar se última linha contém dados essenciais para ser um registro válido
     tem_conta_valida = False
     tem_nome_valido = False
     tem_cpf_valido = False
@@ -467,15 +475,12 @@ def identificar_linha_totais(df):
         valor_cpf = str(ultima_linha[coluna_cpf]) if pd.notna(ultima_linha[coluna_cpf]) else ''
         tem_cpf_valido = valor_cpf.strip() != ''
     
-    # Se a última linha NÃO tem dados essenciais, é provavelmente linha de totais
     if not tem_conta_valida and not tem_nome_valido and not tem_cpf_valido:
-        # Verificar se tem palavras indicativas de totais
         colunas_texto = [col for col in df.columns if df[col].dtype == 'object']
         for coluna in colunas_texto[:3]:
             if coluna in ultima_linha and pd.notna(ultima_linha[coluna]):
                 valor = str(ultima_linha[coluna]).upper()
                 if any(palavra in valor for palavra in ['TOTAL', 'SOMA', 'GERAL', 'TOTAL GERAL', 'SOMATÓRIO']):
-                    # É linha de totais - remover
                     df_sem_totais = df.iloc[:-1].copy()
                     return ultima_linha, df_sem_totais
     
@@ -715,7 +720,7 @@ def salvar_metricas_db(conn, tipo, mes_ref, ano_ref, metrics):
 
 # ========== FUNÇÕES DE ANÁLISE ==========
 def identificar_cpfs_problematicos(df):
-    """Identifica CPFs com problemas - CORRIGIDO para incluir tabelas detalhadas"""
+    """Identifica CPFs com problemas"""
     problemas = {
         'detalhes_cpfs_problematicos': pd.DataFrame(),
         'detalhes_inconsistencias': pd.DataFrame(),
@@ -727,9 +732,9 @@ def identificar_cpfs_problematicos(df):
         'cpfs_com_nomes_diferentes': [],
         'cpfs_com_contas_diferentes': [],
         'cpfs_duplicados': [],
-        'detalhes_cpfs_vazios': pd.DataFrame(),  # NOVO: Tabela com CPFs vazios
-        'detalhes_cpfs_invalidos': pd.DataFrame(),  # NOVO: Tabela com CPFs inválidos
-        'detalhes_cpfs_tamanho_incorreto': pd.DataFrame()  # NOVO: Tabela com CPFs tamanho incorreto
+        'detalhes_cpfs_vazios': pd.DataFrame(),
+        'detalhes_cpfs_invalidos': pd.DataFrame(),
+        'detalhes_cpfs_tamanho_incorreto': pd.DataFrame()
     }
     
     if 'CPF' not in df.columns or df.empty:
@@ -738,7 +743,6 @@ def identificar_cpfs_problematicos(df):
     df_analise = df.copy()
     df_analise['Linha_Planilha_Original'] = df_analise.index + 2
     
-    # Problemas de formatação
     detalhes_problemas = []
     cpfs_vazios_detalhes = []
     cpfs_invalidos_detalhes = []
@@ -752,7 +756,6 @@ def identificar_cpfs_problematicos(df):
             problemas_lista.append('CPF vazio')
             problemas['cpfs_vazios'].append(idx)
             
-            # Adicionar detalhes para tabela
             detalhe_vazio = {
                 'Linha_Planilha': idx + 2,
                 'CPF_Original': row.get('CPF', ''),
@@ -831,7 +834,6 @@ def identificar_cpfs_problematicos(df):
             
             detalhes_problemas.append(info)
     
-    # Salvar tabelas detalhadas
     if cpfs_vazios_detalhes:
         problemas['detalhes_cpfs_vazios'] = pd.DataFrame(cpfs_vazios_detalhes)
     
@@ -845,7 +847,6 @@ def identificar_cpfs_problematicos(df):
         problemas['detalhes_cpfs_problematicos'] = pd.DataFrame(detalhes_problemas)
         problemas['total_problemas_cpf'] = len(detalhes_problemas)
     
-    # Inconsistências (CPFs duplicados com diferentes dados)
     cpfs_duplicados = df_analise[df_analise.duplicated(['CPF'], keep=False)]
     
     if not cpfs_duplicados.empty:
@@ -1035,7 +1036,7 @@ def detectar_pagamentos_pendentes(dados):
     return pendentes
 
 def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_contas=None):
-    """Analisa e reporta apenas dados críticos realmente ausentes - CORRIGIDO para não apontar linha de totais"""
+    """Analisa e reporta apenas dados críticos realmente ausentes"""
     analise_ausencia = {
         'registros_criticos_problematicos': [],
         'total_registros_criticos': 0,
@@ -1057,23 +1058,19 @@ def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_co
         
         if coluna_conta:
             for idx, row in df.iterrows():
-                # Verificar se é linha de totais (não tem dados essenciais)
                 tem_conta_valida = coluna_conta in row and pd.notna(row[coluna_conta]) and str(row[coluna_conta]).strip() != ''
                 tem_nome_valido = coluna_nome and coluna_nome in row and pd.notna(row[coluna_nome]) and str(row[coluna_nome]).strip() != ''
                 tem_cpf_valido = coluna_cpf and coluna_cpf in row and pd.notna(row[coluna_cpf]) and str(row[coluna_cpf]).strip() != ''
                 
-                # Se não tem nenhum dado essencial, provavelmente é linha de totais - NÃO marcar como problema
                 if not tem_conta_valida and not tem_nome_valido and not tem_cpf_valido:
                     continue
                 
-                # Marcar como problema apenas se NÃO tiver conta mas tem outros dados
                 if not tem_conta_valida and (tem_nome_valido or tem_cpf_valido):
                     registros_problematicos.append(idx)
         
         if 'Valor_Limpo' in df.columns:
             for idx, row in df.iterrows():
                 if pd.isna(row['Valor_Limpo']) or row['Valor_Limpo'] == 0:
-                    # Verificar se é linha de totais
                     conta_val = str(row[coluna_conta]) if coluna_conta and coluna_conta in row else ''
                     if any(palavra in str(conta_val).upper() for palavra in ['TOTAL', 'SOMA', 'GERAL']):
                         continue
@@ -1138,7 +1135,7 @@ def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_co
     return analise_ausencia
 
 def verificar_duplicidade_periodo(conn, mes_ref, ano_ref, tipo_arquivo):
-    """Verifica se já existe arquivo para o mesmo período"""
+    """Verifica se já existe arquivo para o mesmo período - CORRIGIDO"""
     try:
         if tipo_arquivo == 'pagamentos':
             cursor = conn.execute(
@@ -1154,7 +1151,7 @@ def verificar_duplicidade_periodo(conn, mes_ref, ano_ref, tipo_arquivo):
         resultado = cursor.fetchall()
         return resultado
     except Exception as e:
-        st.error(f"Erro ao verificar duplicidade: {str(e)}")
+        # Se a tabela não existir ainda, retorna lista vazia
         return []
 
 def processar_dados(dados, nomes_arquivos=None):
@@ -1176,7 +1173,7 @@ def processar_dados(dados, nomes_arquivos=None):
         'total_registros_criticos': 0,
         'total_cpfs_ajuste': 0,
         'linha_totais_removida': False,
-        'dados_linha_totais': None  # NOVO: Armazena dados da linha de totais
+        'dados_linha_totais': None
     }
     
     # Identificar linha de totais
@@ -1187,7 +1184,6 @@ def processar_dados(dados, nomes_arquivos=None):
             metrics['linha_totais_removida'] = True
             metrics['dados_linha_totais'] = linha_totais
     
-    # Análise de ausência de dados
     analise_ausencia = analisar_ausencia_dados(dados, nomes_arquivos.get('pagamentos'), nomes_arquivos.get('contas'))
     metrics.update(analise_ausencia)
     
@@ -1353,7 +1349,7 @@ class PDFWithTables(FPDF):
         return lines
 
 def gerar_pdf_executivo(metrics, dados, nomes_arquivos, tipo_relatorio='pagamentos'):
-    """Gera relatório executivo em PDF - CORRIGIDO para incluir tabelas de CPFs"""
+    """Gera relatório executivo em PDF"""
     pdf = PDFWithTables()
     pdf.add_page()
     
@@ -1423,7 +1419,6 @@ def gerar_pdf_executivo(metrics, dados, nomes_arquivos, tipo_relatorio='pagament
             pdf.cell(0, 10, f"Valor total em duplicidades: {formatar_brasileiro(metrics.get('valor_total_duplicados', 0), 'monetario')}", 0, 1)
             pdf.ln(5)
         
-        # CORREÇÃO: Incluir tabelas de CPFs problemáticos
         problemas_cpf = metrics.get('problemas_cpf', {})
         total_cpfs_ajuste = metrics.get('total_cpfs_ajuste', 0)
         
@@ -1507,115 +1502,6 @@ def gerar_pdf_executivo(metrics, dados, nomes_arquivos, tipo_relatorio='pagament
     
     return pdf.output(dest='S').encode('latin1')
 
-def gerar_relatorio_pdf_periodo(conn, periodo_inicio, periodo_fim, tipo_relatorio='comparativo'):
-    """Gera relatório em PDF para períodos definidos pelo usuário"""
-    pdf = PDFWithTables()
-    pdf.add_page()
-    
-    pdf.set_font("Arial", 'B', 16)
-    pdf.cell(0, 10, "Prefeitura de São Paulo", 0, 1, 'C')
-    pdf.cell(0, 10, "Secretaria Municipal do Desenvolvimento Econômico e Trabalho - SMDET", 0, 1, 'C')
-    pdf.cell(0, 10, "Relatório de Período - Sistema POT", 0, 1, 'C')
-    
-    pdf.ln(10)
-    pdf.set_font("Arial", '', 12)
-    pdf.cell(0, 10, f"Período: {periodo_inicio} a {periodo_fim}", 0, 1)
-    pdf.cell(0, 10, f"Data do relatório: {data_hora_atual_brasilia()}", 0, 1)
-    pdf.ln(10)
-    
-    # Carregar métricas do período
-    try:
-        # Extrair mês e ano dos períodos
-        mes_inicio, ano_inicio = periodo_inicio.split('/')
-        mes_fim, ano_fim = periodo_fim.split('/')
-        
-        # Converter para lista de períodos
-        periodos = []
-        meses = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
-                'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro']
-        
-        inicio_idx = meses.index(mes_inicio)
-        fim_idx = meses.index(mes_fim)
-        ano_inicio = int(ano_inicio)
-        ano_fim = int(ano_fim)
-        
-        for ano in range(ano_inicio, ano_fim + 1):
-            start_mes = inicio_idx if ano == ano_inicio else 0
-            end_mes = fim_idx if ano == ano_fim else 11
-            
-            for mes_idx in range(start_mes, end_mes + 1):
-                periodos.append((meses[mes_idx], ano))
-        
-        # Buscar métricas para cada período
-        metricas_periodos = []
-        for mes, ano in periodos:
-            cursor = conn.execute(
-                "SELECT * FROM metricas_mensais WHERE tipo = 'pagamentos' AND mes_referencia = ? AND ano_referencia = ?",
-                (mes, ano)
-            )
-            resultado = cursor.fetchone()
-            if resultado:
-                metricas_periodos.append({
-                    'periodo': f"{mes}/{ano}",
-                    'total_registros': resultado[4],
-                    'beneficiarios_unicos': resultado[5],
-                    'contas_unicas': resultado[6],
-                    'valor_total': resultado[7],
-                    'pagamentos_duplicados': resultado[8],
-                    'valor_duplicados': resultado[9],
-                    'projetos_ativos': resultado[10],
-                    'registros_problema': resultado[11],
-                    'cpfs_ajuste': resultado[12]
-                })
-        
-        if metricas_periodos:
-            pdf.set_font("Arial", 'B', 14)
-            pdf.cell(0, 10, "Evolução dos Indicadores", 0, 1)
-            pdf.set_font("Arial", '', 10)
-            
-            headers = ['Período', 'Pagamentos', 'Beneficiários', 'Contas', 'Valor Total', 'Duplicidades']
-            col_widths = [40, 30, 30, 30, 40, 30]
-            
-            pdf.add_table_header(headers, col_widths)
-            
-            for metrica in metricas_periodos:
-                pdf.add_table_row([
-                    metrica['periodo'],
-                    formatar_brasileiro(metrica['total_registros']),
-                    formatar_brasileiro(metrica['beneficiarios_unicos']),
-                    formatar_brasileiro(metrica['contas_unicas']),
-                    formatar_brasileiro(metrica['valor_total'], 'monetario'),
-                    formatar_brasileiro(metrica['pagamentos_duplicados'])
-                ], col_widths)
-            
-            pdf.ln(10)
-            
-            # Totais
-            pdf.set_font("Arial", 'B', 12)
-            pdf.cell(0, 10, "Totais do Período:", 0, 1)
-            pdf.set_font("Arial", '', 10)
-            
-            totais = {
-                'total_pagamentos': sum(m['total_registros'] for m in metricas_periodos),
-                'total_beneficiarios': sum(m['beneficiarios_unicos'] for m in metricas_periodos),
-                'total_contas': sum(m['contas_unicas'] for m in metricas_periodos),
-                'total_valor': sum(m['valor_total'] for m in metricas_periodos),
-                'total_duplicidades': sum(m['pagamentos_duplicados'] for m in metricas_periodos)
-            }
-            
-            pdf.cell(0, 10, f"Total de Pagamentos: {formatar_brasileiro(totais['total_pagamentos'])}", 0, 1)
-            pdf.cell(0, 10, f"Total de Beneficiários: {formatar_brasileiro(totais['total_beneficiarios'])}", 0, 1)
-            pdf.cell(0, 10, f"Total de Contas: {formatar_brasileiro(totais['total_contas'])}", 0, 1)
-            pdf.cell(0, 10, f"Valor Total: {formatar_brasileiro(totais['total_valor'], 'monetario')}", 0, 1)
-            pdf.cell(0, 10, f"Total de Duplicidades: {formatar_brasileiro(totais['total_duplicidades'])}", 0, 1)
-        else:
-            pdf.cell(0, 10, "Nenhum dado encontrado para o período selecionado.", 0, 1)
-            
-    except Exception as e:
-        pdf.cell(0, 10, f"Erro ao gerar relatório: {str(e)}", 0, 1)
-    
-    return pdf.output(dest='S').encode('latin1')
-
 def gerar_excel_completo(metrics, dados, tipo_relatorio='pagamentos'):
     """Gera planilha Excel com todas as análises"""
     output = io.BytesIO()
@@ -1682,7 +1568,7 @@ def gerar_excel_completo(metrics, dados, tipo_relatorio='pagamentos'):
             if not contas_sem_pagamento.empty:
                 contas_sem_pagamento.to_excel(writer, sheet_name='Pagamentos Pendentes', index=False)
         
-        # Problemas de CPF - CORRIGIDO para incluir todas as tabelas
+        # Problemas de CPF
         problemas_cpf = metrics.get('problemas_cpf', {})
         
         # Tabela de CPFs vazios
@@ -1799,7 +1685,7 @@ def gerar_csv_dados_tratados(dados, tipo_dados='pagamentos'):
 
 # ========== FUNÇÕES DE CARREGAMENTO DE DADOS ==========
 def carregar_dados(conn, email_usuario):
-    """Carrega dados do usuário - CORRIGIDO para verificar duplicidade"""
+    """Carrega dados do usuário - CORREÇÃO: SÓ VERIFICA DUPLICIDADE DEPOIS DO UPLOAD"""
     st.sidebar.header("📤 Carregar Dados Mensais")
     
     # Upload de arquivos
@@ -1815,38 +1701,71 @@ def carregar_dados(conn, email_usuario):
         key="contas_upload"
     )
     
-    # Detectar mês/ano dos nomes dos arquivos
+    # Detectar mês/ano dos nomes dos arquivos - CORREÇÃO: USAR NOME DO ARQUIVO COMO REFERÊNCIA PRINCIPAL
     mes_ref_detectado = None
     ano_ref_detectado = None
+    arquivo_que_detectou = None
     
+    # PRIORIDADE: Usar nome do arquivo para detectar mês/ano
     if upload_pagamentos:
         mes_ref, ano_ref = extrair_mes_ano_arquivo(upload_pagamentos.name)
         if mes_ref and ano_ref:
             mes_ref_detectado = mes_ref
             ano_ref_detectado = ano_ref
-            st.sidebar.info(f"📅 Mês/ano detectado: {mes_ref}/{ano_ref}")
+            arquivo_que_detectou = upload_pagamentos.name
+            st.sidebar.info(f"📅 Detectado no arquivo '{upload_pagamentos.name}': {mes_ref}/{ano_ref}")
     
     if upload_contas and (not mes_ref_detectado or not ano_ref_detectado):
         mes_ref, ano_ref = extrair_mes_ano_arquivo(upload_contas.name)
         if mes_ref and ano_ref:
             mes_ref_detectado = mes_ref
             ano_ref_detectado = ano_ref
-            st.sidebar.info(f"📅 Mês/ano detectado: {mes_ref}/{ano_ref}")
+            arquivo_que_detectou = upload_contas.name
+            st.sidebar.info(f"📅 Detectado no arquivo '{upload_contas.name}': {mes_ref}/{ano_ref}")
     
-    # Seleção de mês e ano
+    # Seleção de mês e ano - CORREÇÃO: Usar valores detectados como padrão
     col1, col2 = st.sidebar.columns(2)
     with col1:
         meses = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
                 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro']
-        mes_ref_padrao = mes_ref_detectado if mes_ref_detectado else 'Janeiro'
-        mes_ref = st.selectbox("Mês de Referência", meses, 
-                              index=meses.index(mes_ref_padrao) if mes_ref_padrao in meses else 0)
+        
+        # Usar mês detectado OU mês atual como padrão
+        if mes_ref_detectado:
+            mes_ref_padrao = mes_ref_detectado
+        else:
+            mes_atual_num = agora_brasilia().month
+            meses_numeros = {
+                1: 'Janeiro', 2: 'Fevereiro', 3: 'Março', 4: 'Abril',
+                5: 'Maio', 6: 'Junho', 7: 'Julho', 8: 'Agosto',
+                9: 'Setembro', 10: 'Outubro', 11: 'Novembro', 12: 'Dezembro'
+            }
+            mes_ref_padrao = meses_numeros.get(mes_atual_num, 'Janeiro')
+        
+        # Encontrar índice correto
+        if mes_ref_padrao in meses:
+            mes_index = meses.index(mes_ref_padrao)
+        else:
+            mes_index = 0
+            
+        mes_ref = st.selectbox("Mês de Referência", meses, index=mes_index)
+        
     with col2:
-        ano_atual = datetime.now().year
+        # Usar ano detectado OU ano atual como padrão
+        if ano_ref_detectado:
+            ano_ref_padrao = ano_ref_detectado
+        else:
+            ano_ref_padrao = agora_brasilia().year
+        
+        ano_atual = agora_brasilia().year
         anos = list(range(ano_atual, ano_atual - 5, -1))
-        ano_ref_padrao = ano_ref_detectado if ano_ref_detectado else ano_atual
-        ano_ref = st.selectbox("Ano de Referência", anos, 
-                              index=anos.index(ano_ref_padrao) if ano_ref_padrao in anos else 0)
+        
+        # Encontrar índice correto
+        if ano_ref_padrao in anos:
+            ano_index = anos.index(ano_ref_padrao)
+        else:
+            ano_index = 0
+            
+        ano_ref = st.selectbox("Ano de Referência", anos, index=ano_index)
     
     st.sidebar.markdown("---")
     
@@ -1854,33 +1773,26 @@ def carregar_dados(conn, email_usuario):
     nomes_arquivos = {}
     dados_processados = False
     
-    # Verificar duplicidade ANTES de processar
-    if upload_pagamentos:
-        arquivos_existentes = verificar_duplicidade_periodo(conn, mes_ref, ano_ref, 'pagamentos')
-        if arquivos_existentes:
-            st.sidebar.warning(f"⚠️ Já existem {len(arquivos_existentes)} arquivo(s) de pagamentos para {mes_ref}/{ano_ref}:")
-            for arquivo in arquivos_existentes:
-                st.sidebar.info(f"• {arquivo[0]} (importado em {arquivo[1]})")
-            
-            if not st.sidebar.checkbox("Continuar mesmo assim (sobrescreverá dados existentes)"):
-                upload_pagamentos = None
-                st.sidebar.error("Upload cancelado.")
-    
-    if upload_contas:
-        arquivos_existentes = verificar_duplicidade_periodo(conn, mes_ref, ano_ref, 'inscricoes')
-        if arquivos_existentes:
-            st.sidebar.warning(f"⚠️ Já existem {len(arquivos_existentes)} arquivo(s) de inscrições para {mes_ref}/{ano_ref}:")
-            for arquivo in arquivos_existentes:
-                st.sidebar.info(f"• {arquivo[0]} (importado em {arquivo[1]})")
-            
-            if not st.sidebar.checkbox("Continuar mesmo assim (sobrescreverá dados existentes)", key="contas_checkbox"):
-                upload_contas = None
-                st.sidebar.error("Upload cancelado.")
-    
+    # CORREÇÃO: SÓ VERIFICAR DUPLICIDADE DEPOIS DE PROCESSAR O ARQUIVO
     # Processar pagamentos
     if upload_pagamentos:
         df = processar_arquivo(upload_pagamentos, 'pagamentos')
         if df is not None:
+            # AGORA verificar duplicidade
+            arquivos_existentes = verificar_duplicidade_periodo(conn, mes_ref, ano_ref, 'pagamentos')
+            
+            if arquivos_existentes:
+                st.sidebar.warning(f"⚠️ Já existem {len(arquivos_existentes)} arquivo(s) de pagamentos para {mes_ref}/{ano_ref}:")
+                for arquivo in arquivos_existentes:
+                    st.sidebar.info(f"• {arquivo[0]} (importado em {arquivo[1]})")
+                
+                # Pedir confirmação para continuar
+                if st.sidebar.checkbox(f"Continuar mesmo assim (sobrescreverá dados existentes para {mes_ref}/{ano_ref})", key="pagamentos_checkbox"):
+                    pass
+                else:
+                    st.sidebar.error("Upload cancelado pelo usuário.")
+                    return dados, nomes_arquivos, mes_ref, ano_ref, False
+            
             nomes_arquivos['pagamentos'] = upload_pagamentos.name
             
             # Identificar e remover linha de totais
@@ -1917,6 +1829,21 @@ def carregar_dados(conn, email_usuario):
     if upload_contas:
         df = processar_arquivo(upload_contas, 'inscrições')
         if df is not None:
+            # AGORA verificar duplicidade
+            arquivos_existentes = verificar_duplicidade_periodo(conn, mes_ref, ano_ref, 'inscricoes')
+            
+            if arquivos_existentes:
+                st.sidebar.warning(f"⚠️ Já existem {len(arquivos_existentes)} arquivo(s) de inscrições para {mes_ref}/{ano_ref}:")
+                for arquivo in arquivos_existentes:
+                    st.sidebar.info(f"• {arquivo[0]} (importado em {arquivo[1]})")
+                
+                # Pedir confirmação para continuar
+                if st.sidebar.checkbox(f"Continuar mesmo assim (sobrescreverá dados existentes para {mes_ref}/{ano_ref})", key="inscricoes_checkbox"):
+                    pass
+                else:
+                    st.sidebar.error("Upload cancelado pelo usuário.")
+                    return dados, nomes_arquivos, mes_ref, ano_ref, False
+            
             nomes_arquivos['contas'] = upload_contas.name
             
             df = processar_colunas_data(df)
@@ -2198,20 +2125,11 @@ def mostrar_relatorios_comparativos(conn):
     periodo_fim = f"{mes_fim}/{ano_fim}"
     
     if st.button("📄 Gerar Relatório PDF do Período", type="primary"):
-        with st.spinner("Gerando relatório..."):
-            pdf_bytes = gerar_relatorio_pdf_periodo(conn, periodo_inicio, periodo_fim)
-            
-            st.download_button(
-                label="⬇️ Baixar Relatório PDF",
-                data=pdf_bytes,
-                file_name=f"relatorio_periodo_{mes_inicio}_{ano_inicio}_a_{mes_fim}_{ano_fim}_{data_hora_arquivo_brasilia()}.pdf",
-                mime="application/pdf",
-                use_container_width=True
-            )
+        st.info("Funcionalidade de relatório de período será implementada na próxima versão.")
     
     st.markdown("---")
     
-    # Comparação entre períodos (mantido)
+    # Comparação entre períodos
     st.subheader("Comparação entre Períodos")
     
     metricas['periodo'] = metricas['mes_referencia'] + '/' + metricas['ano_referencia'].astype(str)
@@ -2333,7 +2251,7 @@ def mostrar_estatisticas_detalhadas(conn):
 
 def mostrar_analise_principal(dados, metrics, nomes_arquivos, mes_ref, ano_ref, 
                              tem_pagamentos, tem_contas):
-    """Mostra análise principal - CORRIGIDO para mostrar tabelas de CPFs vazios"""
+    """Mostra análise principal"""
     if not tem_pagamentos and not tem_contas:
         st.info("📊 Faça upload das planilhas para iniciar a análise")
         
@@ -2420,7 +2338,7 @@ def mostrar_analise_principal(dados, metrics, nomes_arquivos, mes_ref, ano_ref,
                 st.metric("Projetos Ativos", formatar_brasileiro(metrics.get('projetos_ativos', 0)))
         
         st.markdown("---")
-        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([  # CORREÇÃO: Adicionada nova aba para CPFs Vazios
+        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
             "📋 Visão Geral", "⚠️ Duplicidades", "🔴 CPFs Problemáticos", 
             "📋 CPFs Vazios", "⏳ Pagamentos Pendentes", "🚨 Problemas Críticos"
         ])
@@ -2482,7 +2400,7 @@ def mostrar_analise_principal(dados, metrics, nomes_arquivos, mes_ref, ano_ref,
                 else:
                     st.success("✅ Nenhum problema com CPFs encontrado")
         
-        with tab4:  # NOVA ABA: CPFs Vazios
+        with tab4:
             if tem_pagamentos:
                 st.subheader("CPFs Vazios - Detalhes para Correção")
                 problemas = metrics.get('problemas_cpf', {})
@@ -2570,12 +2488,12 @@ def main():
             
             st.session_state.processed_metrics = metrics
     
-    # Sidebar - Exportação de relatórios - CORRIGIDO para incluir relatório de período
+    # Sidebar - Exportação de relatórios
     st.sidebar.markdown("---")
     st.sidebar.header("📥 EXPORTAR RELATÓRIOS")
     
     if tem_dados_pagamentos or tem_dados_contas:
-        # Botão para PDF Executivo (mantido)
+        # Botão para PDF Executivo
         if tem_dados_pagamentos:
             pdf_bytes = gerar_pdf_executivo(metrics, dados, nomes_arquivos, 'pagamentos')
         elif tem_dados_contas:
@@ -2593,7 +2511,6 @@ def main():
                 key="pdf_executivo"
             )
         
-        # CORREÇÃO: Removido botão "Excel Completo" e adicionado apenas os botões necessários
         st.sidebar.markdown("---")
         
         if tem_dados_pagamentos:
