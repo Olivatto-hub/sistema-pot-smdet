@@ -26,7 +26,7 @@ st.set_page_config(
 
 # ========== BANCO DE DADOS ==========
 def init_database():
-    """Inicializa o banco de dados SQLite"""
+    """Inicializa o banco de dados SQLite com todas as colunas necessárias"""
     try:
         if getattr(sys, 'frozen', False):
             base_path = os.path.dirname(sys.executable)
@@ -88,7 +88,7 @@ def init_database():
             )
         ''')
         
-        # Tabela de métricas
+        # Tabela de métricas - VERIFICAR E ATUALIZAR COLUNAS
         conn.execute('''
             CREATE TABLE IF NOT EXISTS metricas_mensais (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -112,6 +112,25 @@ def init_database():
                 UNIQUE(tipo, mes_referencia, ano_referencia)
             )
         ''')
+        
+        # Verificar e adicionar colunas faltantes se necessário
+        cursor = conn.execute("PRAGMA table_info(metricas_mensais)")
+        colunas_existentes = [col[1] for col in cursor.fetchall()]
+        
+        colunas_necessarias = [
+            'total_contas_abertas',
+            'beneficiarios_contas',
+            'dados_retificados'
+        ]
+        
+        for coluna in colunas_necessarias:
+            if coluna not in colunas_existentes:
+                try:
+                    if coluna in ['total_contas_abertas', 'beneficiarios_contas', 'dados_retificados']:
+                        conn.execute(f"ALTER TABLE metricas_mensais ADD COLUMN {coluna} INTEGER DEFAULT 0")
+                        st.info(f"Coluna {coluna} adicionada à tabela metricas_mensais")
+                except Exception as e:
+                    st.warning(f"Não foi possível adicionar coluna {coluna}: {str(e)}")
         
         # Tabela: Logs administrativos
         conn.execute('''
@@ -809,8 +828,24 @@ def salvar_dados_db(conn, tabela, mes_ref, ano_ref, nome_arquivo, file_bytes, da
         return False, f"Erro ao salvar dados: {str(e)}"
 
 def salvar_metricas_db(conn, tipo, mes_ref, ano_ref, metrics):
-    """Salva métricas no banco"""
+    """Salva métricas no banco com verificação de colunas"""
     try:
+        # Verificar se a tabela tem as colunas necessárias
+        cursor = conn.execute("PRAGMA table_info(metricas_mensais)")
+        colunas_existentes = [col[1] for col in cursor.fetchall()]
+        
+        # Verificar e adicionar colunas faltantes
+        colunas_necessarias = ['total_contas_abertas', 'beneficiarios_contas', 'dados_retificados']
+        for coluna in colunas_necessarias:
+            if coluna not in colunas_existentes:
+                try:
+                    conn.execute(f"ALTER TABLE metricas_mensais ADD COLUMN {coluna} INTEGER DEFAULT 0")
+                    conn.commit()
+                    st.info(f"Coluna {coluna} adicionada à tabela metricas_mensais")
+                except Exception as e:
+                    st.warning(f"Não foi possível adicionar coluna {coluna}: {str(e)}")
+        
+        # Verificar se já existe registro
         cursor = conn.execute(
             "SELECT id FROM metricas_mensais WHERE tipo = ? AND mes_referencia = ? AND ano_referencia = ?",
             (tipo, mes_ref, ano_ref)
@@ -821,6 +856,7 @@ def salvar_metricas_db(conn, tipo, mes_ref, ano_ref, metrics):
         dados_corrigidos_json = json.dumps(metrics.get('detalhes_retificacoes', []), ensure_ascii=False) if metrics.get('detalhes_retificacoes') else '[]'
         
         if existe:
+            # Atualizar registro existente
             conn.execute('''
                 UPDATE metricas_mensais 
                 SET total_registros = ?, beneficiarios_unicos = ?, contas_unicas = ?, 
@@ -847,6 +883,7 @@ def salvar_metricas_db(conn, tipo, mes_ref, ano_ref, metrics):
                 tipo, mes_ref, ano_ref
             ))
         else:
+            # Inserir novo registro
             conn.execute('''
                 INSERT INTO metricas_mensais (tipo, mes_referencia, ano_referencia, total_registros, 
                             beneficiarios_unicos, contas_unicas, valor_total, pagamentos_duplicados, 
@@ -1095,6 +1132,9 @@ def carregar_dados(conn, email_usuario):
             if 'contas' in dados:
                 salvar_metricas_db(conn, 'contas', mes_ref, ano_ref, metrics)
             
+            if 'gestao' in dados:
+                salvar_metricas_db(conn, 'gestao', mes_ref, ano_ref, metrics)
+            
             st.session_state.processed_metrics = metrics
         
         st.sidebar.success("✅ Dados processados e salvos!")
@@ -1105,8 +1145,8 @@ def carregar_dados(conn, email_usuario):
 def processar_dados_completos(dados, retificacoes, nomes_arquivos):
     """Processa os dados para gerar métricas completas"""
     metrics = {
+        'total_registros': 0,
         'beneficiarios_unicos': 0,
-        'total_pagamentos': 0,
         'contas_unicas': 0,
         'projetos_ativos': 0,
         'valor_total': 0,
@@ -1126,6 +1166,8 @@ def processar_dados_completos(dados, retificacoes, nomes_arquivos):
     
     # Processar pagamentos
     if not df_pagamentos.empty:
+        metrics['total_registros'] = len(df_pagamentos)
+        
         if 'numero_conta' in df_pagamentos.columns:
             # Filtrar registros válidos
             df_validos = df_pagamentos[
@@ -1173,7 +1215,33 @@ def processar_dados_completos(dados, retificacoes, nomes_arquivos):
             metrics['beneficiarios_contas'] = df_contas['nome'].nunique()
         
         if 'projeto' in df_contas.columns:
-            metrics['projetos_ativos'] = max(metrics.get('projetos_ativos', 0), df_contas['projeto'].nunique())
+            # Se já temos projetos de pagamentos, usar o máximo
+            if 'projetos_ativos' in metrics:
+                metrics['projetos_ativos'] = max(metrics['projetos_ativos'], df_contas['projeto'].nunique())
+            else:
+                metrics['projetos_ativos'] = df_contas['projeto'].nunique()
+    
+    # Processar gestão de documentos
+    df_gestao = dados.get('gestao', pd.DataFrame())
+    if not df_gestao.empty:
+        # Atualizar contagem total de registros
+        metrics['total_registros'] += len(df_gestao)
+        
+        if 'nome' in df_gestao.columns:
+            # Atualizar beneficiários únicos
+            beneficiarios_gestao = df_gestao['nome'].nunique()
+            if 'beneficiarios_unicos' in metrics:
+                metrics['beneficiarios_unicos'] = max(metrics['beneficiarios_unicos'], beneficiarios_gestao)
+            else:
+                metrics['beneficiarios_unicos'] = beneficiarios_gestao
+        
+        if 'projeto' in df_gestao.columns:
+            # Atualizar projetos ativos
+            projetos_gestao = df_gestao['projeto'].nunique()
+            if 'projetos_ativos' in metrics:
+                metrics['projetos_ativos'] = max(metrics['projetos_ativos'], projetos_gestao)
+            else:
+                metrics['projetos_ativos'] = projetos_gestao
     
     # Adicionar dados de retificações
     if retificacoes:
@@ -1199,35 +1267,33 @@ class PDFRelatorio(FPDF):
     def __init__(self):
         super().__init__()
         self.set_auto_page_break(auto=True, margin=15)
-        # Usar fonte que suporte UTF-8
-        self.add_font('DejaVu', '', 'DejaVuSans.ttf', uni=True)
-        self.add_font('DejaVu', 'B', 'DejaVuSans-Bold.ttf', uni=True)
-        self.add_font('DejaVu', 'I', 'DejaVuSans-Oblique.ttf', uni=True)
+        # Usar fontes padrão que estão disponíveis em todos os sistemas
+        self.set_font('Arial', '', 12)
     
     def header(self):
-        self.set_font('DejaVu', 'B', 12)
-        self.cell(0, 10, 'Prefeitura de São Paulo - SMDET', 0, 1, 'C')
-        self.cell(0, 10, 'Sistema POT - Relatório de Análise', 0, 1, 'C')
+        self.set_font('Arial', 'B', 12)
+        self.cell(0, 10, 'Prefeitura de Sao Paulo - SMDET', 0, 1, 'C')
+        self.cell(0, 10, 'Sistema POT - Relatorio de Analise', 0, 1, 'C')
         self.ln(5)
     
     def footer(self):
         self.set_y(-15)
-        self.set_font('DejaVu', 'I', 8)
-        self.cell(0, 10, f'Página {self.page_no()}', 0, 0, 'C')
+        self.set_font('Arial', 'I', 8)
+        self.cell(0, 10, f'Pagina {self.page_no()}', 0, 0, 'C')
     
     def add_section_title(self, title):
-        self.set_font('DejaVu', 'B', 14)
+        self.set_font('Arial', 'B', 14)
         self.cell(0, 10, title, 0, 1)
         self.ln(2)
     
     def add_metric_row(self, label, value):
-        self.set_font('DejaVu', '', 11)
+        self.set_font('Arial', '', 11)
         self.cell(100, 8, label, 0, 0)
-        self.set_font('DejaVu', 'B', 11)
+        self.set_font('Arial', 'B', 11)
         self.cell(0, 8, str(value), 0, 1)
     
     def add_table(self, headers, data, col_widths):
-        self.set_font('DejaVu', 'B', 10)
+        self.set_font('Arial', 'B', 10)
         
         # Cabeçalho
         self.set_fill_color(200, 200, 200)
@@ -1236,11 +1302,13 @@ class PDFRelatorio(FPDF):
         self.ln()
         
         # Dados
-        self.set_font('DejaVu', '', 9)
+        self.set_font('Arial', '', 9)
         for row in data:
             for i, cell in enumerate(row):
                 # Garantir que o texto seja string e substituir caracteres problemáticos
                 cell_str = str(cell) if cell is not None else ''
+                # Remover caracteres não ASCII para evitar problemas
+                cell_str = ''.join(char for char in cell_str if ord(char) < 128)
                 self.cell(col_widths[i], 8, cell_str, 1, 0, 'L')
             self.ln()
 
@@ -1257,33 +1325,42 @@ def gerar_pdf_relatorio(metrics, dados, nomes_arquivos, mes_ref, ano_ref, retifi
         pdf.add_page()
         
         # Cabeçalho
-        pdf.set_font('DejaVu', 'B', 16)
+        pdf.set_font('Arial', 'B', 16)
         pdf.cell(0, 10, 'RELATORIO DE ANALISE - SISTEMA POT', 0, 1, 'C')
         pdf.ln(5)
         
         # Informações básicas (remover acentos para evitar problemas)
-        pdf.set_font('DejaVu', '', 12)
-        pdf.cell(0, 8, f'Periodo de Referencia: {remover_caracteres_nao_ascii(mes_ref)}/{ano_ref}', 0, 1)
+        pdf.set_font('Arial', '', 12)
+        mes_ref_sem_acentos = remover_caracteres_nao_ascii(mes_ref)
+        pdf.cell(0, 8, f'Periodo de Referencia: {mes_ref_sem_acentos}/{ano_ref}', 0, 1)
         pdf.cell(0, 8, f'Data da Analise: {data_hora_atual_brasilia()}', 0, 1)
         pdf.ln(5)
         
         # Arquivos processados
         if nomes_arquivos:
             pdf.add_section_title('Arquivos Processados')
-            pdf.set_font('DejaVu', '', 11)
+            pdf.set_font('Arial', '', 11)
             for tipo, nome in nomes_arquivos.items():
-                pdf.cell(0, 8, f'• {tipo.title()}: {remover_caracteres_nao_ascii(nome)}', 0, 1)
+                nome_sem_acentos = remover_caracteres_nao_ascii(nome)
+                pdf.cell(0, 8, f'• {tipo.title()}: {nome_sem_acentos}', 0, 1)
             pdf.ln(5)
         
         # Métricas principais
         pdf.add_section_title('Metricas Principais')
         
-        pdf.add_metric_row('Total de Pagamentos:', formatar_brasileiro(metrics.get('total_pagamentos', 0)))
+        pdf.add_metric_row('Total de Registros:', formatar_brasileiro(metrics.get('total_registros', 0)))
         pdf.add_metric_row('Beneficiarios Unicos:', formatar_brasileiro(metrics.get('beneficiarios_unicos', 0)))
         pdf.add_metric_row('Contas Unicas:', formatar_brasileiro(metrics.get('contas_unicas', 0)))
         pdf.add_metric_row('Valor Total:', formatar_brasileiro(metrics.get('valor_total', 0), 'monetario'))
         pdf.add_metric_row('Projetos Ativos:', formatar_brasileiro(metrics.get('projetos_ativos', 0)))
         pdf.ln(5)
+        
+        # Métricas de contas
+        if metrics.get('total_contas_abertas', 0) > 0:
+            pdf.add_section_title('Metricas de Abertura de Contas')
+            pdf.add_metric_row('Total de Contas Abertas:', formatar_brasileiro(metrics.get('total_contas_abertas', 0)))
+            pdf.add_metric_row('Beneficiarios com Contas:', formatar_brasileiro(metrics.get('beneficiarios_contas', 0)))
+            pdf.ln(5)
         
         # Retificações aplicadas
         if metrics.get('dados_retificados', 0) > 0:
@@ -1299,9 +1376,10 @@ def gerar_pdf_relatorio(metrics, dados, nomes_arquivos, mes_ref, ano_ref, retifi
                 
                 data = []
                 for ret in metrics['detalhes_retificacoes'][:50]:  # Limitar a 50 registros
+                    retificacoes_texto = ', '.join([remover_caracteres_nao_ascii(r) for r in ret['retificacoes']])
                     data.append([
                         ret['numero_conta'],
-                        ', '.join([remover_caracteres_nao_ascii(r) for r in ret['retificacoes']]),
+                        retificacoes_texto,
                         ret['fonte_dados']
                     ])
                 
@@ -1309,7 +1387,7 @@ def gerar_pdf_relatorio(metrics, dados, nomes_arquivos, mes_ref, ano_ref, retifi
                 
                 if len(metrics['detalhes_retificacoes']) > 50:
                     pdf.ln(5)
-                    pdf.set_font('DejaVu', 'I', 10)
+                    pdf.set_font('Arial', 'I', 10)
                     pdf.cell(0, 8, f'... e mais {len(metrics["detalhes_retificacoes"]) - 50} retificacoes', 0, 1)
         
         # Problemas identificados
@@ -1322,9 +1400,9 @@ def gerar_pdf_relatorio(metrics, dados, nomes_arquivos, mes_ref, ano_ref, retifi
         
         if metrics.get('contas_sem_dados'):
             pdf.ln(5)
-            pdf.set_font('DejaVu', 'B', 12)
+            pdf.set_font('Arial', 'B', 12)
             pdf.cell(0, 10, 'Contas sem Dados de Referencia:', 0, 1)
-            pdf.set_font('DejaVu', '', 10)
+            pdf.set_font('Arial', '', 10)
             
             # Limitar a 20 contas e remover caracteres especiais
             contas_limpas = [remover_caracteres_nao_ascii(c) for c in metrics['contas_sem_dados'][:20]]
@@ -1349,25 +1427,33 @@ def gerar_pdf_relatorio(metrics, dados, nomes_arquivos, mes_ref, ano_ref, retifi
         if metrics.get('dados_retificados', 0) > 0:
             recomendacoes.append(f'Validar {metrics["dados_retificados"]} dados retificados automaticamente')
         
+        if metrics.get('total_contas_abertas', 0) > 0 and metrics.get('pagamentos_duplicados', 0) == 0:
+            recomendacoes.append(f'{metrics["total_contas_abertas"]} contas abertas com sucesso')
+        
         if not recomendacoes:
             recomendacoes.append('Nenhuma acao critica necessaria')
         
-        pdf.set_font('DejaVu', '', 11)
+        pdf.set_font('Arial', '', 11)
         for i, rec in enumerate(recomendacoes, 1):
             pdf.cell(0, 8, f'{i}. {rec}', 0, 1)
         
-        # Usar codificação UTF-8 para o output
-        return pdf.output(dest='S').encode('utf-8')
+        # Usar codificação Latin-1 que é suportada pelo FPDF
+        return pdf.output(dest='S').encode('latin-1')
         
     except Exception as e:
         st.error(f"Erro ao gerar PDF: {str(e)}")
         # Criar um PDF simples de fallback
-        pdf_fallback = FPDF()
-        pdf_fallback.add_page()
-        pdf_fallback.set_font("Arial", size=12)
-        pdf_fallback.cell(200, 10, txt="Relatorio do Sistema POT", ln=1, align="C")
-        pdf_fallback.cell(200, 10, txt=f"Periodo: {mes_ref}/{ano_ref}", ln=1, align="L")
-        return pdf_fallback.output(dest='S').encode('latin-1')
+        try:
+            pdf_fallback = FPDF()
+            pdf_fallback.add_page()
+            pdf_fallback.set_font("Arial", size=12)
+            pdf_fallback.cell(200, 10, txt="Relatorio do Sistema POT", ln=1, align="C")
+            pdf_fallback.cell(200, 10, txt=f"Periodo: {mes_ref}/{ano_ref}", ln=1, align="L")
+            pdf_fallback.cell(200, 10, txt=f"Data: {data_hora_atual_brasilia()}", ln=1, align="L")
+            return pdf_fallback.output(dest='S').encode('latin-1')
+        except:
+            # Se tudo falhar, retornar um PDF vazio
+            return b''
 
 # ========== FUNÇÕES DE VISUALIZAÇÃO ==========
 def mostrar_analise_principal(dados, metrics, nomes_arquivos, mes_ref, ano_ref, retificacoes):
@@ -1381,8 +1467,8 @@ def mostrar_analise_principal(dados, metrics, nomes_arquivos, mes_ref, ano_ref, 
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        st.metric("Total de Pagamentos", 
-                 formatar_brasileiro(metrics.get('total_pagamentos', 0)))
+        st.metric("Total de Registros", 
+                 formatar_brasileiro(metrics.get('total_registros', 0)))
     
     with col2:
         st.metric("Beneficiários Únicos", 
@@ -1396,27 +1482,30 @@ def mostrar_analise_principal(dados, metrics, nomes_arquivos, mes_ref, ano_ref, 
         st.metric("Valor Total", 
                  formatar_brasileiro(metrics.get('valor_total', 0), 'monetario'))
     
-    # Métricas de retificação
+    # Métricas de contas e retificação
     st.markdown("---")
-    st.subheader("📝 Retificação de Dados")
+    st.subheader("📊 Métricas Adicionais")
     
-    col5, col6, col7 = st.columns(3)
+    col5, col6, col7, col8 = st.columns(4)
     
     with col5:
+        st.metric("Projetos Ativos", 
+                 formatar_brasileiro(metrics.get('projetos_ativos', 0)))
+    
+    with col6:
         dados_retificados = metrics.get('dados_retificados', 0)
         st.metric("Dados Retificados", 
                  formatar_brasileiro(dados_retificados),
                  delta_color="normal" if dados_retificados > 0 else "off")
     
-    with col6:
+    with col7:
+        st.metric("Contas Abertas", 
+                 formatar_brasileiro(metrics.get('total_contas_abertas', 0)))
+    
+    with col8:
         st.metric("CPFs para Ajuste", 
                  formatar_brasileiro(metrics.get('total_cpfs_ajuste', 0)),
                  delta_color="inverse" if metrics.get('total_cpfs_ajuste', 0) > 0 else "off")
-    
-    with col7:
-        st.metric("Contas sem Dados", 
-                 formatar_brasileiro(len(metrics.get('contas_sem_dados', []))),
-                 delta_color="inverse" if metrics.get('contas_sem_dados', []) else "off")
     
     # Tabs de análise
     tab1, tab2, tab3, tab4 = st.tabs([
@@ -1432,6 +1521,7 @@ def mostrar_analise_principal(dados, metrics, nomes_arquivos, mes_ref, ano_ref, 
         
         st.write(f"**Projetos Ativos:** {metrics.get('projetos_ativos', 0)}")
         st.write(f"**Pagamentos Duplicados:** {metrics.get('pagamentos_duplicados', 0)}")
+        st.write(f"**Beneficiários com Contas:** {metrics.get('beneficiarios_contas', 0)}")
     
     with tab2:
         st.subheader("Detalhes das Retificações")
@@ -1576,29 +1666,36 @@ def main():
         try:
             pdf_bytes = gerar_pdf_relatorio(metrics, dados, nomes_arquivos, mes_ref, ano_ref, retificacoes)
             
-            st.sidebar.download_button(
-                label="📄 Gerar Relatório PDF",
-                data=pdf_bytes,
-                file_name=f"relatorio_pot_{mes_ref}_{ano_ref}_{data_hora_arquivo_brasilia()}.pdf",
-                mime="application/pdf",
-                use_container_width=True
-            )
+            if pdf_bytes:
+                st.sidebar.download_button(
+                    label="📄 Gerar Relatório PDF",
+                    data=pdf_bytes,
+                    file_name=f"relatorio_pot_{mes_ref}_{ano_ref}_{data_hora_arquivo_brasilia()}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True
+                )
+            else:
+                st.sidebar.warning("Não foi possível gerar o PDF")
         except Exception as e:
             st.sidebar.error(f"Erro ao gerar PDF: {str(e)}")
             # Botão de fallback com PDF simples
-            pdf_simples = FPDF()
-            pdf_simples.add_page()
-            pdf_simples.set_font("Arial", size=12)
-            pdf_simples.cell(200, 10, txt=f"Relatorio POT {mes_ref}/{ano_ref}", ln=1, align="C")
-            pdf_bytes_simples = pdf_simples.output(dest='S').encode('latin-1')
-            
-            st.sidebar.download_button(
-                label="📄 Gerar PDF Simples",
-                data=pdf_bytes_simples,
-                file_name=f"relatorio_simples_pot_{mes_ref}_{ano_ref}.pdf",
-                mime="application/pdf",
-                use_container_width=True
-            )
+            try:
+                pdf_simples = FPDF()
+                pdf_simples.add_page()
+                pdf_simples.set_font("Arial", size=12)
+                pdf_simples.cell(200, 10, txt=f"Relatorio POT {mes_ref}/{ano_ref}", ln=1, align="C")
+                pdf_simples.cell(200, 10, txt=f"Data: {data_hora_atual_brasilia()}", ln=1, align="L")
+                pdf_bytes_simples = pdf_simples.output(dest='S').encode('latin-1')
+                
+                st.sidebar.download_button(
+                    label="📄 Gerar PDF Simples",
+                    data=pdf_bytes_simples,
+                    file_name=f"relatorio_simples_pot_{mes_ref}_{ano_ref}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True
+                )
+            except:
+                st.sidebar.error("Não foi possível gerar nenhum PDF")
         
         # Exportar dados tratados
         st.sidebar.markdown("---")
@@ -1612,6 +1709,30 @@ def main():
                     label="📋 Dados de Pagamentos (CSV)",
                     data=csv_data,
                     file_name=f"pagamentos_{mes_ref}_{ano_ref}.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+        
+        if 'contas' in dados:
+            df_exportar_contas = dados.get('contas', pd.DataFrame())
+            if not df_exportar_contas.empty:
+                csv_data_contas = df_exportar_contas.to_csv(index=False, encoding='utf-8-sig')
+                st.sidebar.download_button(
+                    label="📋 Dados de Contas (CSV)",
+                    data=csv_data_contas,
+                    file_name=f"contas_{mes_ref}_{ano_ref}.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+        
+        if 'gestao' in dados:
+            df_exportar_gestao = dados.get('gestao', pd.DataFrame())
+            if not df_exportar_gestao.empty:
+                csv_data_gestao = df_exportar_gestao.to_csv(index=False, encoding='utf-8-sig')
+                st.sidebar.download_button(
+                    label="📋 Dados de Gestão (CSV)",
+                    data=csv_data_gestao,
+                    file_name=f"gestao_{mes_ref}_{ano_ref}.csv",
                     mime="text/csv",
                     use_container_width=True
                 )
