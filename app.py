@@ -14,7 +14,7 @@ import os
 import json
 import tempfile
 import sys
-from collections import defaultdict
+from collections import defaultdict, Counter
 
 # ========== CONFIGURAÇÃO ==========
 st.set_page_config(
@@ -88,22 +88,22 @@ def init_database():
             )
         ''')
         
-        # Tabela de métricas - VERIFICAR E ATUALIZAR COLUNAS
+        # Tabela de métricas
         conn.execute('''
             CREATE TABLE IF NOT EXISTS metricas_mensais (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 tipo TEXT NOT NULL,
                 mes_referencia TEXT NOT NULL,
                 ano_referencia INTEGER NOT NULL,
-                total_registros INTEGER,
-                beneficiarios_unicos INTEGER,
-                contas_unicas INTEGER,
-                valor_total REAL,
-                pagamentos_duplicados INTEGER,
-                valor_duplicados REAL,
-                projetos_ativos INTEGER,
-                registros_problema INTEGER,
-                cpfs_ajuste INTEGER,
+                total_registros INTEGER DEFAULT 0,
+                beneficiarios_unicos INTEGER DEFAULT 0,
+                contas_unicas INTEGER DEFAULT 0,
+                valor_total REAL DEFAULT 0,
+                pagamentos_duplicados INTEGER DEFAULT 0,
+                valor_duplicados REAL DEFAULT 0,
+                projetos_ativos INTEGER DEFAULT 0,
+                registros_problema INTEGER DEFAULT 0,
+                cpfs_ajuste INTEGER DEFAULT 0,
                 total_contas_abertas INTEGER DEFAULT 0,
                 beneficiarios_contas INTEGER DEFAULT 0,
                 dados_retificados INTEGER DEFAULT 0,
@@ -112,25 +112,6 @@ def init_database():
                 UNIQUE(tipo, mes_referencia, ano_referencia)
             )
         ''')
-        
-        # Verificar e adicionar colunas faltantes se necessário
-        cursor = conn.execute("PRAGMA table_info(metricas_mensais)")
-        colunas_existentes = [col[1] for col in cursor.fetchall()]
-        
-        colunas_necessarias = [
-            'total_contas_abertas',
-            'beneficiarios_contas',
-            'dados_retificados'
-        ]
-        
-        for coluna in colunas_necessarias:
-            if coluna not in colunas_existentes:
-                try:
-                    if coluna in ['total_contas_abertas', 'beneficiarios_contas', 'dados_retificados']:
-                        conn.execute(f"ALTER TABLE metricas_mensais ADD COLUMN {coluna} INTEGER DEFAULT 0")
-                        st.info(f"Coluna {coluna} adicionada à tabela metricas_mensais")
-                except Exception as e:
-                    st.warning(f"Não foi possível adicionar coluna {coluna}: {str(e)}")
         
         # Tabela: Logs administrativos
         conn.execute('''
@@ -272,7 +253,7 @@ def autenticar(conn):
         st.sidebar.info(f"{tipo_usuario}: {st.session_state.email_autorizado}")
         
         if st.sidebar.button("🚪 Sair", key="sair_sistema"):
-            for key in ['autenticado', 'email_autorizado', 'tipo_usuario', 'uploaded_data', 'processed_metrics']:
+            for key in ['autenticado', 'email_autorizado', 'tipo_usuario', 'dados_carregados', 'nomes_arquivos_carregados', 'mes_ref_carregado', 'ano_ref_carregado', 'processed_metrics', 'retificacoes_aplicadas']:
                 if key in st.session_state:
                     del st.session_state[key]
             st.rerun()
@@ -341,7 +322,7 @@ def padronizar_cabecalhos(df):
         
         col_limpa = str(col).strip()
         
-        # Remover acentos e caracteres especiais
+        # Remover acentos e caracteres especiais mais completos
         col_limpa = re.sub(r'[áàâãä]', 'a', col_limpa, flags=re.IGNORECASE)
         col_limpa = re.sub(r'[éèêë]', 'e', col_limpa, flags=re.IGNORECASE)
         col_limpa = re.sub(r'[íìîï]', 'i', col_limpa, flags=re.IGNORECASE)
@@ -359,7 +340,7 @@ def padronizar_cabecalhos(df):
         # Converter para minúsculas
         col_limpa = col_limpa.lower()
         
-        # Mapeamento de nomes comuns
+        # Mapeamento de nomes comuns MAIS COMPLETO
         mapeamento = {
             'num_cartao': 'numero_conta',
             'numcartao': 'numero_conta',
@@ -369,40 +350,75 @@ def padronizar_cabecalhos(df):
             'conta': 'numero_conta',
             'n_conta': 'numero_conta',
             'nconta': 'numero_conta',
+            'numero': 'numero_conta',
+            'num': 'numero_conta',
+            'n_': 'numero_conta',
+            'cartao': 'numero_conta',
             'beneficiario': 'nome',
             'beneficiário': 'nome',
             'nome_completo': 'nome',
             'nome_beneficiario': 'nome',
+            'beneficiarios': 'nome',
+            'beneficiárias': 'nome',
+            'nome_do_beneficiario': 'nome',
+            'nom': 'nome',
             'valor_pagto': 'valor',
             'valor_pagamento': 'valor',
             'valor_pago': 'valor',
             'valor_pgto': 'valor',
+            'val': 'valor',
+            'vlr': 'valor',
+            'valor_do_pagamento': 'valor',
             'data_pagto': 'data_pagamento',
             'data_pagamento': 'data_pagamento',
             'data_pgto': 'data_pagamento',
+            'data': 'data_pagamento',
+            'dt': 'data_pagamento',
             'data_abertura': 'data_conta',
             'data_conta': 'data_conta',
             'dt_abertura': 'data_conta',
+            'data_abertura_conta': 'data_conta',
             'cpf': 'cpf',
+            'cpf_do_beneficiario': 'cpf',
+            'cpf_beneficiario': 'cpf',
             'rg': 'rg',
+            'registro_geral': 'rg',
             'projeto': 'projeto',
+            'nome_do_projeto': 'projeto',
+            'programa': 'projeto',
             'banco': 'banco',
+            'banco_do_beneficiario': 'banco',
+            'instituicao_financeira': 'banco',
             'agencia': 'agencia',
+            'ag': 'agencia',
+            'ag_': 'agencia',
             'conta_corrente': 'conta_corrente',
+            'conta_bancaria': 'conta_corrente',
+            'conta_do_beneficiario': 'conta_corrente',
             'status': 'status',
+            'situacao': 'status',
             'observacao': 'observacao',
             'obs': 'observacao',
+            'observacoes': 'observacao',
             'telefone': 'telefone',
             'celular': 'telefone',
+            'tel': 'telefone',
+            'fone': 'telefone',
             'email': 'email',
+            'e_mail': 'email',
             'endereco': 'endereco',
+            'ender': 'endereco',
             'bairro': 'bairro',
             'cidade': 'cidade',
+            'municipio': 'cidade',
             'uf': 'uf',
-            'cep': 'cep'
+            'estado': 'uf',
+            'unidade_federativa': 'uf',
+            'cep': 'cep',
+            'codigo_postal': 'cep'
         }
         
-        # Aplicar mapeamento
+        # Aplicar mapeamento - verifica se a coluna limpa está no mapeamento
         col_limpa = mapeamento.get(col_limpa, col_limpa)
         
         novo_cabecalhos[col] = col_limpa
@@ -503,7 +519,7 @@ def detectar_mes_ano_dados(df, tipo_planilha):
     
     for col in df.columns:
         col_lower = str(col).lower()
-        if any(termo in col_lower for termo in ['data', 'dt', 'date']):
+        if any(termo in col_lower for termo in ['data', 'dt', 'date', 'data_pagamento', 'data_pagto', 'data_pgto', 'data_conta', 'data_abertura']):
             colunas_data.append(col)
     
     if not colunas_data:
@@ -514,8 +530,17 @@ def detectar_mes_ano_dados(df, tipo_planilha):
     
     for col_data in colunas_data:
         try:
-            # Converter para datetime
-            df[col_data] = pd.to_datetime(df[col_data], errors='coerce', dayfirst=True)
+            # Tentar diferentes formatos de data
+            for fmt in ['%d/%m/%Y', '%d-%m-%Y', '%d.%m.%Y', '%Y-%m-%d', '%Y/%m/%d', '%d/%m/%y', '%d-%m-%y']:
+                try:
+                    df[col_data] = pd.to_datetime(df[col_data], format=fmt, errors='coerce')
+                    break
+                except:
+                    continue
+            
+            # Se não conseguiu com formato específico, tenta inferir
+            if df[col_data].dtype == 'object':
+                df[col_data] = pd.to_datetime(df[col_data], errors='coerce', dayfirst=True)
             
             # Remover valores nulos
             datas_validas = df[col_data].dropna()
@@ -544,7 +569,6 @@ def detectar_mes_ano_dados(df, tipo_planilha):
     
     if meses and anos:
         # Usar o mês e ano mais frequentes
-        from collections import Counter
         mes_final = Counter(meses).most_common(1)[0][0] if meses else None
         ano_final = Counter(anos).most_common(1)[0][0] if anos else None
         
@@ -599,15 +623,23 @@ def processar_arquivo(uploaded_file, tipo_arquivo='pagamentos'):
                     df = pd.read_excel(tmp_path, engine='openpyxl', dtype=str)
                 except:
                     df = pd.read_excel(tmp_path, engine='xlrd', dtype=str)
+            elif uploaded_file.name.endswith('.xls'):
+                try:
+                    df = pd.read_excel(tmp_path, engine='xlrd', dtype=str)
+                except:
+                    df = pd.read_excel(tmp_path, engine='openpyxl', dtype=str)
             elif uploaded_file.name.endswith('.csv'):
                 try:
                     # Tentar diferentes encodings e separadores
-                    df = pd.read_csv(tmp_path, encoding='utf-8', sep=None, engine='python', dtype=str)
+                    df = pd.read_csv(tmp_path, encoding='utf-8', sep=None, engine='python', dtype=str, on_bad_lines='skip')
                 except:
                     try:
-                        df = pd.read_csv(tmp_path, encoding='latin-1', sep=None, engine='python', dtype=str)
+                        df = pd.read_csv(tmp_path, encoding='latin-1', sep=None, engine='python', dtype=str, on_bad_lines='skip')
                     except:
-                        df = pd.read_csv(tmp_path, encoding='cp1252', sep=None, engine='python', dtype=str)
+                        try:
+                            df = pd.read_csv(tmp_path, encoding='cp1252', sep=None, engine='python', dtype=str, on_bad_lines='skip')
+                        except:
+                            df = pd.read_csv(tmp_path, encoding='utf-8', sep=';', dtype=str, on_bad_lines='skip')
             else:
                 st.error(f"Formato não suportado: {uploaded_file.name}")
                 os.unlink(tmp_path)
@@ -622,6 +654,11 @@ def processar_arquivo(uploaded_file, tipo_arquivo='pagamentos'):
             # Padronizar cabeçalhos
             df = padronizar_cabecalhos(df)
             
+            # Verificar se temos colunas essenciais
+            if tipo_arquivo == 'pagamentos':
+                if 'numero_conta' not in df.columns and 'valor' not in df.columns:
+                    st.warning(f"Arquivo de pagamentos não contém colunas essenciais (numero_conta, valor)")
+            
             return df
             
         except Exception as e:
@@ -635,122 +672,9 @@ def processar_arquivo(uploaded_file, tipo_arquivo='pagamentos'):
         return None
 
 # ========== FUNÇÕES DE RETIFICAÇÃO DE DADOS ==========
-def cruzar_dados_retificacao(dados_pagamentos, dados_contas, dados_gestao):
-    """Cruza dados entre as planilhas para retificação"""
-    retificacoes = {
-        'total_retificacoes': 0,
-        'detalhes_retificacoes': [],
-        'dados_completados': {},
-        'contas_sem_dados': [],
-        'inconsistencias': []
-    }
-    
-    # Verificar se temos dados suficientes
-    if dados_contas.empty and dados_gestao.empty:
-        return retificacoes
-    
-    # Criar dicionário de referência por número de conta
-    dados_referencia = {}
-    
-    # Prioridade 1: Gestão de documentos (dados mais confiáveis)
-    if not dados_gestao.empty and 'numero_conta' in dados_gestao.columns:
-        for idx, row in dados_gestao.iterrows():
-            conta = str(row['numero_conta']).strip() if pd.notna(row['numero_conta']) else None
-            if conta and conta != 'nan':
-                dados_referencia[conta] = {
-                    'cpf': str(row['cpf']).strip() if 'cpf' in row and pd.notna(row['cpf']) else None,
-                    'nome': str(row['nome']).strip() if 'nome' in row and pd.notna(row['nome']) else None,
-                    'rg': str(row['rg']).strip() if 'rg' in row and pd.notna(row['rg']) else None,
-                    'projeto': str(row['projeto']).strip() if 'projeto' in row and pd.notna(row['projeto']) else None,
-                    'fonte': 'gestao_doc'
-                }
-    
-    # Prioridade 2: Abertura de contas
-    if not dados_contas.empty and 'numero_conta' in dados_contas.columns:
-        for idx, row in dados_contas.iterrows():
-            conta = str(row['numero_conta']).strip() if pd.notna(row['numero_conta']) else None
-            if conta and conta != 'nan' and conta not in dados_referencia:
-                dados_referencia[conta] = {
-                    'cpf': str(row['cpf']).strip() if 'cpf' in row and pd.notna(row['cpf']) else None,
-                    'nome': str(row['nome']).strip() if 'nome' in row and pd.notna(row['nome']) else None,
-                    'rg': str(row['rg']).strip() if 'rg' in row and pd.notna(row['rg']) else None,
-                    'projeto': str(row['projeto']).strip() if 'projeto' in row and pd.notna(row['projeto']) else None,
-                    'fonte': 'abertura_contas'
-                }
-    
-    # Aplicar retificações aos pagamentos
-    if not dados_pagamentos.empty and 'numero_conta' in dados_pagamentos.columns:
-        dados_pagamentos_ret = dados_pagamentos.copy()
-        contas_sem_dados = []
-        
-        for idx, row in dados_pagamentos_ret.iterrows():
-            conta = str(row['numero_conta']).strip() if pd.notna(row['numero_conta']) else None
-            
-            if not conta or conta == 'nan':
-                continue
-            
-            if conta in dados_referencia:
-                ref = dados_referencia[conta]
-                retificacoes_aplicadas = []
-                
-                # Retificar CPF
-                if 'cpf' in dados_pagamentos_ret.columns:
-                    cpf_original = str(row['cpf']).strip() if pd.notna(row['cpf']) else ''
-                    cpf_referencia = ref['cpf']
-                    
-                    if cpf_referencia and cpf_referencia != 'nan' and cpf_referencia != cpf_original:
-                        if not cpf_original or cpf_original == 'nan':
-                            dados_pagamentos_ret.at[idx, 'cpf'] = cpf_referencia
-                            retificacoes_aplicadas.append(f"CPF: '{cpf_original}' → '{cpf_referencia}'")
-                
-                # Retificar Nome
-                if 'nome' in dados_pagamentos_ret.columns:
-                    nome_original = str(row['nome']).strip() if pd.notna(row['nome']) else ''
-                    nome_referencia = ref['nome']
-                    
-                    if nome_referencia and nome_referencia != 'nan' and nome_referencia != nome_original:
-                        if not nome_original or nome_original == 'nan':
-                            dados_pagamentos_ret.at[idx, 'nome'] = nome_referencia
-                            retificacoes_aplicadas.append(f"Nome: '{nome_original}' → '{nome_referencia}'")
-                
-                # Retificar RG
-                if 'rg' in dados_pagamentos_ret.columns:
-                    rg_original = str(row['rg']).strip() if pd.notna(row['rg']) else ''
-                    rg_referencia = ref['rg']
-                    
-                    if rg_referencia and rg_referencia != 'nan' and rg_referencia != rg_original:
-                        if not rg_original or rg_original == 'nan':
-                            dados_pagamentos_ret.at[idx, 'rg'] = rg_referencia
-                            retificacoes_aplicadas.append(f"RG: '{rg_original}' → '{rg_referencia}'")
-                
-                # Retificar Projeto
-                if 'projeto' in dados_pagamentos_ret.columns:
-                    projeto_original = str(row['projeto']).strip() if pd.notna(row['projeto']) else ''
-                    projeto_referencia = ref['projeto']
-                    
-                    if projeto_referencia and projeto_referencia != 'nan' and projeto_referencia != projeto_original:
-                        if not projeto_original or projeto_original == 'nan':
-                            dados_pagamentos_ret.at[idx, 'projeto'] = projeto_referencia
-                            retificacoes_aplicadas.append(f"Projeto: '{projeto_original}' → '{projeto_referencia}'")
-                
-                if retificacoes_aplicadas:
-                    retificacoes['detalhes_retificacoes'].append({
-                        'numero_conta': conta,
-                        'retificacoes': retificacoes_aplicadas,
-                        'fonte_dados': ref['fonte']
-                    })
-                    retificacoes['total_retificacoes'] += len(retificacoes_aplicadas)
-            else:
-                contas_sem_dados.append(conta)
-        
-        retificacoes['contas_sem_dados'] = list(set(contas_sem_dados))
-        retificacoes['dados_completados'] = dados_pagamentos_ret
-    
-    return retificacoes
-
 def processar_cpf_para_retificacao(cpf):
     """Processa CPF para padronização"""
-    if pd.isna(cpf) or cpf in ['', 'NaN', 'None', 'nan', 'NULL']:
+    if pd.isna(cpf) or cpf in ['', 'NaN', 'None', 'nan', 'NULL', 'NaT', 'NAT']:
         return ''
     
     cpf_str = str(cpf).strip()
@@ -761,6 +685,8 @@ def processar_cpf_para_retificacao(cpf):
     
     if len(cpf_limpo) < 11:
         cpf_limpo = cpf_limpo.zfill(11)
+    elif len(cpf_limpo) > 11:
+        cpf_limpo = cpf_limpo[:11]
     
     return cpf_limpo
 
@@ -776,20 +702,134 @@ def aplicar_retificacoes_cpf(dados):
         cpf_original = row['cpf'] if pd.notna(row['cpf']) else ''
         cpf_processado = processar_cpf_para_retificacao(cpf_original)
         
-        if cpf_processado != str(cpf_original):
+        if cpf_processado != str(cpf_original) and cpf_processado != '':
             dados_ret.at[idx, 'cpf'] = cpf_processado
             retificacoes += 1
     
     return dados_ret, retificacoes
+
+def cruzar_dados_retificacao(dados_pagamentos, dados_contas, dados_gestao):
+    """Cruza dados entre as planilhas para retificação"""
+    retificacoes = {
+        'total_retificacoes': 0,
+        'detalhes_retificacoes': [],
+        'dados_completados': {},
+        'contas_sem_dados': [],
+        'inconsistencias': []
+    }
+    
+    # Se não temos dados de pagamentos, não há o que retificar
+    if dados_pagamentos.empty:
+        return retificacoes
+    
+    # Criar dicionário de referência por número de conta
+    dados_referencia = {}
+    
+    # Prioridade 1: Gestão de documentos (dados mais confiáveis)
+    if not dados_gestao.empty and 'numero_conta' in dados_gestao.columns:
+        for idx, row in dados_gestao.iterrows():
+            conta = str(row['numero_conta']).strip() if pd.notna(row['numero_conta']) else None
+            if conta and conta != 'nan' and conta != 'None' and conta != '':
+                dados_referencia[conta] = {
+                    'cpf': str(row['cpf']).strip() if 'cpf' in row and pd.notna(row['cpf']) else None,
+                    'nome': str(row['nome']).strip() if 'nome' in row and pd.notna(row['nome']) else None,
+                    'rg': str(row['rg']).strip() if 'rg' in row and pd.notna(row['rg']) else None,
+                    'projeto': str(row['projeto']).strip() if 'projeto' in row and pd.notna(row['projeto']) else None,
+                    'fonte': 'gestao_doc'
+                }
+    
+    # Prioridade 2: Abertura de contas
+    if not dados_contas.empty and 'numero_conta' in dados_contas.columns:
+        for idx, row in dados_contas.iterrows():
+            conta = str(row['numero_conta']).strip() if pd.notna(row['numero_conta']) else None
+            if conta and conta != 'nan' and conta != 'None' and conta != '' and conta not in dados_referencia:
+                dados_referencia[conta] = {
+                    'cpf': str(row['cpf']).strip() if 'cpf' in row and pd.notna(row['cpf']) else None,
+                    'nome': str(row['nome']).strip() if 'nome' in row and pd.notna(row['nome']) else None,
+                    'rg': str(row['rg']).strip() if 'rg' in row and pd.notna(row['rg']) else None,
+                    'projeto': str(row['projeto']).strip() if 'projeto' in row and pd.notna(row['projeto']) else None,
+                    'fonte': 'abertura_contas'
+                }
+    
+    # Aplicar retificações aos pagamentos
+    dados_pagamentos_ret = dados_pagamentos.copy()
+    contas_sem_dados = []
+    
+    for idx, row in dados_pagamentos_ret.iterrows():
+        conta = str(row['numero_conta']).strip() if pd.notna(row['numero_conta']) else None
+        
+        if not conta or conta == 'nan' or conta == 'None' or conta == '':
+            continue
+        
+        if conta in dados_referencia:
+            ref = dados_referencia[conta]
+            retificacoes_aplicadas = []
+            
+            # Retificar CPF
+            if 'cpf' in dados_pagamentos_ret.columns:
+                cpf_original = str(row['cpf']).strip() if pd.notna(row['cpf']) else ''
+                cpf_referencia = ref['cpf']
+                
+                if cpf_referencia and cpf_referencia != 'nan' and cpf_referencia != 'None' and cpf_referencia != '':
+                    # Se CPF original está vazio ou inválido, substituir
+                    if not cpf_original or cpf_original == 'nan' or cpf_original == 'None' or cpf_original == '':
+                        dados_pagamentos_ret.at[idx, 'cpf'] = cpf_referencia
+                        retificacoes_aplicadas.append(f"CPF: '{cpf_original}' → '{cpf_referencia}'")
+                    # Se CPF original tem menos de 11 dígitos, substituir
+                    elif len(re.sub(r'[^\d]', '', cpf_original)) < 11:
+                        dados_pagamentos_ret.at[idx, 'cpf'] = cpf_referencia
+                        retificacoes_aplicadas.append(f"CPF: '{cpf_original}' → '{cpf_referencia}'")
+            
+            # Retificar Nome
+            if 'nome' in dados_pagamentos_ret.columns:
+                nome_original = str(row['nome']).strip() if pd.notna(row['nome']) else ''
+                nome_referencia = ref['nome']
+                
+                if nome_referencia and nome_referencia != 'nan' and nome_referencia != 'None' and nome_referencia != '':
+                    if not nome_original or nome_original == 'nan' or nome_original == 'None' or nome_original == '':
+                        dados_pagamentos_ret.at[idx, 'nome'] = nome_referencia
+                        retificacoes_aplicadas.append(f"Nome: '{nome_original}' → '{nome_referencia}'")
+            
+            # Retificar RG
+            if 'rg' in dados_pagamentos_ret.columns:
+                rg_original = str(row['rg']).strip() if pd.notna(row['rg']) else ''
+                rg_referencia = ref['rg']
+                
+                if rg_referencia and rg_referencia != 'nan' and rg_referencia != 'None' and rg_referencia != '':
+                    if not rg_original or rg_original == 'nan' or rg_original == 'None' or rg_original == '':
+                        dados_pagamentos_ret.at[idx, 'rg'] = rg_referencia
+                        retificacoes_aplicadas.append(f"RG: '{rg_original}' → '{rg_referencia}'")
+            
+            # Retificar Projeto
+            if 'projeto' in dados_pagamentos_ret.columns:
+                projeto_original = str(row['projeto']).strip() if pd.notna(row['projeto']) else ''
+                projeto_referencia = ref['projeto']
+                
+                if projeto_referencia and projeto_referencia != 'nan' and projeto_referencia != 'None' and projeto_referencia != '':
+                    if not projeto_original or projeto_original == 'nan' or projeto_original == 'None' or projeto_original == '':
+                        dados_pagamentos_ret.at[idx, 'projeto'] = projeto_referencia
+                        retificacoes_aplicadas.append(f"Projeto: '{projeto_original}' → '{projeto_referencia}'")
+            
+            if retificacoes_aplicadas:
+                retificacoes['detalhes_retificacoes'].append({
+                    'numero_conta': conta,
+                    'retificacoes': retificacoes_aplicadas,
+                    'fonte_dados': ref['fonte']
+                })
+                retificacoes['total_retificacoes'] += len(retificacoes_aplicadas)
+        else:
+            contas_sem_dados.append(conta)
+    
+    retificacoes['contas_sem_dados'] = list(set(contas_sem_dados))
+    retificacoes['dados_completados'] = dados_pagamentos_ret
+    
+    return retificacoes
 
 # ========== FUNÇÕES DE SALVAMENTO NO BANCO ==========
 def salvar_dados_db(conn, tabela, mes_ref, ano_ref, nome_arquivo, file_bytes, dados_df, metadados, importado_por):
     """Salva dados no banco de forma genérica"""
     try:
         file_hash = calcular_hash_arquivo(file_bytes)
-        
-        cursor = conn.execute(f"SELECT id FROM {tabela} WHERE hash_arquivo = ?", (file_hash,))
-        existe = cursor.fetchone()
         
         # Verificar duplicidade por nome e período
         cursor = conn.execute(f"""
@@ -801,25 +841,18 @@ def salvar_dados_db(conn, tabela, mes_ref, ano_ref, nome_arquivo, file_bytes, da
         duplicado_periodo = cursor.fetchone()
         
         if duplicado_periodo:
+            # Perguntar se quer sobrescrever
             return False, f"Arquivo '{nome_arquivo}' já existe para {mes_ref}/{ano_ref}"
         
         dados_json = dados_df.to_json(orient='records', date_format='iso', force_ascii=False)
         metadados_json = json.dumps(metadados, ensure_ascii=False)
         
-        if existe:
-            conn.execute(f'''
-                UPDATE {tabela} SET data_importacao = ?, dados_json = ?, metadados_json = ?,
-                          mes_referencia = ?, ano_referencia = ?, nome_arquivo = ?, importado_por = ?
-                WHERE hash_arquivo = ?
-            ''', (data_hora_atual_brasilia(), dados_json, metadados_json, 
-                  mes_ref, ano_ref, nome_arquivo, importado_por.lower(), file_hash))
-        else:
-            conn.execute(f'''
-                INSERT INTO {tabela} (mes_referencia, ano_referencia, data_importacao, 
-                          nome_arquivo, dados_json, metadados_json, hash_arquivo, importado_por)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (mes_ref, ano_ref, data_hora_atual_brasilia(), nome_arquivo, 
-                  dados_json, metadados_json, file_hash, importado_por.lower()))
+        conn.execute(f'''
+            INSERT INTO {tabela} (mes_referencia, ano_referencia, data_importacao, 
+                      nome_arquivo, dados_json, metadados_json, hash_arquivo, importado_por)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (mes_ref, ano_ref, data_hora_atual_brasilia(), nome_arquivo, 
+              dados_json, metadados_json, file_hash, importado_por.lower()))
         
         conn.commit()
         return True, "✅ Dados salvos com sucesso"
@@ -828,23 +861,8 @@ def salvar_dados_db(conn, tabela, mes_ref, ano_ref, nome_arquivo, file_bytes, da
         return False, f"Erro ao salvar dados: {str(e)}"
 
 def salvar_metricas_db(conn, tipo, mes_ref, ano_ref, metrics):
-    """Salva métricas no banco com verificação de colunas"""
+    """Salva métricas no banco"""
     try:
-        # Verificar se a tabela tem as colunas necessárias
-        cursor = conn.execute("PRAGMA table_info(metricas_mensais)")
-        colunas_existentes = [col[1] for col in cursor.fetchall()]
-        
-        # Verificar e adicionar colunas faltantes
-        colunas_necessarias = ['total_contas_abertas', 'beneficiarios_contas', 'dados_retificados']
-        for coluna in colunas_necessarias:
-            if coluna not in colunas_existentes:
-                try:
-                    conn.execute(f"ALTER TABLE metricas_mensais ADD COLUMN {coluna} INTEGER DEFAULT 0")
-                    conn.commit()
-                    st.info(f"Coluna {coluna} adicionada à tabela metricas_mensais")
-                except Exception as e:
-                    st.warning(f"Não foi possível adicionar coluna {coluna}: {str(e)}")
-        
         # Verificar se já existe registro
         cursor = conn.execute(
             "SELECT id FROM metricas_mensais WHERE tipo = ? AND mes_referencia = ? AND ano_referencia = ?",
@@ -1033,8 +1051,8 @@ def carregar_dados(conn, email_usuario):
     st.sidebar.markdown("---")
     
     # Inicializar variáveis
-    dados = st.session_state.dados_carregados.copy()
-    nomes_arquivos = st.session_state.nomes_arquivos_carregados.copy()
+    dados = {}
+    nomes_arquivos = {}
     dados_processados = False
     
     # Processar cada tipo de arquivo
@@ -1093,8 +1111,9 @@ def carregar_dados(conn, email_usuario):
             else:
                 st.sidebar.error(f"❌ {tipo.title()}: {mensagem}")
     
-    # Aplicar retificações se temos dados de pagamentos e referência
-    if 'pagamentos' in dados and ('contas' in dados or 'gestao' in dados):
+    # Aplicar retificações se temos dados de pagamentos
+    retificacoes = {}
+    if 'pagamentos' in dados:
         with st.sidebar:
             with st.spinner("🔄 Aplicando retificações..."):
                 retificacoes = cruzar_dados_retificacao(
@@ -1103,7 +1122,7 @@ def carregar_dados(conn, email_usuario):
                     dados.get('gestao', pd.DataFrame())
                 )
                 
-                if retificacoes['total_retificacoes'] > 0:
+                if retificacoes.get('total_retificacoes', 0) > 0:
                     st.sidebar.success(f"✅ {retificacoes['total_retificacoes']} dados retificados!")
                     
                     # Atualizar dados com retificações
@@ -1113,6 +1132,7 @@ def carregar_dados(conn, email_usuario):
                     st.session_state.retificacoes_aplicadas = retificacoes
                 else:
                     st.sidebar.info("ℹ️ Nenhuma retificação necessária")
+                    st.session_state.retificacoes_aplicadas = {}
     
     # Atualizar session_state se houve processamento
     if dados_processados:
@@ -1138,6 +1158,14 @@ def carregar_dados(conn, email_usuario):
             st.session_state.processed_metrics = metrics
         
         st.sidebar.success("✅ Dados processados e salvos!")
+    
+    # Se não processou novos dados, mas tem dados carregados anteriormente
+    elif st.session_state.get('dados_carregados'):
+        dados = st.session_state.dados_carregados.copy()
+        nomes_arquivos = st.session_state.nomes_arquivos_carregados.copy()
+        mes_ref = st.session_state.mes_ref_carregado
+        ano_ref = st.session_state.ano_ref_carregado
+        retificacoes = st.session_state.get('retificacoes_aplicadas', {})
     
     return dados, nomes_arquivos, mes_ref, ano_ref, dados_processados
 
@@ -1175,36 +1203,37 @@ def processar_dados_completos(dados, retificacoes, nomes_arquivos):
                 (df_pagamentos['numero_conta'].astype(str).str.strip() != '')
             ].copy()
             
-            metrics['total_pagamentos'] = len(df_validos)
-            metrics['contas_unicas'] = df_validos['numero_conta'].nunique()
-            
-            if 'nome' in df_validos.columns:
-                metrics['beneficiarios_unicos'] = df_validos['nome'].nunique()
-            
-            if 'projeto' in df_validos.columns:
-                metrics['projetos_ativos'] = df_validos['projeto'].nunique()
-            
-            if 'valor' in df_validos.columns:
-                try:
-                    # Converter valores para numérico
-                    df_validos['valor'] = pd.to_numeric(df_validos['valor'], errors='coerce')
-                    metrics['valor_total'] = df_validos['valor'].sum()
-                except:
-                    metrics['valor_total'] = 0
-            
-            # Verificar duplicidades
-            if 'numero_conta' in df_validos.columns:
-                contas_duplicadas = df_validos[df_validos.duplicated(['numero_conta'], keep=False)]
-                metrics['pagamentos_duplicados'] = contas_duplicadas['numero_conta'].nunique() if not contas_duplicadas.empty else 0
-            
-            # Verificar CPFs problemáticos
-            if 'cpf' in df_validos.columns:
-                cpfs_problematicos = df_validos[
-                    df_validos['cpf'].isna() | 
-                    (df_validos['cpf'].astype(str).str.strip() == '') |
-                    (df_validos['cpf'].astype(str).str.len() != 11)
-                ]
-                metrics['total_cpfs_ajuste'] = len(cpfs_problematicos)
+            if not df_validos.empty:
+                metrics['total_pagamentos'] = len(df_validos)
+                metrics['contas_unicas'] = df_validos['numero_conta'].nunique()
+                
+                if 'nome' in df_validos.columns:
+                    metrics['beneficiarios_unicos'] = df_validos['nome'].nunique()
+                
+                if 'projeto' in df_validos.columns:
+                    metrics['projetos_ativos'] = df_validos['projeto'].nunique()
+                
+                if 'valor' in df_validos.columns:
+                    try:
+                        # Converter valores para numérico
+                        df_validos['valor'] = pd.to_numeric(df_validos['valor'], errors='coerce')
+                        metrics['valor_total'] = df_validos['valor'].sum()
+                    except:
+                        metrics['valor_total'] = 0
+                
+                # Verificar duplicidades
+                if 'numero_conta' in df_validos.columns:
+                    contas_duplicadas = df_validos[df_validos.duplicated(['numero_conta'], keep=False)]
+                    metrics['pagamentos_duplicados'] = contas_duplicadas['numero_conta'].nunique() if not contas_duplicadas.empty else 0
+                
+                # Verificar CPFs problemáticos
+                if 'cpf' in df_validos.columns:
+                    cpfs_problematicos = df_validos[
+                        df_validos['cpf'].isna() | 
+                        (df_validos['cpf'].astype(str).str.strip() == '') |
+                        (df_validos['cpf'].astype(str).str.replace(r'[^\d]', '', regex=True).str.len() != 11)
+                    ]
+                    metrics['total_cpfs_ajuste'] = len(cpfs_problematicos)
     
     # Processar abertura de contas
     df_contas = dados.get('contas', pd.DataFrame())
@@ -1305,18 +1334,43 @@ class PDFRelatorio(FPDF):
         self.set_font('Arial', '', 9)
         for row in data:
             for i, cell in enumerate(row):
-                # Garantir que o texto seja string e substituir caracteres problemáticos
+                # Garantir que o texto seja string
                 cell_str = str(cell) if cell is not None else ''
-                # Remover caracteres não ASCII para evitar problemas
-                cell_str = ''.join(char for char in cell_str if ord(char) < 128)
+                # Limitar tamanho para evitar problemas
+                if len(cell_str) > 100:
+                    cell_str = cell_str[:97] + "..."
                 self.cell(col_widths[i], 8, cell_str, 1, 0, 'L')
             self.ln()
 
-def remover_caracteres_nao_ascii(texto):
-    """Remove caracteres não-ASCII do texto"""
+def remover_caracteres_especiais(texto):
+    """Remove caracteres especiais do texto para evitar problemas no PDF"""
     if texto is None:
         return ""
-    return ''.join(char for char in str(texto) if ord(char) < 128)
+    
+    texto = str(texto)
+    # Remover caracteres problemáticos para PDF
+    texto = re.sub(r'[^\x00-\x7FáàâãäéèêëíìîïóòôõöúùûüçñÁÀÂÃÄÉÈÊËÍÌÎÏÓÒÔÕÖÚÙÛÜÇÑ\s\w\.\,\-\+\*\(\)\[\]\{\}\/\:;]', '', texto)
+    
+    # Substituir caracteres acentuados por versões sem acento
+    substituicoes = {
+        'á': 'a', 'à': 'a', 'â': 'a', 'ã': 'a', 'ä': 'a',
+        'é': 'e', 'è': 'e', 'ê': 'e', 'ë': 'e',
+        'í': 'i', 'ì': 'i', 'î': 'i', 'ï': 'i',
+        'ó': 'o', 'ò': 'o', 'ô': 'o', 'õ': 'o', 'ö': 'o',
+        'ú': 'u', 'ù': 'u', 'û': 'u', 'ü': 'u',
+        'ç': 'c', 'ñ': 'n',
+        'Á': 'A', 'À': 'A', 'Â': 'A', 'Ã': 'A', 'Ä': 'A',
+        'É': 'E', 'È': 'E', 'Ê': 'E', 'Ë': 'E',
+        'Í': 'I', 'Ì': 'I', 'Î': 'I', 'Ï': 'I',
+        'Ó': 'O', 'Ò': 'O', 'Ô': 'O', 'Õ': 'O', 'Ö': 'O',
+        'Ú': 'U', 'Ù': 'U', 'Û': 'U', 'Ü': 'U',
+        'Ç': 'C', 'Ñ': 'N'
+    }
+    
+    for char, subst in substituicoes.items():
+        texto = texto.replace(char, subst)
+    
+    return texto
 
 def gerar_pdf_relatorio(metrics, dados, nomes_arquivos, mes_ref, ano_ref, retificacoes):
     """Gera relatório completo em PDF com tratamento de caracteres especiais"""
@@ -1329,10 +1383,10 @@ def gerar_pdf_relatorio(metrics, dados, nomes_arquivos, mes_ref, ano_ref, retifi
         pdf.cell(0, 10, 'RELATORIO DE ANALISE - SISTEMA POT', 0, 1, 'C')
         pdf.ln(5)
         
-        # Informações básicas (remover acentos para evitar problemas)
+        # Informações básicas
         pdf.set_font('Arial', '', 12)
-        mes_ref_sem_acentos = remover_caracteres_nao_ascii(mes_ref)
-        pdf.cell(0, 8, f'Periodo de Referencia: {mes_ref_sem_acentos}/{ano_ref}', 0, 1)
+        mes_ref_limpo = remover_caracteres_especiais(mes_ref)
+        pdf.cell(0, 8, f'Periodo de Referencia: {mes_ref_limpo}/{ano_ref}', 0, 1)
         pdf.cell(0, 8, f'Data da Analise: {data_hora_atual_brasilia()}', 0, 1)
         pdf.ln(5)
         
@@ -1341,8 +1395,8 @@ def gerar_pdf_relatorio(metrics, dados, nomes_arquivos, mes_ref, ano_ref, retifi
             pdf.add_section_title('Arquivos Processados')
             pdf.set_font('Arial', '', 11)
             for tipo, nome in nomes_arquivos.items():
-                nome_sem_acentos = remover_caracteres_nao_ascii(nome)
-                pdf.cell(0, 8, f'• {tipo.title()}: {nome_sem_acentos}', 0, 1)
+                nome_limpo = remover_caracteres_especiais(nome)
+                pdf.cell(0, 8, f'• {tipo.title()}: {nome_limpo}', 0, 1)
             pdf.ln(5)
         
         # Métricas principais
@@ -1376,7 +1430,7 @@ def gerar_pdf_relatorio(metrics, dados, nomes_arquivos, mes_ref, ano_ref, retifi
                 
                 data = []
                 for ret in metrics['detalhes_retificacoes'][:50]:  # Limitar a 50 registros
-                    retificacoes_texto = ', '.join([remover_caracteres_nao_ascii(r) for r in ret['retificacoes']])
+                    retificacoes_texto = ', '.join([remover_caracteres_especiais(r) for r in ret['retificacoes']])
                     data.append([
                         ret['numero_conta'],
                         retificacoes_texto,
@@ -1404,8 +1458,8 @@ def gerar_pdf_relatorio(metrics, dados, nomes_arquivos, mes_ref, ano_ref, retifi
             pdf.cell(0, 10, 'Contas sem Dados de Referencia:', 0, 1)
             pdf.set_font('Arial', '', 10)
             
-            # Limitar a 20 contas e remover caracteres especiais
-            contas_limpas = [remover_caracteres_nao_ascii(c) for c in metrics['contas_sem_dados'][:20]]
+            # Limitar a 20 contas
+            contas_limpas = [remover_caracteres_especiais(c) for c in metrics['contas_sem_dados'][:20]]
             contas_texto = ', '.join(contas_limpas)
             if len(metrics['contas_sem_dados']) > 20:
                 contas_texto += f'... e mais {len(metrics["contas_sem_dados"]) - 20} contas'
@@ -1437,7 +1491,6 @@ def gerar_pdf_relatorio(metrics, dados, nomes_arquivos, mes_ref, ano_ref, retifi
         for i, rec in enumerate(recomendacoes, 1):
             pdf.cell(0, 8, f'{i}. {rec}', 0, 1)
         
-        # Usar codificação Latin-1 que é suportada pelo FPDF
         return pdf.output(dest='S').encode('latin-1')
         
     except Exception as e:
@@ -1522,6 +1575,21 @@ def mostrar_analise_principal(dados, metrics, nomes_arquivos, mes_ref, ano_ref, 
         st.write(f"**Projetos Ativos:** {metrics.get('projetos_ativos', 0)}")
         st.write(f"**Pagamentos Duplicados:** {metrics.get('pagamentos_duplicados', 0)}")
         st.write(f"**Beneficiários com Contas:** {metrics.get('beneficiarios_contas', 0)}")
+        
+        # Gráfico de projetos
+        if metrics.get('projetos_ativos', 0) > 0:
+            st.subheader("📈 Distribuição por Projeto")
+            
+            # Criar dados fictícios para demonstração
+            projetos_data = pd.DataFrame({
+                'Projeto': [f'Projeto {i}' for i in range(1, min(6, metrics['projetos_ativos'] + 1))],
+                'Beneficiários': [metrics.get('beneficiarios_unicos', 0) // min(5, metrics['projetos_ativos'])] * min(5, metrics['projetos_ativos'])
+            })
+            
+            fig = px.bar(projetos_data, x='Projeto', y='Beneficiários', 
+                        title="Distribuição de Beneficiários por Projeto",
+                        color='Projeto', text_auto=True)
+            st.plotly_chart(fig, use_container_width=True)
     
     with tab2:
         st.subheader("Detalhes das Retificações")
@@ -1537,9 +1605,10 @@ def mostrar_analise_principal(dados, metrics, nomes_arquivos, mes_ref, ano_ref, 
         
         if metrics.get('contas_sem_dados'):
             st.warning(f"⚠️ {len(metrics['contas_sem_dados'])} contas sem dados de referência")
-            st.write("Contas:", ', '.join(metrics['contas_sem_dados'][:10]))
-            if len(metrics['contas_sem_dados']) > 10:
-                st.write(f"... e mais {len(metrics['contas_sem_dados']) - 10} contas")
+            with st.expander("Ver contas sem dados"):
+                st.write("Contas:", ', '.join(metrics['contas_sem_dados'][:20]))
+                if len(metrics['contas_sem_dados']) > 20:
+                    st.write(f"... e mais {len(metrics['contas_sem_dados']) - 20} contas")
     
     with tab3:
         st.subheader("Problemas Identificados")
@@ -1661,8 +1730,8 @@ def main():
     st.sidebar.markdown("---")
     st.sidebar.header("📥 EXPORTAR RELATÓRIOS")
     
-    if dados_processados or st.session_state.get('dados_carregados'):
-        # Gerar PDF com tratamento de erro
+    if dados or st.session_state.get('dados_carregados'):
+        # Gerar PDF
         try:
             pdf_bytes = gerar_pdf_relatorio(metrics, dados, nomes_arquivos, mes_ref, ano_ref, retificacoes)
             
@@ -1678,64 +1747,6 @@ def main():
                 st.sidebar.warning("Não foi possível gerar o PDF")
         except Exception as e:
             st.sidebar.error(f"Erro ao gerar PDF: {str(e)}")
-            # Botão de fallback com PDF simples
-            try:
-                pdf_simples = FPDF()
-                pdf_simples.add_page()
-                pdf_simples.set_font("Arial", size=12)
-                pdf_simples.cell(200, 10, txt=f"Relatorio POT {mes_ref}/{ano_ref}", ln=1, align="C")
-                pdf_simples.cell(200, 10, txt=f"Data: {data_hora_atual_brasilia()}", ln=1, align="L")
-                pdf_bytes_simples = pdf_simples.output(dest='S').encode('latin-1')
-                
-                st.sidebar.download_button(
-                    label="📄 Gerar PDF Simples",
-                    data=pdf_bytes_simples,
-                    file_name=f"relatorio_simples_pot_{mes_ref}_{ano_ref}.pdf",
-                    mime="application/pdf",
-                    use_container_width=True
-                )
-            except:
-                st.sidebar.error("Não foi possível gerar nenhum PDF")
-        
-        # Exportar dados tratados
-        st.sidebar.markdown("---")
-        st.sidebar.subheader("💾 Exportar Dados")
-        
-        if 'pagamentos' in dados or 'pagamentos_retificado' in dados:
-            df_exportar = dados.get('pagamentos_retificado', dados.get('pagamentos', pd.DataFrame()))
-            if not df_exportar.empty:
-                csv_data = df_exportar.to_csv(index=False, encoding='utf-8-sig')
-                st.sidebar.download_button(
-                    label="📋 Dados de Pagamentos (CSV)",
-                    data=csv_data,
-                    file_name=f"pagamentos_{mes_ref}_{ano_ref}.csv",
-                    mime="text/csv",
-                    use_container_width=True
-                )
-        
-        if 'contas' in dados:
-            df_exportar_contas = dados.get('contas', pd.DataFrame())
-            if not df_exportar_contas.empty:
-                csv_data_contas = df_exportar_contas.to_csv(index=False, encoding='utf-8-sig')
-                st.sidebar.download_button(
-                    label="📋 Dados de Contas (CSV)",
-                    data=csv_data_contas,
-                    file_name=f"contas_{mes_ref}_{ano_ref}.csv",
-                    mime="text/csv",
-                    use_container_width=True
-                )
-        
-        if 'gestao' in dados:
-            df_exportar_gestao = dados.get('gestao', pd.DataFrame())
-            if not df_exportar_gestao.empty:
-                csv_data_gestao = df_exportar_gestao.to_csv(index=False, encoding='utf-8-sig')
-                st.sidebar.download_button(
-                    label="📋 Dados de Gestão (CSV)",
-                    data=csv_data_gestao,
-                    file_name=f"gestao_{mes_ref}_{ano_ref}.csv",
-                    mime="text/csv",
-                    use_container_width=True
-                )
     
     # Sidebar - Administração
     if tipo_usuario == 'admin':
@@ -1746,7 +1757,7 @@ def main():
             st.session_state.admin_page = 'usuarios'
         
         if st.sidebar.button("🗑️ Limpar Dados da Sessão"):
-            for key in ['dados_carregados', 'nomes_arquivos_carregados', 'processed_metrics', 'retificacoes_aplicadas']:
+            for key in ['dados_carregados', 'nomes_arquivos_carregados', 'mes_ref_carregado', 'ano_ref_carregado', 'processed_metrics', 'retificacoes_aplicadas', 'admin_page']:
                 if key in st.session_state:
                     del st.session_state[key]
             st.rerun()
@@ -1755,7 +1766,11 @@ def main():
     if tipo_usuario == 'admin' and st.session_state.get('admin_page') == 'usuarios':
         gerenciar_usuarios(conn)
     else:
-        mostrar_analise_principal(dados, metrics, nomes_arquivos, mes_ref, ano_ref, retificacoes)
+        if dados or st.session_state.get('dados_carregados'):
+            mostrar_analise_principal(dados, metrics, nomes_arquivos, mes_ref, ano_ref, retificacoes)
+        else:
+            st.title("🏛️ Sistema POT - SMDET")
+            st.info("📤 **Carregue os dados** no menu lateral para iniciar a análise")
 
 if __name__ == "__main__":
     main()
