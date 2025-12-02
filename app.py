@@ -1199,31 +1199,35 @@ class PDFRelatorio(FPDF):
     def __init__(self):
         super().__init__()
         self.set_auto_page_break(auto=True, margin=15)
+        # Usar fonte que suporte UTF-8
+        self.add_font('DejaVu', '', 'DejaVuSans.ttf', uni=True)
+        self.add_font('DejaVu', 'B', 'DejaVuSans-Bold.ttf', uni=True)
+        self.add_font('DejaVu', 'I', 'DejaVuSans-Oblique.ttf', uni=True)
     
     def header(self):
-        self.set_font('Arial', 'B', 12)
+        self.set_font('DejaVu', 'B', 12)
         self.cell(0, 10, 'Prefeitura de São Paulo - SMDET', 0, 1, 'C')
         self.cell(0, 10, 'Sistema POT - Relatório de Análise', 0, 1, 'C')
         self.ln(5)
     
     def footer(self):
         self.set_y(-15)
-        self.set_font('Arial', 'I', 8)
+        self.set_font('DejaVu', 'I', 8)
         self.cell(0, 10, f'Página {self.page_no()}', 0, 0, 'C')
     
     def add_section_title(self, title):
-        self.set_font('Arial', 'B', 14)
+        self.set_font('DejaVu', 'B', 14)
         self.cell(0, 10, title, 0, 1)
         self.ln(2)
     
     def add_metric_row(self, label, value):
-        self.set_font('Arial', '', 11)
+        self.set_font('DejaVu', '', 11)
         self.cell(100, 8, label, 0, 0)
-        self.set_font('Arial', 'B', 11)
+        self.set_font('DejaVu', 'B', 11)
         self.cell(0, 8, str(value), 0, 1)
     
     def add_table(self, headers, data, col_widths):
-        self.set_font('Arial', 'B', 10)
+        self.set_font('DejaVu', 'B', 10)
         
         # Cabeçalho
         self.set_fill_color(200, 200, 200)
@@ -1232,115 +1236,138 @@ class PDFRelatorio(FPDF):
         self.ln()
         
         # Dados
-        self.set_font('Arial', '', 9)
+        self.set_font('DejaVu', '', 9)
         for row in data:
             for i, cell in enumerate(row):
-                self.cell(col_widths[i], 8, str(cell), 1, 0, 'L')
+                # Garantir que o texto seja string e substituir caracteres problemáticos
+                cell_str = str(cell) if cell is not None else ''
+                self.cell(col_widths[i], 8, cell_str, 1, 0, 'L')
             self.ln()
 
+def remover_caracteres_nao_ascii(texto):
+    """Remove caracteres não-ASCII do texto"""
+    if texto is None:
+        return ""
+    return ''.join(char for char in str(texto) if ord(char) < 128)
+
 def gerar_pdf_relatorio(metrics, dados, nomes_arquivos, mes_ref, ano_ref, retificacoes):
-    """Gera relatório completo em PDF"""
-    pdf = PDFRelatorio()
-    pdf.add_page()
-    
-    # Cabeçalho
-    pdf.set_font('Arial', 'B', 16)
-    pdf.cell(0, 10, 'RELATÓRIO DE ANÁLISE - SISTEMA POT', 0, 1, 'C')
-    pdf.ln(5)
-    
-    # Informações básicas
-    pdf.set_font('Arial', '', 12)
-    pdf.cell(0, 8, f'Período de Referência: {mes_ref}/{ano_ref}', 0, 1)
-    pdf.cell(0, 8, f'Data da Análise: {data_hora_atual_brasilia()}', 0, 1)
-    pdf.ln(5)
-    
-    # Arquivos processados
-    if nomes_arquivos:
-        pdf.add_section_title('Arquivos Processados')
-        for tipo, nome in nomes_arquivos.items():
-            pdf.cell(0, 8, f'• {tipo.title()}: {nome}', 0, 1)
+    """Gera relatório completo em PDF com tratamento de caracteres especiais"""
+    try:
+        pdf = PDFRelatorio()
+        pdf.add_page()
+        
+        # Cabeçalho
+        pdf.set_font('DejaVu', 'B', 16)
+        pdf.cell(0, 10, 'RELATORIO DE ANALISE - SISTEMA POT', 0, 1, 'C')
         pdf.ln(5)
-    
-    # Métricas principais
-    pdf.add_section_title('Métricas Principais')
-    
-    pdf.add_metric_row('Total de Pagamentos:', formatar_brasileiro(metrics.get('total_pagamentos', 0)))
-    pdf.add_metric_row('Beneficiários Únicos:', formatar_brasileiro(metrics.get('beneficiarios_unicos', 0)))
-    pdf.add_metric_row('Contas Únicas:', formatar_brasileiro(metrics.get('contas_unicas', 0)))
-    pdf.add_metric_row('Valor Total:', formatar_brasileiro(metrics.get('valor_total', 0), 'monetario'))
-    pdf.add_metric_row('Projetos Ativos:', formatar_brasileiro(metrics.get('projetos_ativos', 0)))
-    pdf.ln(5)
-    
-    # Retificações aplicadas
-    if metrics.get('dados_retificados', 0) > 0:
-        pdf.add_section_title('Retificações Aplicadas')
-        pdf.add_metric_row('Dados Retificados:', formatar_brasileiro(metrics['dados_retificados']))
         
-        if metrics.get('detalhes_retificacoes'):
-            pdf.add_page()
-            pdf.add_section_title('Detalhes das Retificações')
-            
-            headers = ['Número da Conta', 'Retificações Aplicadas', 'Fonte dos Dados']
-            col_widths = [40, 120, 30]
-            
-            data = []
-            for ret in metrics['detalhes_retificacoes'][:50]:  # Limitar a 50 registros
-                data.append([
-                    ret['numero_conta'],
-                    ', '.join(ret['retificacoes']),
-                    ret['fonte_dados']
-                ])
-            
-            pdf.add_table(headers, data, col_widths)
-            
-            if len(metrics['detalhes_retificacoes']) > 50:
-                pdf.ln(5)
-                pdf.set_font('Arial', 'I', 10)
-                pdf.cell(0, 8, f'... e mais {len(metrics["detalhes_retificacoes"]) - 50} retificações', 0, 1)
-    
-    # Problemas identificados
-    pdf.add_page()
-    pdf.add_section_title('Problemas Identificados')
-    
-    pdf.add_metric_row('Pagamentos Duplicados:', formatar_brasileiro(metrics.get('pagamentos_duplicados', 0)))
-    pdf.add_metric_row('CPFs para Ajuste:', formatar_brasileiro(metrics.get('total_cpfs_ajuste', 0)))
-    pdf.add_metric_row('Registros Críticos:', formatar_brasileiro(metrics.get('total_registros_criticos', 0)))
-    
-    if metrics.get('contas_sem_dados'):
+        # Informações básicas (remover acentos para evitar problemas)
+        pdf.set_font('DejaVu', '', 12)
+        pdf.cell(0, 8, f'Periodo de Referencia: {remover_caracteres_nao_ascii(mes_ref)}/{ano_ref}', 0, 1)
+        pdf.cell(0, 8, f'Data da Analise: {data_hora_atual_brasilia()}', 0, 1)
         pdf.ln(5)
-        pdf.set_font('Arial', 'B', 12)
-        pdf.cell(0, 10, 'Contas sem Dados de Referência:', 0, 1)
-        pdf.set_font('Arial', '', 10)
         
-        contas_texto = ', '.join(metrics['contas_sem_dados'][:20])  # Limitar a 20 contas
-        if len(metrics['contas_sem_dados']) > 20:
-            contas_texto += f'... e mais {len(metrics["contas_sem_dados"]) - 20} contas'
+        # Arquivos processados
+        if nomes_arquivos:
+            pdf.add_section_title('Arquivos Processados')
+            pdf.set_font('DejaVu', '', 11)
+            for tipo, nome in nomes_arquivos.items():
+                pdf.cell(0, 8, f'• {tipo.title()}: {remover_caracteres_nao_ascii(nome)}', 0, 1)
+            pdf.ln(5)
         
-        pdf.multi_cell(0, 8, contas_texto)
-    
-    # Recomendações
-    pdf.add_page()
-    pdf.add_section_title('Recomendações e Ações')
-    
-    recomendacoes = []
-    
-    if metrics.get('pagamentos_duplicados', 0) > 0:
-        recomendacoes.append(f'Verificar {metrics["pagamentos_duplicados"]} contas com pagamentos duplicados')
-    
-    if metrics.get('total_cpfs_ajuste', 0) > 0:
-        recomendacoes.append(f'Corrigir {metrics["total_cpfs_ajuste"]} CPFs com problemas de formatação')
-    
-    if metrics.get('dados_retificados', 0) > 0:
-        recomendacoes.append(f'Validar {metrics["dados_retificados"]} dados retificados automaticamente')
-    
-    if not recomendacoes:
-        recomendacoes.append('Nenhuma ação crítica necessária')
-    
-    pdf.set_font('Arial', '', 11)
-    for i, rec in enumerate(recomendacoes, 1):
-        pdf.cell(0, 8, f'{i}. {rec}', 0, 1)
-    
-    return pdf.output(dest='S').encode('latin1')
+        # Métricas principais
+        pdf.add_section_title('Metricas Principais')
+        
+        pdf.add_metric_row('Total de Pagamentos:', formatar_brasileiro(metrics.get('total_pagamentos', 0)))
+        pdf.add_metric_row('Beneficiarios Unicos:', formatar_brasileiro(metrics.get('beneficiarios_unicos', 0)))
+        pdf.add_metric_row('Contas Unicas:', formatar_brasileiro(metrics.get('contas_unicas', 0)))
+        pdf.add_metric_row('Valor Total:', formatar_brasileiro(metrics.get('valor_total', 0), 'monetario'))
+        pdf.add_metric_row('Projetos Ativos:', formatar_brasileiro(metrics.get('projetos_ativos', 0)))
+        pdf.ln(5)
+        
+        # Retificações aplicadas
+        if metrics.get('dados_retificados', 0) > 0:
+            pdf.add_section_title('Retificacoes Aplicadas')
+            pdf.add_metric_row('Dados Retificados:', formatar_brasileiro(metrics['dados_retificados']))
+            
+            if metrics.get('detalhes_retificacoes'):
+                pdf.add_page()
+                pdf.add_section_title('Detalhes das Retificacoes')
+                
+                headers = ['Numero da Conta', 'Retificacoes Aplicadas', 'Fonte dos Dados']
+                col_widths = [40, 120, 30]
+                
+                data = []
+                for ret in metrics['detalhes_retificacoes'][:50]:  # Limitar a 50 registros
+                    data.append([
+                        ret['numero_conta'],
+                        ', '.join([remover_caracteres_nao_ascii(r) for r in ret['retificacoes']]),
+                        ret['fonte_dados']
+                    ])
+                
+                pdf.add_table(headers, data, col_widths)
+                
+                if len(metrics['detalhes_retificacoes']) > 50:
+                    pdf.ln(5)
+                    pdf.set_font('DejaVu', 'I', 10)
+                    pdf.cell(0, 8, f'... e mais {len(metrics["detalhes_retificacoes"]) - 50} retificacoes', 0, 1)
+        
+        # Problemas identificados
+        pdf.add_page()
+        pdf.add_section_title('Problemas Identificados')
+        
+        pdf.add_metric_row('Pagamentos Duplicados:', formatar_brasileiro(metrics.get('pagamentos_duplicados', 0)))
+        pdf.add_metric_row('CPFs para Ajuste:', formatar_brasileiro(metrics.get('total_cpfs_ajuste', 0)))
+        pdf.add_metric_row('Registros Criticos:', formatar_brasileiro(metrics.get('total_registros_criticos', 0)))
+        
+        if metrics.get('contas_sem_dados'):
+            pdf.ln(5)
+            pdf.set_font('DejaVu', 'B', 12)
+            pdf.cell(0, 10, 'Contas sem Dados de Referencia:', 0, 1)
+            pdf.set_font('DejaVu', '', 10)
+            
+            # Limitar a 20 contas e remover caracteres especiais
+            contas_limpas = [remover_caracteres_nao_ascii(c) for c in metrics['contas_sem_dados'][:20]]
+            contas_texto = ', '.join(contas_limpas)
+            if len(metrics['contas_sem_dados']) > 20:
+                contas_texto += f'... e mais {len(metrics["contas_sem_dados"]) - 20} contas'
+            
+            pdf.multi_cell(0, 8, contas_texto)
+        
+        # Recomendações
+        pdf.add_page()
+        pdf.add_section_title('Recomendacoes e Acoes')
+        
+        recomendacoes = []
+        
+        if metrics.get('pagamentos_duplicados', 0) > 0:
+            recomendacoes.append(f'Verificar {metrics["pagamentos_duplicados"]} contas com pagamentos duplicados')
+        
+        if metrics.get('total_cpfs_ajuste', 0) > 0:
+            recomendacoes.append(f'Corrigir {metrics["total_cpfs_ajuste"]} CPFs com problemas de formatacao')
+        
+        if metrics.get('dados_retificados', 0) > 0:
+            recomendacoes.append(f'Validar {metrics["dados_retificados"]} dados retificados automaticamente')
+        
+        if not recomendacoes:
+            recomendacoes.append('Nenhuma acao critica necessaria')
+        
+        pdf.set_font('DejaVu', '', 11)
+        for i, rec in enumerate(recomendacoes, 1):
+            pdf.cell(0, 8, f'{i}. {rec}', 0, 1)
+        
+        # Usar codificação UTF-8 para o output
+        return pdf.output(dest='S').encode('utf-8')
+        
+    except Exception as e:
+        st.error(f"Erro ao gerar PDF: {str(e)}")
+        # Criar um PDF simples de fallback
+        pdf_fallback = FPDF()
+        pdf_fallback.add_page()
+        pdf_fallback.set_font("Arial", size=12)
+        pdf_fallback.cell(200, 10, txt="Relatorio do Sistema POT", ln=1, align="C")
+        pdf_fallback.cell(200, 10, txt=f"Periodo: {mes_ref}/{ano_ref}", ln=1, align="L")
+        return pdf_fallback.output(dest='S').encode('latin-1')
 
 # ========== FUNÇÕES DE VISUALIZAÇÃO ==========
 def mostrar_analise_principal(dados, metrics, nomes_arquivos, mes_ref, ano_ref, retificacoes):
@@ -1545,16 +1572,33 @@ def main():
     st.sidebar.header("📥 EXPORTAR RELATÓRIOS")
     
     if dados_processados or st.session_state.get('dados_carregados'):
-        # Gerar PDF
-        pdf_bytes = gerar_pdf_relatorio(metrics, dados, nomes_arquivos, mes_ref, ano_ref, retificacoes)
-        
-        st.sidebar.download_button(
-            label="📄 Gerar Relatório PDF",
-            data=pdf_bytes,
-            file_name=f"relatorio_pot_{mes_ref}_{ano_ref}_{data_hora_arquivo_brasilia()}.pdf",
-            mime="application/pdf",
-            use_container_width=True
-        )
+        # Gerar PDF com tratamento de erro
+        try:
+            pdf_bytes = gerar_pdf_relatorio(metrics, dados, nomes_arquivos, mes_ref, ano_ref, retificacoes)
+            
+            st.sidebar.download_button(
+                label="📄 Gerar Relatório PDF",
+                data=pdf_bytes,
+                file_name=f"relatorio_pot_{mes_ref}_{ano_ref}_{data_hora_arquivo_brasilia()}.pdf",
+                mime="application/pdf",
+                use_container_width=True
+            )
+        except Exception as e:
+            st.sidebar.error(f"Erro ao gerar PDF: {str(e)}")
+            # Botão de fallback com PDF simples
+            pdf_simples = FPDF()
+            pdf_simples.add_page()
+            pdf_simples.set_font("Arial", size=12)
+            pdf_simples.cell(200, 10, txt=f"Relatorio POT {mes_ref}/{ano_ref}", ln=1, align="C")
+            pdf_bytes_simples = pdf_simples.output(dest='S').encode('latin-1')
+            
+            st.sidebar.download_button(
+                label="📄 Gerar PDF Simples",
+                data=pdf_bytes_simples,
+                file_name=f"relatorio_simples_pot_{mes_ref}_{ano_ref}.pdf",
+                mime="application/pdf",
+                use_container_width=True
+            )
         
         # Exportar dados tratados
         st.sidebar.markdown("---")
@@ -1594,4 +1638,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
