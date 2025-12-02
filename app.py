@@ -14,96 +14,151 @@ import sqlite3
 from sqlite3 import Error
 import os
 import json
+import tempfile
+import sys
 
 # Configuração da página
 st.set_page_config(
     page_title="Sistema POT - SMDET",
     page_icon="🏛️",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-# Sistema de banco de dados
+# Sistema de banco de dados MELHORADO
 def init_database():
-    """Inicializa o banco de dados SQLite"""
-    conn = sqlite3.connect('pot_smdet.db', check_same_thread=False)
-    
-    # Tabela para armazenar dados de pagamentos
-    conn.execute('''
-        CREATE TABLE IF NOT EXISTS pagamentos (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            mes_referencia TEXT NOT NULL,
-            ano_referencia INTEGER NOT NULL,
-            data_importacao TEXT NOT NULL,
-            nome_arquivo TEXT NOT NULL,
-            dados_json TEXT NOT NULL,
-            metadados_json TEXT NOT NULL,
-            UNIQUE(mes_referencia, ano_referencia, nome_arquivo)
-        )
-    ''')
-    
-    # Tabela para armazenar dados de inscrições/contas
-    conn.execute('''
-        CREATE TABLE IF NOT EXISTS inscricoes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            mes_referencia TEXT NOT NULL,
-            ano_referencia INTEGER NOT NULL,
-            data_importacao TEXT NOT NULL,
-            nome_arquivo TEXT NOT NULL,
-            dados_json TEXT NOT NULL,
-            metadados_json TEXT NOT NULL,
-            UNIQUE(mes_referencia, ano_referencia, nome_arquivo)
-        )
-    ''')
-    
-    # Tabela para métricas consolidadas
-    conn.execute('''
-        CREATE TABLE IF NOT EXISTS metricas_mensais (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            tipo TEXT NOT NULL,
-            mes_referencia TEXT NOT NULL,
-            ano_referencia INTEGER NOT NULL,
-            total_registros INTEGER,
-            beneficiarios_unicos INTEGER,
-            contas_unicas INTEGER,
-            valor_total REAL,
-            pagamentos_duplicados INTEGER,
-            valor_duplicados REAL,
-            projetos_ativos INTEGER,
-            registros_problema INTEGER,
-            cpfs_ajuste INTEGER,
-            data_calculo TEXT NOT NULL,
-            UNIQUE(tipo, mes_referencia, ano_referencia)
-        )
-    ''')
-    
-    # Tabela para usuários autorizados
-    conn.execute('''
-        CREATE TABLE IF NOT EXISTS usuarios (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            email TEXT UNIQUE NOT NULL,
-            nome TEXT NOT NULL,
-            tipo TEXT NOT NULL DEFAULT 'usuario',
-            data_criacao TEXT NOT NULL,
-            ativo INTEGER DEFAULT 1
-        )
-    ''')
-    
-    # Verificar e adicionar colunas faltantes
+    """Inicializa o banco de dados SQLite com melhor persistência"""
     try:
-        conn.execute("SELECT cpfs_ajuste FROM metricas_mensais LIMIT 1")
-    except sqlite3.OperationalError:
-        conn.execute("ALTER TABLE metricas_mensais ADD COLUMN cpfs_ajuste INTEGER")
-    
-    # Inserir administrador padrão se não existir
-    cursor = conn.execute("SELECT * FROM usuarios WHERE email = 'admin@prefeitura.sp.gov.br'")
-    if cursor.fetchone() is None:
+        # Usar caminho absoluto para garantir persistência
+        if getattr(sys, 'frozen', False):
+            # Executando como executável/pyinstaller
+            base_path = os.path.dirname(sys.executable)
+        else:
+            # Executando como script
+            base_path = os.path.dirname(os.path.abspath(__file__))
+        
+        db_path = os.path.join(base_path, 'pot_smdet.db')
+        
+        # Garantir que o diretório existe
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        
+        # Conectar ao banco
+        conn = sqlite3.connect(db_path, check_same_thread=False)
+        
+        # Configurar para melhor performance
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA synchronous = NORMAL")
+        conn.execute("PRAGMA foreign_keys = ON")
+        
+        # Tabela para armazenar dados de pagamentos
         conn.execute('''
-            INSERT INTO usuarios (email, nome, tipo, data_criacao, ativo)
-            VALUES (?, ?, ?, ?, ?)
-        ''', ('admin@prefeitura.sp.gov.br', 'Administrador', 'admin', data_hora_atual_brasilia(), 1))
-    
-    conn.commit()
-    return conn
+            CREATE TABLE IF NOT EXISTS pagamentos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                mes_referencia TEXT NOT NULL,
+                ano_referencia INTEGER NOT NULL,
+                data_importacao TEXT NOT NULL,
+                nome_arquivo TEXT NOT NULL,
+                dados_json TEXT NOT NULL,
+                metadados_json TEXT NOT NULL,
+                hash_arquivo TEXT UNIQUE,
+                UNIQUE(mes_referencia, ano_referencia, nome_arquivo)
+            )
+        ''')
+        
+        # Tabela para armazenar dados de inscrições/contas
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS inscricoes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                mes_referencia TEXT NOT NULL,
+                ano_referencia INTEGER NOT NULL,
+                data_importacao TEXT NOT NULL,
+                nome_arquivo TEXT NOT NULL,
+                dados_json TEXT NOT NULL,
+                metadados_json TEXT NOT NULL,
+                hash_arquivo TEXT UNIQUE,
+                UNIQUE(mes_referencia, ano_referencia, nome_arquivo)
+            )
+        ''')
+        
+        # Tabela para métricas consolidadas
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS metricas_mensais (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tipo TEXT NOT NULL,
+                mes_referencia TEXT NOT NULL,
+                ano_referencia INTEGER NOT NULL,
+                total_registros INTEGER,
+                beneficiarios_unicos INTEGER,
+                contas_unicas INTEGER,
+                valor_total REAL,
+                pagamentos_duplicados INTEGER,
+                valor_duplicados REAL,
+                projetos_ativos INTEGER,
+                registros_problema INTEGER,
+                cpfs_ajuste INTEGER,
+                data_calculo TEXT NOT NULL,
+                UNIQUE(tipo, mes_referencia, ano_referencia)
+            )
+        ''')
+        
+        # Tabela para usuários autorizados
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS usuarios (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email TEXT UNIQUE NOT NULL,
+                nome TEXT NOT NULL,
+                tipo TEXT NOT NULL DEFAULT 'usuario',
+                data_criacao TEXT NOT NULL,
+                ativo INTEGER DEFAULT 1,
+                ultimo_login TEXT
+            )
+        ''')
+        
+        # Verificar e adicionar colunas faltantes
+        try:
+            conn.execute("SELECT cpfs_ajuste FROM metricas_mensais LIMIT 1")
+        except sqlite3.OperationalError:
+            conn.execute("ALTER TABLE metricas_mensais ADD COLUMN cpfs_ajuste INTEGER")
+        
+        # Verificar e adicionar coluna ultimo_login
+        try:
+            conn.execute("SELECT ultimo_login FROM usuarios LIMIT 1")
+        except sqlite3.OperationalError:
+            conn.execute("ALTER TABLE usuarios ADD COLUMN ultimo_login TEXT")
+        
+        # Verificar e adicionar coluna hash_arquivo
+        try:
+            conn.execute("SELECT hash_arquivo FROM pagamentos LIMIT 1")
+        except sqlite3.OperationalError:
+            conn.execute("ALTER TABLE pagamentos ADD COLUMN hash_arquivo TEXT UNIQUE")
+        
+        try:
+            conn.execute("SELECT hash_arquivo FROM inscricoes LIMIT 1")
+        except sqlite3.OperationalError:
+            conn.execute("ALTER TABLE inscricoes ADD COLUMN hash_arquivo TEXT UNIQUE")
+        
+        # Inserir administrador padrão se não existir
+        cursor = conn.execute("SELECT * FROM usuarios WHERE email = 'admin@prefeitura.sp.gov.br'")
+        if cursor.fetchone() is None:
+            conn.execute('''
+                INSERT INTO usuarios (email, nome, tipo, data_criacao, ativo)
+                VALUES (?, ?, ?, ?, ?)
+            ''', ('admin@prefeitura.sp.gov.br', 'Administrador', 'admin', data_hora_atual_brasilia(), 1))
+        
+        conn.commit()
+        st.sidebar.info(f"📊 Banco de dados em: {db_path}")
+        return conn
+        
+    except Exception as e:
+        st.error(f"Erro crítico ao inicializar banco de dados: {str(e)}")
+        # Tentar criar banco em diretório temporário como fallback
+        conn = sqlite3.connect(':memory:', check_same_thread=False)
+        return conn
+
+# Função para hash de arquivo
+def calcular_hash_arquivo(file_bytes):
+    """Calcula hash do conteúdo do arquivo para evitar duplicatas"""
+    return hashlib.sha256(file_bytes).hexdigest()
 
 # Função para hash de senha
 def hash_senha(senha):
@@ -132,17 +187,34 @@ def data_hora_arquivo_brasilia():
     """Retorna a data e hora atual no formato para nome de arquivo no fuso de Brasília"""
     return agora_brasilia().strftime("%Y%m%d_%H%M")
 
-# SISTEMA DE AUTENTICAÇÃO MELHORADO
+# SISTEMA DE AUTENTICAÇÃO MELHORADO E PERSISTENTE
 def verificar_usuario_autorizado(conn, email):
     """Verifica se o usuário está autorizado no banco de dados"""
-    cursor = conn.execute("SELECT * FROM usuarios WHERE email = ? AND ativo = 1", (email,))
-    return cursor.fetchone() is not None
+    try:
+        cursor = conn.execute("SELECT * FROM usuarios WHERE email = ? AND ativo = 1", (email,))
+        return cursor.fetchone() is not None
+    except Exception as e:
+        st.error(f"Erro ao verificar usuário: {str(e)}")
+        return False
 
 def obter_tipo_usuario(conn, email):
     """Obtém o tipo do usuário (admin ou usuario)"""
-    cursor = conn.execute("SELECT tipo FROM usuarios WHERE email = ? AND ativo = 1", (email,))
-    resultado = cursor.fetchone()
-    return resultado[0] if resultado else None
+    try:
+        cursor = conn.execute("SELECT tipo FROM usuarios WHERE email = ? AND ativo = 1", (email,))
+        resultado = cursor.fetchone()
+        return resultado[0] if resultado else None
+    except Exception as e:
+        st.error(f"Erro ao obter tipo de usuário: {str(e)}")
+        return None
+
+def atualizar_ultimo_login(conn, email):
+    """Atualiza a data do último login do usuário"""
+    try:
+        conn.execute("UPDATE usuarios SET ultimo_login = ? WHERE email = ?", 
+                    (data_hora_atual_brasilia(), email))
+        conn.commit()
+    except Exception as e:
+        st.error(f"Erro ao atualizar último login: {str(e)}")
 
 def autenticar(conn):
     st.sidebar.title("Sistema POT - SMDET")
@@ -161,11 +233,25 @@ def autenticar(conn):
         st.session_state.email_autorizado = None
     if 'tipo_usuario' not in st.session_state:
         st.session_state.tipo_usuario = None
+    if 'login_attempts_reset_time' not in st.session_state:
+        st.session_state.login_attempts_reset_time = None
     
     # Verificar se está bloqueado
     if st.session_state.bloqueado:
-        st.sidebar.error("🚫 Sistema temporariamente bloqueado. Tente novamente mais tarde.")
-        return None, None
+        # Verificar se já passou tempo suficiente para resetar
+        if st.session_state.login_attempts_reset_time:
+            tempo_passado = (datetime.now() - st.session_state.login_attempts_reset_time).seconds
+            if tempo_passado > 300:  # 5 minutos
+                st.session_state.tentativas_login = 0
+                st.session_state.bloqueado = False
+                st.session_state.login_attempts_reset_time = None
+            else:
+                minutos_restantes = (300 - tempo_passado) // 60
+                st.sidebar.error(f"🚫 Sistema bloqueado. Tente novamente em {minutos_restantes + 1} minutos.")
+                return None, None
+        else:
+            st.sidebar.error("🚫 Sistema temporariamente bloqueado. Tente novamente mais tarde.")
+            return None, None
     
     # Se já está autenticado, mostrar informações
     if st.session_state.autenticado and st.session_state.email_autorizado:
@@ -199,48 +285,61 @@ def autenticar(conn):
             elif not verificar_usuario_autorizado(conn, email):
                 st.sidebar.error("🚫 Usuário não autorizado. Contate o administrador.")
                 st.session_state.tentativas_login += 1
-            elif hash_senha(senha) != SENHA_AUTORIZADA_HASH:
-                # Verificar se é admin tentando login
-                if email == 'admin@prefeitura.sp.gov.br' and hash_senha(senha) == SENHA_ADMIN_HASH:
+            else:
+                # Verificar senha
+                senha_hash = hash_senha(senha)
+                
+                # Primeiro verificar se é admin
+                if email == 'admin@prefeitura.sp.gov.br' and senha_hash == SENHA_ADMIN_HASH:
                     # Login de admin bem-sucedido
                     st.session_state.autenticado = True
                     st.session_state.email_autorizado = email
                     st.session_state.tipo_usuario = 'admin'
                     st.session_state.tentativas_login = 0
+                    atualizar_ultimo_login(conn, email)
                     st.sidebar.success("✅ Login de administrador realizado com sucesso!")
+                    st.rerun()
+                elif senha_hash == SENHA_AUTORIZADA_HASH:
+                    # Login de usuário normal bem-sucedido
+                    st.session_state.autenticado = True
+                    st.session_state.email_autorizado = email
+                    st.session_state.tipo_usuario = obter_tipo_usuario(conn, email)
+                    st.session_state.tentativas_login = 0
+                    atualizar_ultimo_login(conn, email)
+                    st.sidebar.success("✅ Login realizado com sucesso!")
                     st.rerun()
                 else:
                     st.sidebar.error("❌ Senha incorreta")
                     st.session_state.tentativas_login += 1
-            else:
-                # Login de usuário normal bem-sucedido
-                st.session_state.autenticado = True
-                st.session_state.email_autorizado = email
-                st.session_state.tipo_usuario = obter_tipo_usuario(conn, email)
-                st.session_state.tentativas_login = 0
-                st.sidebar.success("✅ Login realizado com sucesso!")
-                st.rerun()
             
             # Verificar se excedeu tentativas
             if st.session_state.tentativas_login >= 3:
                 st.session_state.bloqueado = True
-                st.sidebar.error("🚫 Muitas tentativas falhas. Sistema bloqueado temporariamente.")
+                st.session_state.login_attempts_reset_time = datetime.now()
+                st.sidebar.error("🚫 Muitas tentativas falhas. Sistema bloqueado por 5 minutos.")
     
     return None, None
 
-# FUNÇÃO PARA GERENCIAR USUÁRIOS (APENAS ADMIN)
+# FUNÇÃO PARA GERENCIAR USUÁRIOS (APENAS ADMIN) - CORRIGIDA
 def gerenciar_usuarios(conn):
     """Interface para gerenciamento de usuários - APENAS ADMIN"""
     st.header("👥 Gerenciamento de Usuários")
     
     # Listar usuários existentes
     st.subheader("Usuários Cadastrados")
-    usuarios_df = pd.read_sql_query("SELECT id, email, nome, tipo, data_criacao, ativo FROM usuarios ORDER BY tipo, email", conn)
-    
-    if not usuarios_df.empty:
-        st.dataframe(usuarios_df, use_container_width=True)
-    else:
-        st.info("Nenhum usuário cadastrado.")
+    try:
+        usuarios_df = pd.read_sql_query("SELECT id, email, nome, tipo, data_criacao, ativo, ultimo_login FROM usuarios ORDER BY tipo, email", conn)
+        
+        if not usuarios_df.empty:
+            # Formatar data para exibição
+            if 'ultimo_login' in usuarios_df.columns:
+                usuarios_df['ultimo_login'] = usuarios_df['ultimo_login'].fillna('Nunca')
+            
+            st.dataframe(usuarios_df, use_container_width=True)
+        else:
+            st.info("Nenhum usuário cadastrado.")
+    except Exception as e:
+        st.error(f"Erro ao carregar usuários: {str(e)}")
     
     # Adicionar novo usuário
     st.subheader("Adicionar Novo Usuário")
@@ -274,368 +373,339 @@ def gerenciar_usuarios(conn):
                     st.rerun()
                 except sqlite3.IntegrityError:
                     st.error("❌ Este email já está cadastrado.")
+                except Exception as e:
+                    st.error(f"Erro ao adicionar usuário: {str(e)}")
     
     # Gerenciar usuários existentes
     st.subheader("Gerenciar Usuários Existentes")
     
-    if not usuarios_df.empty:
-        usuario_selecionado = st.selectbox("Selecione um usuário:", usuarios_df['email'].tolist(), key="usuario_selecionado")
-        usuario_info = usuarios_df[usuarios_df['email'] == usuario_selecionado].iloc[0]
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.write(f"**ID:** {usuario_info['id']}")
-            st.write(f"**Email:** {usuario_info['email']}")
-            st.write(f"**Nome:** {usuario_info['nome']}")
-        
-        with col2:
-            st.write(f"**Tipo:** {usuario_info['tipo']}")
-            st.write(f"**Data de criação:** {usuario_info['data_criacao']}")
-            st.write(f"**Status:** {'Ativo' if usuario_info['ativo'] else 'Inativo'}")
-        
-        col3, col4, col5 = st.columns(3)
-        
-        with col3:
-            if st.button("🔒 Tornar Admin", key="tornar_admin"):
-                conn.execute("UPDATE usuarios SET tipo = 'admin' WHERE email = ?", (usuario_selecionado,))
-                conn.commit()
-                st.success(f"✅ {usuario_selecionado} agora é administrador!")
-                st.rerun()
-        
-        with col4:
-            if st.button("👤 Tornar Usuário", key="tornar_usuario"):
-                conn.execute("UPDATE usuarios SET tipo = 'usuario' WHERE email = ?", (usuario_selecionado,))
-                conn.commit()
-                st.success(f"✅ {usuario_selecionado} agora é usuário normal!")
-                st.rerun()
-        
-        with col5:
-            if st.button("🗑️ Excluir Usuário", type="secondary", key="excluir_usuario"):
-                conn.execute("DELETE FROM usuarios WHERE email = ?", (usuario_selecionado,))
-                conn.commit()
-                st.success(f"✅ Usuário {usuario_selecionado} excluído!")
-                st.rerun()
-
-# FUNÇÃO MELHORADA: LIMPAR BANCO DE DADOS COMPLETAMENTE (APENAS ADMIN)
-def limpar_banco_dados_completo(conn, tipo_usuario):
-    """Remove TODOS os dados do banco para recomeçar do zero - APENAS ADMIN"""
-    
-    if tipo_usuario != 'admin':
-        st.error("🚫 Acesso negado. Apenas administradores podem executar esta operação.")
-        return False
-    
     try:
-        st.error("**ATENÇÃO CRÍTICA:** Esta operação é IRREVERSÍVEL e deve ser usada APENAS durante testes!")
-        st.warning("""
-        **Efeitos desta operação:**
-        - ❌ Todos os dados de pagamentos serão PERDIDOS
-        - ❌ Todos os dados de inscrições serão PERDIDOS  
-        - ❌ Todas as métricas históricas serão PERDIDAS
-        - 🔄 O sistema recomeçará do ZERO
-        """)
+        usuarios_df = pd.read_sql_query("SELECT id, email, nome, tipo, data_criacao, ativo FROM usuarios ORDER BY tipo, email", conn)
         
-        # Dupla confirmação
-        senha_confirmacao1 = st.text_input("Digite 'LIMPAR TUDO' para confirmar:", type="password", key="confirm1")
-        senha_confirmacao2 = st.text_input("Digite novamente 'LIMPAR TUDO':", type="password", key="confirm2")
+        if not usuarios_df.empty:
+            usuario_selecionado = st.selectbox("Selecione um usuário:", usuarios_df['email'].tolist(), key="usuario_selecionado")
+            usuario_info = usuarios_df[usuarios_df['email'] == usuario_selecionado].iloc[0]
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.write(f"**ID:** {usuario_info['id']}")
+                st.write(f"**Email:** {usuario_info['email']}")
+                st.write(f"**Nome:** {usuario_info['nome']}")
+            
+            with col2:
+                st.write(f"**Tipo:** {usuario_info['tipo']}")
+                st.write(f"**Data de criação:** {usuario_info['data_criacao']}")
+                st.write(f"**Status:** {'Ativo' if usuario_info['ativo'] else 'Inativo'}")
+            
+            col3, col4, col5 = st.columns(3)
+            
+            with col3:
+                if st.button("🔒 Tornar Admin", key="tornar_admin"):
+                    conn.execute("UPDATE usuarios SET tipo = 'admin' WHERE email = ?", (usuario_selecionado,))
+                    conn.commit()
+                    st.success(f"✅ {usuario_selecionado} agora é administrador!")
+                    st.rerun()
+            
+            with col4:
+                if st.button("👤 Tornar Usuário", key="tornar_usuario"):
+                    conn.execute("UPDATE usuarios SET tipo = 'usuario' WHERE email = ?", (usuario_selecionado,))
+                    conn.commit()
+                    st.success(f"✅ {usuario_selecionado} agora é usuário normal!")
+                    st.rerun()
+            
+            with col5:
+                if st.button("🔄 Alternar Status", key="alternar_status"):
+                    novo_status = 0 if usuario_info['ativo'] else 1
+                    conn.execute("UPDATE usuarios SET ativo = ? WHERE email = ?", (novo_status, usuario_selecionado))
+                    conn.commit()
+                    st.success(f"✅ Status de {usuario_selecionado} alterado!")
+                    st.rerun()
+    except Exception as e:
+        st.error(f"Erro ao gerenciar usuários: {str(e)}")
+
+# FUNÇÃO PARA CARREGAR E PROCESSAR ARQUIVOS - CORRIGIDA
+def processar_arquivo(uploaded_file, tipo_arquivo='pagamentos'):
+    """Processa arquivo de forma robusta com tratamento de erros"""
+    try:
+        if uploaded_file is None:
+            return None
         
-        col1, col2 = st.columns(2)
-        with col1:
-            botao_limpar = st.button("🗑️ LIMPAR TODOS OS DADOS", type="secondary", use_container_width=True, key="limpar_dados")
-        with col2:
-            botao_cancelar = st.button("❌ Cancelar", use_container_width=True, key="cancelar_limpeza")
+        # Salvar arquivo temporariamente para evitar problemas de memória
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.tmp') as tmp_file:
+            tmp_file.write(uploaded_file.getvalue())
+            tmp_path = tmp_file.name
         
-        if botao_limpar:
-            if senha_confirmacao1 == "LIMPAR TUDO" and senha_confirmacao2 == "LIMPAR TUDO":
-                # Executar limpeza COMPLETA
-                conn.execute("DELETE FROM pagamentos")
-                conn.execute("DELETE FROM inscricoes")
-                conn.execute("DELETE FROM metricas_mensais")
-                
-                # Reiniciar sequências de ID
-                conn.execute("DELETE FROM sqlite_sequence WHERE name='pagamentos'")
-                conn.execute("DELETE FROM sqlite_sequence WHERE name='inscricoes'") 
-                conn.execute("DELETE FROM sqlite_sequence WHERE name='metricas_mensais'")
-                
-                conn.commit()
-                
-                st.success("✅ Banco de dados limpo COMPLETAMENTE!")
-                st.info("🔄 Recarregue a página para começar novamente")
-                return True
+        try:
+            # Tentar diferentes métodos de leitura
+            if uploaded_file.name.endswith('.xlsx'):
+                # Para Excel, tentar diferentes engines
+                try:
+                    df = pd.read_excel(tmp_path, engine='openpyxl')
+                except:
+                    try:
+                        df = pd.read_excel(tmp_path, engine='xlrd')
+                    except:
+                        # Ler como CSV como fallback
+                        df = pd.read_csv(tmp_path, encoding='utf-8', sep=None, engine='python')
+            elif uploaded_file.name.endswith('.csv'):
+                # Para CSV, tentar diferentes encodings
+                try:
+                    df = pd.read_csv(tmp_path, encoding='utf-8', sep=None, engine='python')
+                except:
+                    try:
+                        df = pd.read_csv(tmp_path, encoding='latin-1', sep=None, engine='python')
+                    except:
+                        df = pd.read_csv(tmp_path, encoding='ISO-8859-1', sep=None, engine='python')
             else:
-                st.error("❌ Confirmação incorreta. Operação cancelada.")
-                return False
-        
-        if botao_cancelar:
-            st.info("Operação de limpeza cancelada.")
-            return False
+                st.error(f"Formato de arquivo não suportado: {uploaded_file.name}")
+                os.unlink(tmp_path)
+                return None
+            
+            # Limpar arquivo temporário
+            os.unlink(tmp_path)
+            
+            # Verificar se o DataFrame está vazio
+            if df.empty:
+                st.warning(f"O arquivo {uploaded_file.name} está vazio")
+                return None
+            
+            # Informações básicas
+            st.sidebar.info(f"✅ {tipo_arquivo.capitalize()}: {len(df)} registros carregados")
+            
+            return df
+            
+        except Exception as e:
+            st.error(f"Erro ao processar arquivo {uploaded_file.name}: {str(e)}")
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+            return None
             
     except Exception as e:
-        st.error(f"❌ Erro ao limpar banco: {str(e)}")
-        return False
+        st.error(f"Erro crítico ao processar arquivo: {str(e)}")
+        return None
 
-# FUNÇÃO PARA VISUALIZAR E EXCLUIR REGISTROS ESPECÍFICOS (APENAS ADMIN)
-def gerenciar_registros(conn, tipo_usuario):
-    """Permite visualizar e excluir registros específicos - APENAS ADMIN"""
-    
-    if tipo_usuario != 'admin':
-        st.error("🚫 Acesso negado. Apenas administradores podem executar esta operação.")
-        return
-    
+# FUNÇÕES CORRIGIDAS: Salvar dados com verificação de duplicidade por HASH
+def salvar_pagamentos_db(conn, mes_ref, ano_ref, nome_arquivo, file_bytes, dados_df, metadados):
+    """Salva dados de pagamentos no banco de dados com verificação de duplicidade por HASH"""
     try:
-        st.warning("Área administrativa - Use com cuidado!")
+        # Calcular hash do arquivo
+        file_hash = calcular_hash_arquivo(file_bytes)
         
-        # Selecionar tipo de dados
-        tipo_dados = st.selectbox("Tipo de dados:", ["Pagamentos", "Inscrições", "Métricas"], key="tipo_dados_admin")
+        # Verificar se já existe registro com o mesmo HASH
+        cursor = conn.execute(
+            "SELECT id FROM pagamentos WHERE hash_arquivo = ?",
+            (file_hash,)
+        )
+        existe = cursor.fetchone()
         
-        if tipo_dados == "Pagamentos":
-            dados = carregar_pagamentos_db(conn)
-        elif tipo_dados == "Inscrições":
-            dados = carregar_inscricoes_db(conn)
-        else:
-            dados = carregar_metricas_db(conn)
+        dados_json = dados_df.to_json(orient='records', date_format='iso', force_ascii=False)
+        metadados_json = json.dumps(metadados, ensure_ascii=False)
         
-        if not dados.empty:
-            st.write(f"**Total de registros:** {len(dados)}")
-            
-            # Mostrar resumo
-            if tipo_dados in ["Pagamentos", "Inscrições"]:
-                resumo = dados[['id', 'mes_referencia', 'ano_referencia', 'nome_arquivo', 'data_importacao']].copy()
-                st.dataframe(resumo.head(10))
-                
-                # Opção de excluir por ID específico
-                st.subheader("Excluir Registro Específico")
-                id_excluir = st.number_input("ID do registro a excluir:", min_value=1, step=1, key="id_excluir")
-                
-                col1, col2 = st.columns(2)
-                with col1:
-                    if st.button("🗑️ Excluir por ID", type="secondary", use_container_width=True, key="excluir_id"):
-                        if id_excluir:
-                            if tipo_dados == "Pagamentos":
-                                conn.execute("DELETE FROM pagamentos WHERE id = ?", (int(id_excluir),))
-                                # Excluir métricas correspondentes se existirem
-                                registro = dados[dados['id'] == int(id_excluir)]
-                                if not registro.empty:
-                                    mes = registro.iloc[0]['mes_referencia']
-                                    ano = registro.iloc[0]['ano_referencia']
-                                    conn.execute("DELETE FROM metricas_mensais WHERE mes_referencia = ? AND ano_referencia = ? AND tipo = 'pagamentos'", 
-                                               (mes, ano))
-                            else:
-                                conn.execute("DELETE FROM inscricoes WHERE id = ?", (int(id_excluir),))
-                                # Excluir métricas correspondentes se existirem
-                                registro = dados[dados['id'] == int(id_excluir)]
-                                if not registro.empty:
-                                    mes = registro.iloc[0]['mes_referencia']
-                                    ano = registro.iloc[0]['ano_referencia']
-                                    conn.execute("DELETE FROM metricas_mensais WHERE mes_referencia = ? AND ano_referencia = ? AND tipo = 'inscricoes'", 
-                                               (mes, ano))
-                            
-                            conn.commit()
-                            st.success(f"✅ Registro ID {id_excluir} excluído!")
-                            st.rerun()
-                
-                with col2:
-                    if st.button("🔄 Atualizar Lista", use_container_width=True, key="atualizar_lista"):
-                        st.rerun()
-            
-            elif tipo_dados == "Métricas":
-                st.dataframe(dados.head(10))
-        
-        else:
-            st.info("Nenhum registro encontrado.")
-            
-    except Exception as e:
-        st.error(f"Erro no gerenciamento: {str(e)}")
-
-# FUNÇÕES CORRIGIDAS: Salvar dados com verificação de duplicidade
-def salvar_pagamentos_db(conn, mes_ref, ano_ref, nome_arquivo, dados_df, metadados):
-    """Salva dados de pagamentos no banco de dados com verificação de duplicidade"""
-    # Verificar se já existe registro para este mês/ano/arquivo
-    cursor = conn.execute(
-        "SELECT id FROM pagamentos WHERE mes_referencia = ? AND ano_referencia = ? AND nome_arquivo = ?",
-        (mes_ref, ano_ref, nome_arquivo)
-    )
-    existe = cursor.fetchone()
-    
-    dados_json = dados_df.to_json(orient='records', date_format='iso')
-    metadados_json = json.dumps(metadados)
-    
-    if existe:
-        # Atualizar registro existente
-        conn.execute('''
-            UPDATE pagamentos 
-            SET data_importacao = ?, dados_json = ?, metadados_json = ?
-            WHERE mes_referencia = ? AND ano_referencia = ? AND nome_arquivo = ?
-        ''', (data_hora_atual_brasilia(), dados_json, metadados_json, mes_ref, ano_ref, nome_arquivo))
-        st.sidebar.info("📝 Registro de pagamentos atualizado (evitada duplicidade)")
-    else:
-        # Inserir novo registro
-        conn.execute('''
-            INSERT INTO pagamentos (mes_referencia, ano_referencia, data_importacao, nome_arquivo, dados_json, metadados_json)
-            VALUES (?, ?, ?, ?, ?, ?)
-        ''', (mes_ref, ano_ref, data_hora_atual_brasilia(), nome_arquivo, dados_json, metadados_json))
-        st.sidebar.success("✅ Novo registro de pagamentos salvo")
-    
-    conn.commit()
-
-def salvar_inscricoes_db(conn, mes_ref, ano_ref, nome_arquivo, dados_df, metadados):
-    """Salva dados de inscrições no banco de dados com verificação de duplicidade"""
-    # Verificar se já existe registro para este mês/ano/arquivo
-    cursor = conn.execute(
-        "SELECT id FROM inscricoes WHERE mes_referencia = ? AND ano_referencia = ? AND nome_arquivo = ?",
-        (mes_ref, ano_ref, nome_arquivo)
-    )
-    existe = cursor.fetchone()
-    
-    dados_json = dados_df.to_json(orient='records', date_format='iso')
-    metadados_json = json.dumps(metadados)
-    
-    if existe:
-        # Atualizar registro existente
-        conn.execute('''
-            UPDATE inscricoes 
-            SET data_importacao = ?, dados_json = ?, metadados_json = ?
-            WHERE mes_referencia = ? AND ano_referencia = ? AND nome_arquivo = ?
-        ''', (data_hora_atual_brasilia(), dados_json, metadados_json, mes_ref, ano_ref, nome_arquivo))
-        st.sidebar.info("📝 Registro de inscrições atualizado (evitada duplicidade)")
-    else:
-        # Inserir novo registro
-        conn.execute('''
-            INSERT INTO inscricoes (mes_referencia, ano_referencia, data_importacao, nome_arquivo, dados_json, metadados_json)
-            VALUES (?, ?, ?, ?, ?, ?)
-        ''', (mes_ref, ano_ref, data_hora_atual_brasilia(), nome_arquivo, dados_json, metadados_json))
-        st.sidebar.success("✅ Novo registro de inscrições salvo")
-    
-    conn.commit()
-
-def salvar_metricas_db(conn, tipo, mes_ref, ano_ref, metrics):
-    """Salva métricas no banco de dados para relatórios comparativos com verificação de duplicidade"""
-    # Verificar se já existe métrica para este tipo/mês/ano
-    cursor = conn.execute(
-        "SELECT id FROM metricas_mensais WHERE tipo = ? AND mes_referencia = ? AND ano_referencia = ?",
-        (tipo, mes_ref, ano_ref)
-    )
-    existe = cursor.fetchone()
-    
-    try:
         if existe:
-            # Atualizar métrica existente
+            # Atualizar registro existente
             conn.execute('''
-                UPDATE metricas_mensais 
-                SET total_registros = ?, beneficiarios_unicos = ?, contas_unicas = ?, 
-                    valor_total = ?, pagamentos_duplicados = ?, valor_duplicados = ?, 
-                    projetos_ativos = ?, registros_problema = ?, cpfs_ajuste = ?, data_calculo = ?
-                WHERE tipo = ? AND mes_referencia = ? AND ano_referencia = ?
-            ''', (
-                metrics.get('total_pagamentos', 0),
-                metrics.get('beneficiarios_unicos', 0),
-                metrics.get('contas_unicas', 0),
-                metrics.get('valor_total', 0),
-                metrics.get('pagamentos_duplicados', 0),
-                metrics.get('valor_total_duplicados', 0),
-                metrics.get('projetos_ativos', 0),
-                metrics.get('total_registros_criticos', 0),
-                metrics.get('total_cpfs_ajuste', 0),
-                data_hora_atual_brasilia(),
-                tipo, mes_ref, ano_ref
-            ))
+                UPDATE pagamentos 
+                SET data_importacao = ?, dados_json = ?, metadados_json = ?,
+                    mes_referencia = ?, ano_referencia = ?, nome_arquivo = ?
+                WHERE hash_arquivo = ?
+            ''', (data_hora_atual_brasilia(), dados_json, metadados_json, 
+                  mes_ref, ano_ref, nome_arquivo, file_hash))
+            st.sidebar.info("📝 Registro de pagamentos atualizado (evitada duplicidade)")
         else:
-            # Inserir nova métrica
+            # Inserir novo registro
             conn.execute('''
-                INSERT INTO metricas_mensais (tipo, mes_referencia, ano_referencia, total_registros, 
-                            beneficiarios_unicos, contas_unicas, valor_total, pagamentos_duplicados, 
-                            valor_duplicados, projetos_ativos, registros_problema, cpfs_ajuste, data_calculo)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (tipo, mes_ref, ano_ref, 
-                  metrics.get('total_pagamentos', 0),
-                  metrics.get('beneficiarios_unicos', 0),
-                  metrics.get('contas_unicas', 0),
-                  metrics.get('valor_total', 0),
-                  metrics.get('pagamentos_duplicados', 0),
-                  metrics.get('valor_total_duplicados', 0),
-                  metrics.get('projetos_ativos', 0),
-                  metrics.get('total_registros_criticos', 0),
-                  metrics.get('total_cpfs_ajuste', 0),
-                  data_hora_atual_brasilia()))
+                INSERT INTO pagamentos (mes_referencia, ano_referencia, data_importacao, 
+                          nome_arquivo, dados_json, metadados_json, hash_arquivo)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (mes_ref, ano_ref, data_hora_atual_brasilia(), nome_arquivo, 
+                  dados_json, metadados_json, file_hash))
+            st.sidebar.success("✅ Novo registro de pagamentos salvo")
         
         conn.commit()
-    except sqlite3.OperationalError as e:
-        try:
-            conn.execute("ALTER TABLE metricas_mensais ADD COLUMN cpfs_ajuste INTEGER")
-            conn.commit()
-            salvar_metricas_db(conn, tipo, mes_ref, ano_ref, metrics)
-        except:
-            conn.execute('''
-                INSERT INTO metricas_mensais (tipo, mes_referencia, ano_referencia, total_registros, 
-                            beneficiarios_unicos, contas_unicas, valor_total, pagamentos_duplicados, 
-                            valor_duplicados, projetos_ativos, registros_problema, data_calculo)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (tipo, mes_ref, ano_ref, 
-                  metrics.get('total_pagamentos', 0),
-                  metrics.get('beneficiarios_unicos', 0),
-                  metrics.get('contas_unicas', 0),
-                  metrics.get('valor_total', 0),
-                  metrics.get('pagamentos_duplicados', 0),
-                  metrics.get('valor_total_duplicados', 0),
-                  metrics.get('projetos_ativos', 0),
-                  metrics.get('total_registros_criticos', 0),
-                  data_hora_atual_brasilia()))
-            conn.commit()
-
-def carregar_pagamentos_db(conn, mes_ref=None, ano_ref=None):
-    """Carrega dados de pagamentos do banco de dados"""
-    query = "SELECT * FROM pagamentos"
-    params = []
-    
-    if mes_ref and ano_ref:
-        query += " WHERE mes_referencia = ? AND ano_referencia = ?"
-        params = [mes_ref, ano_ref]
-    
-    query += " ORDER BY ano_referencia DESC, mes_referencia DESC"
-    
-    df_result = pd.read_sql_query(query, conn, params=params)
-    return df_result
-
-def carregar_inscricoes_db(conn, mes_ref=None, ano_ref=None):
-    """Carrega dados de inscrições do banco de dados"""
-    query = "SELECT * FROM inscricoes"
-    params = []
-    
-    if mes_ref and ano_ref:
-        query += " WHERE mes_referencia = ? AND ano_referencia = ?"
-        params = [mes_ref, ano_ref]
-    
-    query += " ORDER BY ano_referencia DESC, mes_referencia DESC"
-    
-    df_result = pd.read_sql_query(query, conn, params=params)
-    return df_result
-
-def carregar_metricas_db(conn, tipo=None, periodo=None):
-    """Carrega métricas do banco de dados para relatórios comparativos"""
-    query = "SELECT * FROM metricas_mensais"
-    params = []
-    
-    if tipo:
-        query += " WHERE tipo = ?"
-        params = [tipo]
-    
-    if periodo == 'trimestral':
-        query += " ORDER BY ano_referencia DESC, mes_referencia DESC LIMIT 3"
-    elif periodo == 'semestral':
-        query += " ORDER BY ano_referencia DESC, mes_referencia DESC LIMIT 6"
-    elif periodo == 'anual':
-        query += " ORDER BY ano_referencia DESC, mes_referencia DESC LIMIT 12"
-    else:
-        query += " ORDER BY ano_referencia DESC, mes_referencia DESC"
-    
-    try:
-        df_result = pd.read_sql_query(query, conn, params=params)
-        return df_result
+        return True
     except Exception as e:
-        st.error(f"Erro ao carregar métricas: {e}")
-        return pd.DataFrame()
+        st.error(f"Erro ao salvar pagamentos: {str(e)}")
+        return False
 
-# CORREÇÃO: Função para extrair mês e ano do nome do arquivo
+def salvar_inscricoes_db(conn, mes_ref, ano_ref, nome_arquivo, file_bytes, dados_df, metadados):
+    """Salva dados de inscrições no banco de dados com verificação de duplicidade por HASH"""
+    try:
+        # Calcular hash do arquivo
+        file_hash = calcular_hash_arquivo(file_bytes)
+        
+        # Verificar se já existe registro com o mesmo HASH
+        cursor = conn.execute(
+            "SELECT id FROM inscricoes WHERE hash_arquivo = ?",
+            (file_hash,)
+        )
+        existe = cursor.fetchone()
+        
+        dados_json = dados_df.to_json(orient='records', date_format='iso', force_ascii=False)
+        metadados_json = json.dumps(metadados, ensure_ascii=False)
+        
+        if existe:
+            # Atualizar registro existente
+            conn.execute('''
+                UPDATE inscricoes 
+                SET data_importacao = ?, dados_json = ?, metadados_json = ?,
+                    mes_referencia = ?, ano_referencia = ?, nome_arquivo = ?
+                WHERE hash_arquivo = ?
+            ''', (data_hora_atual_brasilia(), dados_json, metadados_json, 
+                  mes_ref, ano_ref, nome_arquivo, file_hash))
+            st.sidebar.info("📝 Registro de inscrições atualizado (evitada duplicidade)")
+        else:
+            # Inserir novo registro
+            conn.execute('''
+                INSERT INTO inscricoes (mes_referencia, ano_referencia, data_importacao, 
+                          nome_arquivo, dados_json, metadados_json, hash_arquivo)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (mes_ref, ano_ref, data_hora_atual_brasilia(), nome_arquivo, 
+                  dados_json, metadados_json, file_hash))
+            st.sidebar.success("✅ Novo registro de inscrições salvo")
+        
+        conn.commit()
+        return True
+    except Exception as e:
+        st.error(f"Erro ao salvar inscrições: {str(e)}")
+        return False
+
+# CORREÇÃO: Sistema de upload de dados - MELHORADO
+def carregar_dados(conn):
+    st.sidebar.header("📤 Carregar Dados Mensais")
+    
+    # Inicializar variáveis de mês/ano
+    mes_ref_detectado = None
+    ano_ref_detectado = None
+    
+    upload_pagamentos = st.sidebar.file_uploader(
+        "Planilha de Pagamentos", 
+        type=['xlsx', 'csv', 'xls'],
+        key="pagamentos_upload",
+        help="Arraste e solte o arquivo aqui ou clique para procurar"
+    )
+    
+    upload_contas = st.sidebar.file_uploader(
+        "Planilha de Inscrições/Contas", 
+        type=['xlsx', 'csv', 'xls'],
+        key="contas_upload",
+        help="Arraste e solte o arquivo aqui ou clique para procurar"
+    )
+    
+    # Detectar mês/ano automaticamente dos nomes dos arquivos
+    if upload_pagamentos is not None:
+        mes_ref_detectado, ano_ref_detectado = extrair_mes_ano_arquivo(upload_pagamentos.name)
+        if mes_ref_detectado and ano_ref_detectado:
+            st.sidebar.info(f"📅 Mês/ano detectado: {mes_ref_detectado}/{ano_ref_detectado}")
+    
+    if upload_contas is not None and (not mes_ref_detectado or not ano_ref_detectado):
+        mes_contas, ano_contas = extrair_mes_ano_arquivo(upload_contas.name)
+        if mes_contas and ano_contas:
+            mes_ref_detectado = mes_contas
+            ano_ref_detectado = ano_contas
+            st.sidebar.info(f"📅 Mês/ano detectado: {mes_ref_detectado}/{ano_ref_detectado}")
+    
+    # Seleção de mês e ano de referência com valores detectados como padrão
+    col1, col2 = st.sidebar.columns(2)
+    with col1:
+        meses = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
+                'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro']
+        mes_ref_padrao = mes_ref_detectado if mes_ref_detectado else 'Janeiro'
+        mes_ref = st.selectbox("Mês de Referência", meses, 
+                              index=meses.index(mes_ref_padrao) if mes_ref_padrao in meses else 0, 
+                              key="mes_ref")
+    with col2:
+        ano_atual = datetime.now().year
+        anos = [ano_atual, ano_atual-1, ano_atual-2, ano_atual-3]
+        ano_ref_padrao = ano_ref_detectado if ano_ref_detectado else ano_atual
+        ano_ref = st.selectbox("Ano de Referência", anos, 
+                              index=anos.index(ano_ref_padrao) if ano_ref_padrao in anos else 0, 
+                              key="ano_ref")
+    
+    st.sidebar.markdown("---")
+    
+    dados = {}
+    nomes_arquivos = {}
+    dados_processados = False
+    
+    # Carregar dados de pagamentos
+    if upload_pagamentos is not None:
+        try:
+            # Processar arquivo
+            df_pagamentos = processar_arquivo(upload_pagamentos, 'pagamentos')
+            
+            if df_pagamentos is not None:
+                nomes_arquivos['pagamentos'] = upload_pagamentos.name
+                
+                # Guardar versão original e versão sem totais
+                dados['pagamentos_original'] = df_pagamentos.copy()
+                
+                # Remover linha de totais antes do processamento
+                df_pagamentos_sem_totais = remover_linha_totais(df_pagamentos)
+                dados['pagamentos_sem_totais'] = df_pagamentos_sem_totais
+                
+                # Processar dados
+                df_pagamentos_sem_totais = processar_colunas_valor(df_pagamentos_sem_totais)
+                df_pagamentos_sem_totais = processar_colunas_data(df_pagamentos_sem_totais)
+                df_pagamentos_sem_totais = padronizar_documentos(df_pagamentos_sem_totais)
+                
+                dados['pagamentos'] = df_pagamentos_sem_totais
+                
+                # Salvar no banco de dados
+                metadados = {
+                    'total_registros_originais': len(df_pagamentos),
+                    'total_registros_sem_totais': len(df_pagamentos_sem_totais),
+                    'colunas_disponiveis': df_pagamentos.columns.tolist(),
+                    'tipo_arquivo': 'pagamentos'
+                }
+                
+                if salvar_pagamentos_db(conn, mes_ref, ano_ref, upload_pagamentos.name, 
+                                       upload_pagamentos.getvalue(), df_pagamentos_sem_totais, metadados):
+                    dados_processados = True
+                
+                # Mostrar estatísticas
+                df_pagamentos_validos = filtrar_pagamentos_validos(df_pagamentos_sem_totais)
+                total_validos = len(df_pagamentos_validos)
+                total_invalidos = len(df_pagamentos_sem_totais) - total_validos
+                
+                st.sidebar.success(f"✅ Pagamentos: {total_validos} válidos + {total_invalidos} sem conta")
+                
+        except Exception as e:
+            st.sidebar.error(f"❌ Erro ao carregar pagamentos: {str(e)}")
+    
+    # Carregar dados de abertura de contas
+    if upload_contas is not None:
+        try:
+            # Processar arquivo
+            df_contas = processar_arquivo(upload_contas, 'inscrições')
+            
+            if df_contas is not None:
+                nomes_arquivos['contas'] = upload_contas.name
+                
+                df_contas = processar_colunas_data(df_contas)
+                df_contas = padronizar_documentos(df_contas)
+                
+                dados['contas'] = df_contas
+                
+                # Salvar no banco de dados
+                metadados = {
+                    'total_registros': len(df_contas),
+                    'colunas_disponiveis': df_contas.columns.tolist(),
+                    'tipo_arquivo': 'inscricoes'
+                }
+                
+                if salvar_inscricoes_db(conn, mes_ref, ano_ref, upload_contas.name, 
+                                       upload_contas.getvalue(), df_contas, metadados):
+                    dados_processados = True
+                
+                st.sidebar.success(f"✅ Inscrições: {len(dados['contas'])} registros")
+                
+        except Exception as e:
+            st.sidebar.error(f"❌ Erro ao carregar inscrições: {str(e)}")
+    
+    return dados, nomes_arquivos, mes_ref, ano_ref, dados_processados
+
+# FUNÇÕES AUXILIARES (mantidas do código original)
 def extrair_mes_ano_arquivo(nome_arquivo):
     """Extrai mês e ano do nome do arquivo automaticamente"""
     if not nome_arquivo:
@@ -706,10 +776,9 @@ def extrair_mes_ano_arquivo(nome_arquivo):
     
     return None, None
 
-# Funções auxiliares (mantidas iguais)
 def obter_coluna_conta(df):
     """Identifica a coluna que contém o número da conta"""
-    colunas_conta = ['Num Cartao', 'Num_Cartao', 'Conta', 'Número da Conta', 'Numero_Conta', 'Número do Cartão']
+    colunas_conta = ['Num Cartao', 'Num_Cartao', 'Conta', 'Número da Conta', 'Numero_Conta', 'Número do Cartão', 'Nº Cartão', 'Cartão']
     for coluna in colunas_conta:
         if coluna in df.columns:
             return coluna
@@ -717,7 +786,7 @@ def obter_coluna_conta(df):
 
 def obter_coluna_nome(df):
     """Identifica a coluna que contém o nome do beneficiário"""
-    colunas_nome = ['Beneficiario', 'Beneficiário', 'Nome', 'Nome Completo', 'Nome do Beneficiário']
+    colunas_nome = ['Beneficiario', 'Beneficiário', 'Nome', 'Nome Completo', 'Nome do Beneficiário', 'Nome_Beneficiario']
     for coluna in colunas_nome:
         if coluna in df.columns:
             return coluna
@@ -743,7 +812,6 @@ def formatar_brasileiro(valor, tipo='numero'):
     else:
         return str(valor)
 
-# FUNÇÃO CORRIGIDA: Identificar e remover linha de totais
 def remover_linha_totais(df):
     """Identifica e remove a linha de totais da planilha de forma inteligente"""
     if df.empty or len(df) <= 1:
@@ -793,6 +861,135 @@ def filtrar_pagamentos_validos(df):
     
     return df_filtrado
 
+# FUNÇÕES DE PROCESSAMENTO DE DADOS (mantidas do código original)
+def processar_cpf(cpf):
+    """Processa CPF, mantendo apenas números e completando com zeros à esquerda"""
+    if pd.isna(cpf) or cpf in ['', 'NaN', 'None', 'nan', 'None', 'NULL']:
+        return ''
+    
+    cpf_str = str(cpf).strip()
+    cpf_limpo = re.sub(r'[^\d]', '', cpf_str)
+    
+    if cpf_limpo == '':
+        return ''
+    
+    if len(cpf_limpo) < 11:
+        cpf_limpo = cpf_limpo.zfill(11)
+    
+    return cpf_limpo
+
+def padronizar_documentos(df):
+    """Padroniza RGs e CPFs, CPF apenas números"""
+    df_processed = df.copy()
+    
+    colunas_documentos = ['RG', 'CPF', 'Documento', 'Numero_Documento']
+    
+    for coluna in colunas_documentos:
+        if coluna in df_processed.columns:
+            try:
+                if coluna == 'CPF':
+                    df_processed[coluna] = df_processed[coluna].astype(str).apply(
+                        lambda x: processar_cpf(x) if pd.notna(x) and str(x).strip() != '' else ''
+                    )
+                elif coluna == 'RG':
+                    df_processed[coluna] = df_processed[coluna].astype(str).apply(
+                        lambda x: re.sub(r'[^a-zA-Z0-9/]', '', x) if pd.notna(x) and str(x).strip() != '' else ''
+                    )
+                else:
+                    df_processed[coluna] = df_processed[coluna].astype(str).apply(
+                        lambda x: re.sub(r'[^\w]', '', x) if pd.notna(x) and str(x).strip() != '' else ''
+                    )
+                
+            except Exception as e:
+                st.warning(f"⚠️ Não foi possível padronizar a coluna '{coluna}': {str(e)}")
+    
+    return df_processed
+
+def processar_colunas_data(df):
+    """Converte colunas de data de formato numérico do Excel para datas legíveis"""
+    df_processed = df.copy()
+    
+    colunas_data = ['Data', 'Data Pagto', 'Data_Pagto', 'DataPagto', 'Data Pagamento', 'Data_Abertura']
+    
+    for coluna in colunas_data:
+        if coluna in df_processed.columns:
+            try:
+                if df_processed[coluna].dtype in ['int64', 'float64']:
+                    df_processed[coluna] = pd.to_datetime(
+                        df_processed[coluna], 
+                        unit='D', 
+                        origin='1899-12-30',
+                        errors='coerce'
+                    )
+                else:
+                    df_processed[coluna] = pd.to_datetime(
+                        df_processed[coluna], 
+                        errors='coerce'
+                    )
+                
+                df_processed[coluna] = df_processed[coluna].dt.strftime('%d/%m/%Y')
+                
+            except Exception as e:
+                st.warning(f"⚠️ Não foi possível processar a coluna de data '{coluna}': {str(e)}")
+    
+    return df_processed
+
+def processar_colunas_valor(df):
+    """Processa colunas de valor para formato brasileiro, priorizando 'Valor Pagto'"""
+    df_processed = df.copy()
+    
+    colunas_valor_prioridade = ['Valor Pagto', 'Valor_Pagto', 'Valor Pgto', 'Valor_Pgto', 'Valor', 'Valor_Pago', 'Valor Pagamento']
+    
+    coluna_valor_encontrada = None
+    for coluna_valor in colunas_valor_prioridade:
+        if coluna_valor in df_processed.columns:
+            coluna_valor_encontrada = coluna_valor
+            break
+    
+    if coluna_valor_encontrada:
+        try:
+            valores_limpos = []
+            
+            for valor in df_processed[coluna_valor_encontrada]:
+                if pd.isna(valor):
+                    valores_limpos.append(0.0)
+                    continue
+                
+                if isinstance(valor, (int, float)):
+                    valores_limpos.append(float(valor))
+                    continue
+                
+                valor_str = str(valor).strip()
+                if valor_str == '':
+                    valores_limpos.append(0.0)
+                    continue
+                
+                valor_limpo_str = re.sub(r'[^\d,.]', '', valor_str)
+                valor_limpo_str = valor_limpo_str.replace(',', '.')
+                
+                if valor_limpo_str.count('.') > 1:
+                    partes = valor_limpo_str.split('.')
+                    valor_limpo_str = ''.join(partes[:-1]) + '.' + partes[-1]
+                
+                try:
+                    valor_float = float(valor_limpo_str) if valor_limpo_str else 0.0
+                    valores_limpos.append(valor_float)
+                except:
+                    valores_limpos.append(0.0)
+            
+            df_processed['Valor_Limpo'] = valores_limpos
+            st.sidebar.success(f"💰 Coluna de valor utilizada: '{coluna_valor_encontrada}'")
+                
+        except Exception as e:
+            st.warning(f"⚠️ Erro ao processar valores da coluna '{coluna_valor_encontrada}': {str(e)}")
+            df_processed['Valor_Limpo'] = 0.0
+    else:
+        st.warning("⚠️ Nenhuma coluna de valor encontrada na planilha")
+        df_processed['Valor_Limpo'] = 0.0
+    
+    return df_processed
+
+# FUNÇÕES DE ANÁLISE (mantidas do código original)
 def identificar_cpfs_problematicos(df):
     """Identifica CPFs com problemas de formatação E inconsistências"""
     problemas_cpf = {
@@ -1113,133 +1310,6 @@ def detectar_pagamentos_pendentes(dados):
     
     return pendentes
 
-def processar_cpf(cpf):
-    """Processa CPF, mantendo apenas números e completando com zeros à esquerda"""
-    if pd.isna(cpf) or cpf in ['', 'NaN', 'None', 'nan', 'None', 'NULL']:
-        return ''
-    
-    cpf_str = str(cpf).strip()
-    cpf_limpo = re.sub(r'[^\d]', '', cpf_str)
-    
-    if cpf_limpo == '':
-        return ''
-    
-    if len(cpf_limpo) < 11:
-        cpf_limpo = cpf_limpo.zfill(11)
-    
-    return cpf_limpo
-
-def padronizar_documentos(df):
-    """Padroniza RGs e CPFs, CPF apenas números"""
-    df_processed = df.copy()
-    
-    colunas_documentos = ['RG', 'CPF', 'Documento', 'Numero_Documento']
-    
-    for coluna in colunas_documentos:
-        if coluna in df_processed.columns:
-            try:
-                if coluna == 'CPF':
-                    df_processed[coluna] = df_processed[coluna].astype(str).apply(
-                        lambda x: processar_cpf(x) if pd.notna(x) and str(x).strip() != '' else ''
-                    )
-                elif coluna == 'RG':
-                    df_processed[coluna] = df_processed[coluna].astype(str).apply(
-                        lambda x: re.sub(r'[^a-zA-Z0-9/]', '', x) if pd.notna(x) and str(x).strip() != '' else ''
-                    )
-                else:
-                    df_processed[coluna] = df_processed[coluna].astype(str).apply(
-                        lambda x: re.sub(r'[^\w]', '', x) if pd.notna(x) and str(x).strip() != '' else ''
-                    )
-                
-            except Exception as e:
-                st.warning(f"⚠️ Não foi possível padronizar a coluna '{coluna}': {str(e)}")
-    
-    return df_processed
-
-def processar_colunas_data(df):
-    """Converte colunas de data de formato numérico do Excel para datas legíveis"""
-    df_processed = df.copy()
-    
-    colunas_data = ['Data', 'Data Pagto', 'Data_Pagto', 'DataPagto', 'Data Pagamento']
-    
-    for coluna in colunas_data:
-        if coluna in df_processed.columns:
-            try:
-                if df_processed[coluna].dtype in ['int64', 'float64']:
-                    df_processed[coluna] = pd.to_datetime(
-                        df_processed[coluna], 
-                        unit='D', 
-                        origin='1899-12-30',
-                        errors='coerce'
-                    )
-                else:
-                    df_processed[coluna] = pd.to_datetime(
-                        df_processed[coluna], 
-                        errors='coerce'
-                    )
-                
-                df_processed[coluna] = df_processed[coluna].dt.strftime('%d/%m/%Y')
-                
-            except Exception as e:
-                st.warning(f"⚠️ Não foi possível processar a coluna de data '{coluna}': {str(e)}")
-    
-    return df_processed
-
-def processar_colunas_valor(df):
-    """Processa colunas de valor para formato brasileiro, priorizando 'Valor Pagto'"""
-    df_processed = df.copy()
-    
-    colunas_valor_prioridade = ['Valor Pagto', 'Valor_Pagto', 'Valor Pgto', 'Valor_Pgto', 'Valor', 'Valor_Pago', 'Valor Pagamento']
-    
-    coluna_valor_encontrada = None
-    for coluna_valor in colunas_valor_prioridade:
-        if coluna_valor in df_processed.columns:
-            coluna_valor_encontrada = coluna_valor
-            break
-    
-    if coluna_valor_encontrada:
-        try:
-            valores_limpos = []
-            
-            for valor in df_processed[coluna_valor_encontrada]:
-                if pd.isna(valor):
-                    valores_limpos.append(0.0)
-                    continue
-                
-                if isinstance(valor, (int, float)):
-                    valores_limpos.append(float(valor))
-                    continue
-                
-                valor_str = str(valor).strip()
-                if valor_str == '':
-                    valores_limpos.append(0.0)
-                    continue
-                
-                valor_limpo_str = re.sub(r'[^\d,.]', '', valor_str)
-                valor_limpo_str = valor_limpo_str.replace(',', '.')
-                
-                if valor_limpo_str.count('.') > 1:
-                    partes = valor_limpo_str.split('.')
-                    valor_limpo_str = ''.join(partes[:-1]) + '.' + partes[-1]
-                
-                try:
-                    valor_float = float(valor_limpo_str) if valor_limpo_str else 0.0
-                    valores_limpos.append(valor_float)
-                except:
-                    valores_limpos.append(0.0)
-            
-            df_processed['Valor_Limpo'] = valores_limpos
-            st.sidebar.success(f"💰 Coluna de valor utilizada: '{coluna_valor_encontrada}'")
-                
-        except Exception as e:
-            st.warning(f"⚠️ Erro ao processar valores da coluna '{coluna_valor_encontrada}': {str(e)}")
-            df_processed['Valor_Limpo'] = 0.0
-    else:
-        st.warning("⚠️ Nenhuma coluna de valor encontrada na planilha")
-        df_processed['Valor_Limpo'] = 0.0
-    
-    return df_processed
-
 def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_contas=None):
     """Analisa e reporta apenas dados críticos realmente ausentes"""
     analise_ausencia = {
@@ -1461,7 +1531,126 @@ def processar_dados(dados, nomes_arquivos=None):
     
     return metrics
 
-# CLASSE PDF MELHORADA COM TABELAS
+# FUNÇÃO PARA SALVAR MÉTRICAS - CORRIGIDA
+def salvar_metricas_db(conn, tipo, mes_ref, ano_ref, metrics):
+    """Salva métricas no banco de dados para relatórios comparativos com verificação de duplicidade"""
+    try:
+        # Verificar se já existe métrica para este tipo/mês/ano
+        cursor = conn.execute(
+            "SELECT id FROM metricas_mensais WHERE tipo = ? AND mes_referencia = ? AND ano_referencia = ?",
+            (tipo, mes_ref, ano_ref)
+        )
+        existe = cursor.fetchone()
+        
+        if existe:
+            # Atualizar métrica existente
+            conn.execute('''
+                UPDATE metricas_mensais 
+                SET total_registros = ?, beneficiarios_unicos = ?, contas_unicas = ?, 
+                    valor_total = ?, pagamentos_duplicados = ?, valor_duplicados = ?, 
+                    projetos_ativos = ?, registros_problema = ?, cpfs_ajuste = ?, data_calculo = ?
+                WHERE tipo = ? AND mes_referencia = ? AND ano_referencia = ?
+            ''', (
+                metrics.get('total_pagamentos', 0) if tipo == 'pagamentos' else metrics.get('total_contas_abertas', 0),
+                metrics.get('beneficiarios_unicos', 0) if tipo == 'pagamentos' else metrics.get('beneficiarios_contas', 0),
+                metrics.get('contas_unicas', 0),
+                metrics.get('valor_total', 0),
+                metrics.get('pagamentos_duplicados', 0),
+                metrics.get('valor_total_duplicados', 0),
+                metrics.get('projetos_ativos', 0),
+                metrics.get('total_registros_criticos', 0),
+                metrics.get('total_cpfs_ajuste', 0),
+                data_hora_atual_brasilia(),
+                tipo, mes_ref, ano_ref
+            ))
+        else:
+            # Inserir nova métrica
+            conn.execute('''
+                INSERT INTO metricas_mensais (tipo, mes_referencia, ano_referencia, total_registros, 
+                            beneficiarios_unicos, contas_unicas, valor_total, pagamentos_duplicados, 
+                            valor_duplicados, projetos_ativos, registros_problema, cpfs_ajuste, data_calculo)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (tipo, mes_ref, ano_ref, 
+                  metrics.get('total_pagamentos', 0) if tipo == 'pagamentos' else metrics.get('total_contas_abertas', 0),
+                  metrics.get('beneficiarios_unicos', 0) if tipo == 'pagamentos' else metrics.get('beneficiarios_contas', 0),
+                  metrics.get('contas_unicas', 0),
+                  metrics.get('valor_total', 0),
+                  metrics.get('pagamentos_duplicados', 0),
+                  metrics.get('valor_total_duplicados', 0),
+                  metrics.get('projetos_ativos', 0),
+                  metrics.get('total_registros_criticos', 0),
+                  metrics.get('total_cpfs_ajuste', 0),
+                  data_hora_atual_brasilia()))
+        
+        conn.commit()
+        return True
+    except Exception as e:
+        st.error(f"Erro ao salvar métricas: {str(e)}")
+        return False
+
+# FUNÇÕES PARA CARREGAR DADOS DO BANCO - CORRIGIDAS
+def carregar_pagamentos_db(conn, mes_ref=None, ano_ref=None):
+    """Carrega dados de pagamentos do banco de dados"""
+    try:
+        query = "SELECT * FROM pagamentos"
+        params = []
+        
+        if mes_ref and ano_ref:
+            query += " WHERE mes_referencia = ? AND ano_referencia = ?"
+            params = [mes_ref, ano_ref]
+        
+        query += " ORDER BY ano_referencia DESC, mes_referencia DESC"
+        
+        df_result = pd.read_sql_query(query, conn, params=params)
+        return df_result
+    except Exception as e:
+        st.error(f"Erro ao carregar pagamentos: {e}")
+        return pd.DataFrame()
+
+def carregar_inscricoes_db(conn, mes_ref=None, ano_ref=None):
+    """Carrega dados de inscrições do banco de dados"""
+    try:
+        query = "SELECT * FROM inscricoes"
+        params = []
+        
+        if mes_ref and ano_ref:
+            query += " WHERE mes_referencia = ? AND ano_referencia = ?"
+            params = [mes_ref, ano_ref]
+        
+        query += " ORDER BY ano_referencia DESC, mes_referencia DESC"
+        
+        df_result = pd.read_sql_query(query, conn, params=params)
+        return df_result
+    except Exception as e:
+        st.error(f"Erro ao carregar inscrições: {e}")
+        return pd.DataFrame()
+
+def carregar_metricas_db(conn, tipo=None, periodo=None):
+    """Carrega métricas do banco de dados para relatórios comparativos"""
+    try:
+        query = "SELECT * FROM metricas_mensais"
+        params = []
+        
+        if tipo:
+            query += " WHERE tipo = ?"
+            params = [tipo]
+        
+        if periodo == 'trimestral':
+            query += " ORDER BY ano_referencia DESC, mes_referencia DESC LIMIT 3"
+        elif periodo == 'semestral':
+            query += " ORDER BY ano_referencia DESC, mes_referencia DESC LIMIT 6"
+        elif periodo == 'anual':
+            query += " ORDER BY ano_referencia DESC, mes_referencia DESC LIMIT 12"
+        else:
+            query += " ORDER BY ano_referencia DESC, mes_referencia DESC"
+        
+        df_result = pd.read_sql_query(query, conn, params=params)
+        return df_result
+    except Exception as e:
+        st.error(f"Erro ao carregar métricas: {e}")
+        return pd.DataFrame()
+
+# CLASSE PDF MELHORADA COM TABELAS (mantida do código original)
 class PDFWithTables(FPDF):
     def __init__(self):
         super().__init__()
@@ -1539,7 +1728,7 @@ class PDFWithTables(FPDF):
         
         return lines
 
-# FUNÇÃO MELHORADA: Gerar PDF Executivo COM TABELAS ORGANIZADAS
+# FUNÇÕES DE GERAÇÃO DE RELATÓRIOS (mantidas do código original)
 def gerar_pdf_executivo(metrics, dados, nomes_arquivos, tipo_relatorio='pagamentos'):
     """Gera relatório executivo em PDF com tabelas organizadas"""
     pdf = PDFWithTables()
@@ -1984,137 +2173,7 @@ def gerar_csv_dados_tratados(dados, tipo_dados='pagamentos'):
     
     return pd.DataFrame()
 
-# CORREÇÃO: Sistema de upload de dados - EVITAR DUPLICIDADE
-def carregar_dados(conn):
-    st.sidebar.header("📤 Carregar Dados Mensais")
-    
-    # Inicializar variáveis de mês/ano
-    mes_ref_detectado = None
-    ano_ref_detectado = None
-    
-    upload_pagamentos = st.sidebar.file_uploader(
-        "Planilha de Pagamentos", 
-        type=['xlsx', 'csv'],
-        key="pagamentos_upload",
-        help="Arraste e solte o arquivo aqui ou clique para procurar"
-    )
-    
-    upload_contas = st.sidebar.file_uploader(
-        "Planilha de Inscrições/Contas", 
-        type=['xlsx', 'csv'],
-        key="contas_upload",
-        help="Arraste e solte o arquivo aqui ou clique para procurar"
-    )
-    
-    # CORREÇÃO: Detectar mês/ano automaticamente dos nomes dos arquivos
-    if upload_pagamentos is not None:
-        mes_ref_detectado, ano_ref_detectado = extrair_mes_ano_arquivo(upload_pagamentos.name)
-        if mes_ref_detectado and ano_ref_detectado:
-            st.sidebar.info(f"📅 Mês/ano detectado: {mes_ref_detectado}/{ano_ref_detectado}")
-    
-    if upload_contas is not None and (not mes_ref_detectado or not ano_ref_detectado):
-        mes_contas, ano_contas = extrair_mes_ano_arquivo(upload_contas.name)
-        if mes_contas and ano_contas:
-            mes_ref_detectado = mes_contas
-            ano_ref_detectado = ano_contas
-            st.sidebar.info(f"📅 Mês/ano detectado: {mes_ref_detectado}/{ano_ref_detectado}")
-    
-    # Seleção de mês e ano de referência com valores detectados como padrão
-    col1, col2 = st.sidebar.columns(2)
-    with col1:
-        meses = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
-                'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro']
-        mes_ref_padrao = mes_ref_detectado if mes_ref_detectado else 'Outubro'
-        mes_ref = st.selectbox("Mês de Referência", meses, index=meses.index(mes_ref_padrao) if mes_ref_padrao in meses else 9, key="mes_ref")
-    with col2:
-        ano_atual = datetime.now().year
-        anos = [ano_atual, ano_atual-1, ano_atual-2]
-        ano_ref_padrao = ano_ref_detectado if ano_ref_detectado else ano_atual
-        ano_ref = st.selectbox("Ano de Referência", anos, index=anos.index(ano_ref_padrao) if ano_ref_padrao in anos else 0, key="ano_ref")
-    
-    st.sidebar.markdown("---")
-    
-    dados = {}
-    nomes_arquivos = {}
-    
-    # CORREÇÃO: Variável para controlar se dados foram processados
-    dados_processados = False
-    
-    # Carregar dados de pagamentos
-    if upload_pagamentos is not None:
-        try:
-            if upload_pagamentos.name.endswith('.xlsx'):
-                df_pagamentos = pd.read_excel(upload_pagamentos)
-            else:
-                df_pagamentos = pd.read_csv(upload_pagamentos, encoding='utf-8', sep=';')
-            
-            nomes_arquivos['pagamentos'] = upload_pagamentos.name
-            
-            # Guardar versão original e versão sem totais
-            dados['pagamentos_original'] = df_pagamentos.copy()
-            
-            # Remover linha de totais antes do processamento
-            df_pagamentos_sem_totais = remover_linha_totais(df_pagamentos)
-            dados['pagamentos_sem_totais'] = df_pagamentos_sem_totais
-            
-            # CORREÇÃO: Processar valores ANTES de outras operações
-            df_pagamentos_sem_totais = processar_colunas_valor(df_pagamentos_sem_totais)
-            df_pagamentos_sem_totais = processar_colunas_data(df_pagamentos_sem_totais)
-            df_pagamentos_sem_totais = padronizar_documentos(df_pagamentos_sem_totais)
-            
-            dados['pagamentos'] = df_pagamentos_sem_totais
-            
-            # Salvar no banco de dados (AGORA COM CONTROLE DE DUPLICIDADE)
-            metadados = {
-                'total_registros_originais': len(df_pagamentos),
-                'total_registros_sem_totais': len(df_pagamentos_sem_totais),
-                'colunas_disponiveis': df_pagamentos.columns.tolist()
-            }
-            
-            salvar_pagamentos_db(conn, mes_ref, ano_ref, upload_pagamentos.name, df_pagamentos_sem_totais, metadados)
-            dados_processados = True
-            
-            # Mostrar estatísticas de pagamentos válidos vs inválidos (JÁ SEM TOTAIS)
-            df_pagamentos_validos = filtrar_pagamentos_validos(df_pagamentos_sem_totais)
-            total_validos = len(df_pagamentos_validos)
-            total_invalidos = len(df_pagamentos_sem_totais) - total_validos
-            
-            st.sidebar.success(f"✅ Pagamentos: {total_validos} válidos + {total_invalidos} sem conta - {upload_pagamentos.name}")
-            
-        except Exception as e:
-            st.sidebar.error(f"❌ Erro ao carregar pagamentos: {str(e)}")
-    
-    # Carregar dados de abertura de contas
-    if upload_contas is not None:
-        try:
-            if upload_contas.name.endswith('.xlsx'):
-                df_contas = pd.read_excel(upload_contas)
-            else:
-                df_contas = pd.read_csv(upload_contas, encoding='utf-8', sep=';')
-            
-            nomes_arquivos['contas'] = upload_contas.name
-            
-            df_contas = processar_colunas_data(df_contas)
-            df_contas = padronizar_documentos(df_contas)
-            
-            dados['contas'] = df_contas
-            
-            # Salvar no banco de dados (AGORA COM CONTROLE DE DUPLICIDADE)
-            metadados = {
-                'total_registros': len(df_contas),
-                'colunas_disponiveis': df_contas.columns.tolist()
-            }
-            
-            salvar_inscricoes_db(conn, mes_ref, ano_ref, upload_contas.name, df_contas, metadados)
-            dados_processados = True
-            
-            st.sidebar.success(f"✅ Inscrições: {len(dados['contas'])} registros - {upload_contas.name}")
-        except Exception as e:
-            st.sidebar.error(f"❌ Erro ao carregar inscrições: {str(e)}")
-    
-    return dados, nomes_arquivos, mes_ref, ano_ref, dados_processados
-
-# FUNÇÕES PARA AS OUTRAS ABAS
+# FUNÇÕES PARA AS OUTRAS ABAS (mantidas do código original)
 def mostrar_dashboard_evolutivo(conn):
     """Mostra dashboard com evolução temporal dos dados"""
     st.header("📈 Dashboard Evolutivo")
@@ -2274,7 +2333,7 @@ def mostrar_relatorios_comparativos(conn):
             f"{((dados_periodo2['valor_total'] - dados_periodo1['valor_total']) / dados_periodo1['valor_total'] * 100):.1f}%",
             f"{((dados_periodo2['pagamentos_duplicados'] - dados_periodo1['pagamentos_duplicados']) / max(dados_periodo1['pagamentos_duplicados'], 1) * 100):.1f}%",
             f"{((dados_periodo2['valor_duplicados'] - dados_periodo1['valor_duplicados']) / max(dados_periodo1['valor_duplicados'], 1) * 100):.1f}%",
-            f"{((dados_periodo2['projetos_ativos'] - dados_periodo1['projetos_ativos']) / max(dados_periodo1['projetos_ativos'], 1) * 100):.1f}%",
+            f"{((dados_periodo2['projetos_ativos'] - dados_periodo1['projetos_ativos']) / max(dados_periodo1['projetos_ativos', 1]) * 100):.1f}%",
             f"{((dados_periodo2.get('cpfs_ajuste', 0) - dados_periodo1.get('cpfs_ajuste', 0)) / max(dados_periodo1.get('cpfs_ajuste', 1), 1) * 100):.1f}%",
             f"{((dados_periodo2['registros_problema'] - dados_periodo1['registros_problema']) / max(dados_periodo1['registros_problema'], 1) * 100):.1f}%"
         ]
@@ -2474,6 +2533,135 @@ def mostrar_estatisticas_detalhadas(conn):
                              title='Padrão Sazonal - Média de Pagamentos por Mês',
                              labels={'total_registros': 'Média de Pagamentos', 'mes_nome': 'Mês'})
         st.plotly_chart(fig_sazonal, use_container_width=True)
+
+# FUNÇÕES ADMINISTRATIVAS ADICIONAIS (mantidas do código original)
+def limpar_banco_dados_completo(conn, tipo_usuario):
+    """Remove TODOS os dados do banco para recomeçar do zero - APENAS ADMIN"""
+    
+    if tipo_usuario != 'admin':
+        st.error("🚫 Acesso negado. Apenas administradores podem executar esta operação.")
+        return False
+    
+    try:
+        st.error("**ATENÇÃO CRÍTICA:** Esta operação é IRREVERSÍVEL e deve ser usada APENAS durante testes!")
+        st.warning("""
+        **Efeitos desta operação:**
+        - ❌ Todos os dados de pagamentos serão PERDIDOS
+        - ❌ Todos os dados de inscrições serão PERDIDOS  
+        - ❌ Todas as métricas históricas serão PERDIDAS
+        - 🔄 O sistema recomeçará do ZERO
+        """)
+        
+        # Dupla confirmação
+        senha_confirmacao1 = st.text_input("Digite 'LIMPAR TUDO' para confirmar:", type="password", key="confirm1")
+        senha_confirmacao2 = st.text_input("Digite novamente 'LIMPAR TUDO':", type="password", key="confirm2")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            botao_limpar = st.button("🗑️ LIMPAR TODOS OS DADOS", type="secondary", use_container_width=True, key="limpar_dados")
+        with col2:
+            botao_cancelar = st.button("❌ Cancelar", use_container_width=True, key="cancelar_limpeza")
+        
+        if botao_limpar:
+            if senha_confirmacao1 == "LIMPAR TUDO" and senha_confirmacao2 == "LIMPAR TUDO":
+                # Executar limpeza COMPLETA
+                conn.execute("DELETE FROM pagamentos")
+                conn.execute("DELETE FROM inscricoes")
+                conn.execute("DELETE FROM metricas_mensais")
+                
+                # Reiniciar sequências de ID
+                conn.execute("DELETE FROM sqlite_sequence WHERE name='pagamentos'")
+                conn.execute("DELETE FROM sqlite_sequence WHERE name='inscricoes'") 
+                conn.execute("DELETE FROM sqlite_sequence WHERE name='metricas_mensais'")
+                
+                conn.commit()
+                
+                st.success("✅ Banco de dados limpo COMPLETAMENTE!")
+                st.info("🔄 Recarregue a página para começar novamente")
+                return True
+            else:
+                st.error("❌ Confirmação incorreta. Operação cancelada.")
+                return False
+        
+        if botao_cancelar:
+            st.info("Operação de limpeza cancelada.")
+            return False
+            
+    except Exception as e:
+        st.error(f"❌ Erro ao limpar banco: {str(e)}")
+        return False
+
+def gerenciar_registros(conn, tipo_usuario):
+    """Permite visualizar e excluir registros específicos - APENAS ADMIN"""
+    
+    if tipo_usuario != 'admin':
+        st.error("🚫 Acesso negado. Apenas administradores podem executar esta operação.")
+        return
+    
+    try:
+        st.warning("Área administrativa - Use com cuidado!")
+        
+        # Selecionar tipo de dados
+        tipo_dados = st.selectbox("Tipo de dados:", ["Pagamentos", "Inscrições", "Métricas"], key="tipo_dados_admin")
+        
+        if tipo_dados == "Pagamentos":
+            dados = carregar_pagamentos_db(conn)
+        elif tipo_dados == "Inscrições":
+            dados = carregar_inscricoes_db(conn)
+        else:
+            dados = carregar_metricas_db(conn)
+        
+        if not dados.empty:
+            st.write(f"**Total de registros:** {len(dados)}")
+            
+            # Mostrar resumo
+            if tipo_dados in ["Pagamentos", "Inscrições"]:
+                resumo = dados[['id', 'mes_referencia', 'ano_referencia', 'nome_arquivo', 'data_importacao']].copy()
+                st.dataframe(resumo.head(10))
+                
+                # Opção de excluir por ID específico
+                st.subheader("Excluir Registro Específico")
+                id_excluir = st.number_input("ID do registro a excluir:", min_value=1, step=1, key="id_excluir")
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("🗑️ Excluir por ID", type="secondary", use_container_width=True, key="excluir_id"):
+                        if id_excluir:
+                            if tipo_dados == "Pagamentos":
+                                conn.execute("DELETE FROM pagamentos WHERE id = ?", (int(id_excluir),))
+                                # Excluir métricas correspondentes se existirem
+                                registro = dados[dados['id'] == int(id_excluir)]
+                                if not registro.empty:
+                                    mes = registro.iloc[0]['mes_referencia']
+                                    ano = registro.iloc[0]['ano_referencia']
+                                    conn.execute("DELETE FROM metricas_mensais WHERE mes_referencia = ? AND ano_referencia = ? AND tipo = 'pagamentos'", 
+                                               (mes, ano))
+                            else:
+                                conn.execute("DELETE FROM inscricoes WHERE id = ?", (int(id_excluir),))
+                                # Excluir métricas correspondentes se existirem
+                                registro = dados[dados['id'] == int(id_excluir)]
+                                if not registro.empty:
+                                    mes = registro.iloc[0]['mes_referencia']
+                                    ano = registro.iloc[0]['ano_referencia']
+                                    conn.execute("DELETE FROM metricas_mensais WHERE mes_referencia = ? AND ano_referencia = ? AND tipo = 'inscricoes'", 
+                                               (mes, ano))
+                            
+                            conn.commit()
+                            st.success(f"✅ Registro ID {id_excluir} excluído!")
+                            st.rerun()
+                
+                with col2:
+                    if st.button("🔄 Atualizar Lista", use_container_width=True, key="atualizar_lista"):
+                        st.rerun()
+            
+            elif tipo_dados == "Métricas":
+                st.dataframe(dados.head(10))
+        
+        else:
+            st.info("Nenhum registro encontrado.")
+            
+    except Exception as e:
+        st.error(f"Erro no gerenciamento: {str(e)}")
 
 # Interface principal do sistema CORRIGIDA
 def main():
