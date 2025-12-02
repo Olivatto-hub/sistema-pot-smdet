@@ -1,4 +1,4 @@
-# app.py - VERSÃO CORRIGIDA - IMPEDIR DUPLICIDADE E SALVAR CÁLCULOS
+# app.py - VERSÃO CORRIGIDA - DETECÇÃO AUTOMÁTICA DE MÊS E BANCO DE DADOS CORRIGIDO
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -71,7 +71,7 @@ def init_database():
             )
         ''')
         
-        # Tabela de métricas - ATUALIZADA
+        # Tabela de métricas - CORRIGIDA
         conn.execute('''
             CREATE TABLE IF NOT EXISTS metricas_mensais (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -87,8 +87,8 @@ def init_database():
                 projetos_ativos INTEGER,
                 registros_problema INTEGER,
                 cpfs_ajuste INTEGER,
-                total_contas_abertas INTEGER,
-                beneficiarios_contas INTEGER,
+                total_contas_abertas INTEGER DEFAULT 0,
+                beneficiarios_contas INTEGER DEFAULT 0,
                 data_calculo TEXT NOT NULL,
                 UNIQUE(tipo, mes_referencia, ano_referencia)
             )
@@ -289,17 +289,17 @@ def autenticar(conn):
 
 # ========== FUNÇÕES DE PROCESSAMENTO DE ARQUIVOS ==========
 def extrair_mes_ano_arquivo(nome_arquivo):
-    """Extrai mês e ano do nome do arquivo"""
+    """Extrai mês e ano do nome do arquivo - VERSÃO MELHORADA"""
     if not nome_arquivo:
         return None, None
     
     nome_upper = nome_arquivo.upper()
     
-    # Mapeamento direto e simples
+    # Mapeamento completo
     meses_map = {
         'JAN': 'Janeiro', 'JANEIRO': 'Janeiro',
         'FEV': 'Fevereiro', 'FEVEREIRO': 'Fevereiro',
-        'MAR': 'Março', 'MARCO': 'Março', 'MARÇO': 'Março',
+        'MAR': 'Março', 'MARCO': 'Março', 'MARÇO': 'Março', 'MAR.C': 'Março',
         'ABR': 'Abril', 'ABRIL': 'Abril',
         'MAI': 'Maio', 'MAIO': 'Maio',
         'JUN': 'Junho', 'JUNHO': 'Junho',
@@ -311,16 +311,20 @@ def extrair_mes_ano_arquivo(nome_arquivo):
         'DEZ': 'Dezembro', 'DEZEMBRO': 'Dezembro'
     }
     
-    # Primeiro, procurar por padrão MES/ANO ou MES-ANO
+    # Padrões mais abrangentes
     padroes = [
         # Formato: JANEIRO-2024, JANEIRO_2024, JANEIRO2024
-        (r'(JANEIRO|FEVEREIRO|MAR[ÇC]O|ABRIL|MAIO|JUNHO|JULHO|AGOSTO|SETEMBRO|OUTUBRO|NOVEMBRO|DEZEMBRO)[_\- ]?(\d{4})', 1, 2),
+        (r'(JANEIRO|FEVEREIRO|MAR[ÇCCO]O|ABRIL|MAIO|JUNHO|JULHO|AGOSTO|SETEMBRO|OUTUBRO|NOVEMBRO|DEZEMBRO)[_\- ]?(\d{4})', 1, 2),
         # Formato: JAN-2024, FEV-2024, etc
         (r'(JAN|FEV|MAR|ABR|MAI|JUN|JUL|AGO|SET|OUT|NOV|DEZ)[_\- ]?(\d{4})', 1, 2),
         # Formato: 01-2024, 02-2024, etc
         (r'(\d{1,2})[_\-/](\d{4})', 1, 2),
         # Formato: 2024-01, 2024-02, etc
         (r'(\d{4})[_\-/](\d{1,2})', 2, 1),
+        # Formato: 012024, 022024, etc
+        (r'(\d{2})(\d{4})', 1, 2),
+        # Formato: 202401, 202402, etc
+        (r'(\d{4})(\d{2})', 2, 1),
     ]
     
     for padrao, idx_mes, idx_ano in padroes:
@@ -361,23 +365,21 @@ def extrair_mes_ano_arquivo(nome_arquivo):
             if key in nome_upper and not key.isdigit():
                 return value, ano
         
-        # Se não encontrou mês, usar o mês atual
-        mes_atual_num = agora_brasilia().month
-        meses_numeros = {
-            1: 'Janeiro', 2: 'Fevereiro', 3: 'Março', 4: 'Abril',
-            5: 'Maio', 6: 'Junho', 7: 'Julho', 8: 'Agosto',
-            9: 'Setembro', 10: 'Outubro', 11: 'Novembro', 12: 'Dezembro'
-        }
-        return meses_numeros.get(mes_atual_num, 'Janeiro'), ano
+        # Se não encontrou mês, procurar por números de mês
+        mes_match = re.search(r'(\d{1,2})', nome_upper)
+        if mes_match:
+            mes_num = int(mes_match.group(1))
+            meses_numeros = {
+                1: 'Janeiro', 2: 'Fevereiro', 3: 'Março', 4: 'Abril',
+                5: 'Maio', 6: 'Junho', 7: 'Julho', 8: 'Agosto',
+                9: 'Setembro', 10: 'Outubro', 11: 'Novembro', 12: 'Dezembro'
+            }
+            mes = meses_numeros.get(mes_num)
+            if mes:
+                return mes, ano
     
-    # Se não encontrou nada, usar mês e ano atual
-    mes_atual_num = agora_brasilia().month
-    meses_numeros = {
-        1: 'Janeiro', 2: 'Fevereiro', 3: 'Março', 4: 'Abril',
-        5: 'Maio', 6: 'Junho', 7: 'Julho', 8: 'Agosto',
-        9: 'Setembro', 10: 'Outubro', 11: 'Novembro', 12: 'Dezembro'
-    }
-    return meses_numeros.get(mes_atual_num, 'Janeiro'), agora_brasilia().year
+    # Se não encontrou nada, retornar None
+    return None, None
 
 def processar_arquivo(uploaded_file, tipo_arquivo='pagamentos'):
     """Processa arquivo de forma robusta"""
@@ -629,6 +631,7 @@ def salvar_pagamentos_db(conn, mes_ref, ano_ref, nome_arquivo, file_bytes, dados
                 WHERE hash_arquivo = ?
             ''', (data_hora_atual_brasilia(), dados_json, metadados_json, 
                   mes_ref, ano_ref, nome_arquivo, importado_por.lower(), file_hash))
+            conn.commit()
             return True, "📝 Registro de pagamentos atualizado"
         else:
             conn.execute('''
@@ -637,6 +640,7 @@ def salvar_pagamentos_db(conn, mes_ref, ano_ref, nome_arquivo, file_bytes, dados
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ''', (mes_ref, ano_ref, data_hora_atual_brasilia(), nome_arquivo, 
                   dados_json, metadados_json, file_hash, importado_por.lower()))
+            conn.commit()
             return True, "✅ Novo registro de pagamentos salvo"
         
     except Exception as e:
@@ -672,6 +676,7 @@ def salvar_inscricoes_db(conn, mes_ref, ano_ref, nome_arquivo, file_bytes, dados
                 WHERE hash_arquivo = ?
             ''', (data_hora_atual_brasilia(), dados_json, metadados_json, 
                   mes_ref, ano_ref, nome_arquivo, importado_por.lower(), file_hash))
+            conn.commit()
             return True, "📝 Registro de inscrições atualizado"
         else:
             conn.execute('''
@@ -680,13 +685,14 @@ def salvar_inscricoes_db(conn, mes_ref, ano_ref, nome_arquivo, file_bytes, dados
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ''', (mes_ref, ano_ref, data_hora_atual_brasilia(), nome_arquivo, 
                   dados_json, metadados_json, file_hash, importado_por.lower()))
+            conn.commit()
             return True, "✅ Novo registro de inscrições salvo"
         
     except Exception as e:
         return False, f"Erro ao salvar inscrições: {str(e)}"
 
 def salvar_metricas_db(conn, tipo, mes_ref, ano_ref, metrics):
-    """Salva métricas no banco - ATUALIZADA"""
+    """Salva métricas no banco - CORRIGIDA"""
     try:
         cursor = conn.execute(
             "SELECT id FROM metricas_mensais WHERE tipo = ? AND mes_referencia = ? AND ano_referencia = ?",
@@ -710,28 +716,54 @@ def salvar_metricas_db(conn, tipo, mes_ref, ano_ref, metrics):
         }
         
         if existe:
-            conn.execute('''
-                UPDATE metricas_mensais 
-                SET total_registros = ?, beneficiarios_unicos = ?, contas_unicas = ?, 
-                    valor_total = ?, pagamentos_duplicados = ?, valor_duplicados = ?, 
-                    projetos_ativos = ?, registros_problema = ?, cpfs_ajuste = ?, 
-                    total_contas_abertas = ?, beneficiarios_contas = ?, data_calculo = ?
-                WHERE tipo = ? AND mes_referencia = ? AND ano_referencia = ?
-            ''', (
-                valores['total_registros'],
-                valores['beneficiarios_unicos'],
-                valores['contas_unicas'],
-                valores['valor_total'],
-                valores['pagamentos_duplicados'],
-                valores['valor_duplicados'],
-                valores['projetos_ativos'],
-                valores['registros_problema'],
-                valores['cpfs_ajuste'],
-                valores['total_contas_abertas'],
-                valores['beneficiarios_contas'],
-                data_hora_atual_brasilia(),
-                tipo, mes_ref, ano_ref
-            ))
+            # Verificar se as colunas existem antes de tentar atualizar
+            cursor = conn.execute("PRAGMA table_info(metricas_mensais)")
+            colunas = [row[1] for row in cursor.fetchall()]
+            
+            if 'total_contas_abertas' in colunas and 'beneficiarios_contas' in colunas:
+                conn.execute('''
+                    UPDATE metricas_mensais 
+                    SET total_registros = ?, beneficiarios_unicos = ?, contas_unicas = ?, 
+                        valor_total = ?, pagamentos_duplicados = ?, valor_duplicados = ?, 
+                        projetos_ativos = ?, registros_problema = ?, cpfs_ajuste = ?, 
+                        total_contas_abertas = ?, beneficiarios_contas = ?, data_calculo = ?
+                    WHERE tipo = ? AND mes_referencia = ? AND ano_referencia = ?
+                ''', (
+                    valores['total_registros'],
+                    valores['beneficiarios_unicos'],
+                    valores['contas_unicas'],
+                    valores['valor_total'],
+                    valores['pagamentos_duplicados'],
+                    valores['valor_duplicados'],
+                    valores['projetos_ativos'],
+                    valores['registros_problema'],
+                    valores['cpfs_ajuste'],
+                    valores['total_contas_abertas'],
+                    valores['beneficiarios_contas'],
+                    data_hora_atual_brasilia(),
+                    tipo, mes_ref, ano_ref
+                ))
+            else:
+                # Atualizar sem as novas colunas
+                conn.execute('''
+                    UPDATE metricas_mensais 
+                    SET total_registros = ?, beneficiarios_unicos = ?, contas_unicas = ?, 
+                        valor_total = ?, pagamentos_duplicados = ?, valor_duplicados = ?, 
+                        projetos_ativos = ?, registros_problema = ?, cpfs_ajuste = ?, data_calculo = ?
+                    WHERE tipo = ? AND mes_referencia = ? AND ano_referencia = ?
+                ''', (
+                    valores['total_registros'],
+                    valores['beneficiarios_unicos'],
+                    valores['contas_unicas'],
+                    valores['valor_total'],
+                    valores['pagamentos_duplicados'],
+                    valores['valor_duplicados'],
+                    valores['projetos_ativos'],
+                    valores['registros_problema'],
+                    valores['cpfs_ajuste'],
+                    data_hora_atual_brasilia(),
+                    tipo, mes_ref, ano_ref
+                ))
         else:
             conn.execute('''
                 INSERT INTO metricas_mensais (tipo, mes_referencia, ano_referencia, total_registros, 
@@ -1176,7 +1208,7 @@ def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_co
     return analise_ausencia
 
 def verificar_duplicidade_periodo(conn, mes_ref, ano_ref, tipo_arquivo, nome_arquivo=None):
-    """Verifica se já existe arquivo para o mesmo período - MELHORADA"""
+    """Verifica se já existe arquivo para o mesmo período"""
     try:
         if tipo_arquivo == 'pagamentos':
             if nome_arquivo:
@@ -1739,7 +1771,7 @@ def gerar_csv_dados_tratados(dados, tipo_dados='pagamentos'):
 
 # ========== FUNÇÕES DE CARREGAMENTO DE DADOS ==========
 def carregar_dados(conn, email_usuario):
-    """Carrega dados do usuário - CORREÇÃO: IMPEDIR DUPLICIDADE E SALVAR CÁLCULOS"""
+    """Carrega dados do usuário - VERSÃO COM DETECÇÃO AUTOMÁTICA DE MÊS"""
     st.sidebar.header("📤 Carregar Dados Mensais")
     
     # Upload de arquivos
@@ -1767,35 +1799,43 @@ def carregar_dados(conn, email_usuario):
     if 'processed_metrics' not in st.session_state:
         st.session_state.processed_metrics = {}
     
-    # Detectar mês/ano dos nomes dos arquivos
+    # Detectar mês/ano dos nomes dos arquivos - VERSÃO MELHORADA
     mes_ref_detectado = None
     ano_ref_detectado = None
     arquivo_que_detectou = None
     
-    # PRIORIDADE: Usar nome do arquivo para detectar mês/ano
+    # PRIORIDADE 1: Detectar do nome do arquivo de pagamentos
     if upload_pagamentos:
         mes_ref, ano_ref = extrair_mes_ano_arquivo(upload_pagamentos.name)
         if mes_ref and ano_ref:
             mes_ref_detectado = mes_ref
             ano_ref_detectado = ano_ref
             arquivo_que_detectou = upload_pagamentos.name
-            st.sidebar.info(f"📅 Detectado no arquivo '{upload_pagamentos.name}': {mes_ref}/{ano_ref}")
+            st.sidebar.success(f"📅 Mês/Ano detectado automaticamente: **{mes_ref}/{ano_ref}**")
+            st.sidebar.info(f"Arquivo: {upload_pagamentos.name}")
     
+    # PRIORIDADE 2: Se não detectou em pagamentos, tentar em inscrições
     if upload_contas and (not mes_ref_detectado or not ano_ref_detectado):
         mes_ref, ano_ref = extrair_mes_ano_arquivo(upload_contas.name)
         if mes_ref and ano_ref:
             mes_ref_detectado = mes_ref
             ano_ref_detectado = ano_ref
             arquivo_que_detectou = upload_contas.name
-            st.sidebar.info(f"📅 Detectado no arquivo '{upload_contas.name}': {mes_ref}/{ano_ref}")
+            st.sidebar.success(f"📅 Mês/Ano detectado automaticamente: **{mes_ref}/{ano_ref}**")
+            st.sidebar.info(f"Arquivo: {upload_contas.name}")
     
-    # Seleção de mês e ano
+    # Se não detectou em nenhum arquivo
+    if not mes_ref_detectado or not ano_ref_detectado:
+        st.sidebar.warning("⚠️ Não foi possível detectar o mês/ano do nome do arquivo.")
+        st.sidebar.info("Por favor, selecione manualmente o mês e ano de referência.")
+    
+    # Seleção de mês e ano - USAR VALORES DETECTADOS COMO PADRÃO
     col1, col2 = st.sidebar.columns(2)
     with col1:
         meses = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
                 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro']
         
-        # Prioridade: 1. Detectado no arquivo, 2. Já carregado, 3. Mês atual
+        # Usar mês detectado ou já carregado
         if mes_ref_detectado:
             mes_ref_padrao = mes_ref_detectado
         elif st.session_state.mes_ref_carregado:
@@ -1815,10 +1855,11 @@ def carregar_dados(conn, email_usuario):
         else:
             mes_index = 0
             
-        mes_ref = st.selectbox("Mês de Referência", meses, index=mes_index)
+        mes_ref = st.selectbox("Mês de Referência", meses, index=mes_index, 
+                             help="O mês será detectado automaticamente do nome do arquivo")
         
     with col2:
-        # Prioridade: 1. Detectado no arquivo, 2. Já carregado, 3. Ano atual
+        # Usar ano detectado ou já carregado
         if ano_ref_detectado:
             ano_ref_padrao = ano_ref_detectado
         elif st.session_state.ano_ref_carregado:
@@ -1835,7 +1876,15 @@ def carregar_dados(conn, email_usuario):
         else:
             ano_index = 0
             
-        ano_ref = st.selectbox("Ano de Referência", anos, index=ano_index)
+        ano_ref = st.selectbox("Ano de Referência", anos, index=ano_index,
+                             help="O ano será detectado automaticamente do nome do arquivo")
+    
+    # Mostrar informação clara sobre detecção
+    if mes_ref_detectado and ano_ref_detectado:
+        if mes_ref == mes_ref_detectado and ano_ref == ano_ref_detectado:
+            st.sidebar.success(f"✅ Usando mês/ano detectado: **{mes_ref}/{ano_ref}**")
+        else:
+            st.sidebar.warning(f"⚠️ Detecção: {mes_ref_detectado}/{ano_ref_detectado} | Selecionado: {mes_ref}/{ano_ref}")
     
     st.sidebar.markdown("---")
     
@@ -2011,7 +2060,7 @@ def carregar_inscricoes_db(conn, mes_ref=None, ano_ref=None):
         return pd.DataFrame()
 
 def carregar_metricas_db(conn, tipo=None, mes_ref=None, ano_ref=None):
-    """Carrega métricas do banco - MELHORADA"""
+    """Carrega métricas do banco"""
     try:
         query = "SELECT * FROM metricas_mensais"
         params = []
@@ -2768,3 +2817,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
