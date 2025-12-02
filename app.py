@@ -1,4 +1,4 @@
-# app.py - VERSÃO CORRIGIDA - DADOS NÃO SE APAGAM ENTRE UPLOADS
+# app.py - VERSÃO CORRIGIDA - IMPEDIR DUPLICIDADE E SALVAR CÁLCULOS
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -71,7 +71,7 @@ def init_database():
             )
         ''')
         
-        # Tabela de métricas
+        # Tabela de métricas - ATUALIZADA
         conn.execute('''
             CREATE TABLE IF NOT EXISTS metricas_mensais (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -87,6 +87,8 @@ def init_database():
                 projetos_ativos INTEGER,
                 registros_problema INTEGER,
                 cpfs_ajuste INTEGER,
+                total_contas_abertas INTEGER,
+                beneficiarios_contas INTEGER,
                 data_calculo TEXT NOT NULL,
                 UNIQUE(tipo, mes_referencia, ano_referencia)
             )
@@ -605,6 +607,18 @@ def salvar_pagamentos_db(conn, mes_ref, ano_ref, nome_arquivo, file_bytes, dados
         cursor = conn.execute("SELECT id FROM pagamentos WHERE hash_arquivo = ?", (file_hash,))
         existe = cursor.fetchone()
         
+        # Verificar duplicidade por nome e período ANTES de salvar
+        cursor = conn.execute("""
+            SELECT id, nome_arquivo, data_importacao 
+            FROM pagamentos 
+            WHERE mes_referencia = ? AND ano_referencia = ? AND nome_arquivo = ?
+        """, (mes_ref, ano_ref, nome_arquivo))
+        
+        duplicado_periodo = cursor.fetchone()
+        
+        if duplicado_periodo:
+            return False, f"Arquivo '{nome_arquivo}' já existe para {mes_ref}/{ano_ref}"
+        
         dados_json = dados_df.to_json(orient='records', date_format='iso', force_ascii=False)
         metadados_json = json.dumps(metadados, ensure_ascii=False)
         
@@ -615,7 +629,7 @@ def salvar_pagamentos_db(conn, mes_ref, ano_ref, nome_arquivo, file_bytes, dados
                 WHERE hash_arquivo = ?
             ''', (data_hora_atual_brasilia(), dados_json, metadados_json, 
                   mes_ref, ano_ref, nome_arquivo, importado_por.lower(), file_hash))
-            st.sidebar.info("📝 Registro de pagamentos atualizado")
+            return True, "📝 Registro de pagamentos atualizado"
         else:
             conn.execute('''
                 INSERT INTO pagamentos (mes_referencia, ano_referencia, data_importacao, 
@@ -623,13 +637,10 @@ def salvar_pagamentos_db(conn, mes_ref, ano_ref, nome_arquivo, file_bytes, dados
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ''', (mes_ref, ano_ref, data_hora_atual_brasilia(), nome_arquivo, 
                   dados_json, metadados_json, file_hash, importado_por.lower()))
-            st.sidebar.success("✅ Novo registro de pagamentos salvo")
+            return True, "✅ Novo registro de pagamentos salvo"
         
-        conn.commit()
-        return True
     except Exception as e:
-        st.error(f"Erro ao salvar pagamentos: {str(e)}")
-        return False
+        return False, f"Erro ao salvar pagamentos: {str(e)}"
 
 def salvar_inscricoes_db(conn, mes_ref, ano_ref, nome_arquivo, file_bytes, dados_df, metadados, importado_por):
     """Salva dados de inscrições no banco"""
@@ -638,6 +649,18 @@ def salvar_inscricoes_db(conn, mes_ref, ano_ref, nome_arquivo, file_bytes, dados
         
         cursor = conn.execute("SELECT id FROM inscricoes WHERE hash_arquivo = ?", (file_hash,))
         existe = cursor.fetchone()
+        
+        # Verificar duplicidade por nome e período ANTES de salvar
+        cursor = conn.execute("""
+            SELECT id, nome_arquivo, data_importacao 
+            FROM inscricoes 
+            WHERE mes_referencia = ? AND ano_referencia = ? AND nome_arquivo = ?
+        """, (mes_ref, ano_ref, nome_arquivo))
+        
+        duplicado_periodo = cursor.fetchone()
+        
+        if duplicado_periodo:
+            return False, f"Arquivo '{nome_arquivo}' já existe para {mes_ref}/{ano_ref}"
         
         dados_json = dados_df.to_json(orient='records', date_format='iso', force_ascii=False)
         metadados_json = json.dumps(metadados, ensure_ascii=False)
@@ -649,7 +672,7 @@ def salvar_inscricoes_db(conn, mes_ref, ano_ref, nome_arquivo, file_bytes, dados
                 WHERE hash_arquivo = ?
             ''', (data_hora_atual_brasilia(), dados_json, metadados_json, 
                   mes_ref, ano_ref, nome_arquivo, importado_por.lower(), file_hash))
-            st.sidebar.info("📝 Registro de inscrições atualizado")
+            return True, "📝 Registro de inscrições atualizado"
         else:
             conn.execute('''
                 INSERT INTO inscricoes (mes_referencia, ano_referencia, data_importacao, 
@@ -657,16 +680,13 @@ def salvar_inscricoes_db(conn, mes_ref, ano_ref, nome_arquivo, file_bytes, dados
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ''', (mes_ref, ano_ref, data_hora_atual_brasilia(), nome_arquivo, 
                   dados_json, metadados_json, file_hash, importado_por.lower()))
-            st.sidebar.success("✅ Novo registro de inscrições salvo")
+            return True, "✅ Novo registro de inscrições salvo"
         
-        conn.commit()
-        return True
     except Exception as e:
-        st.error(f"Erro ao salvar inscrições: {str(e)}")
-        return False
+        return False, f"Erro ao salvar inscrições: {str(e)}"
 
 def salvar_metricas_db(conn, tipo, mes_ref, ano_ref, metrics):
-    """Salva métricas no banco"""
+    """Salva métricas no banco - ATUALIZADA"""
     try:
         cursor = conn.execute(
             "SELECT id FROM metricas_mensais WHERE tipo = ? AND mes_referencia = ? AND ano_referencia = ?",
@@ -674,23 +694,41 @@ def salvar_metricas_db(conn, tipo, mes_ref, ano_ref, metrics):
         )
         existe = cursor.fetchone()
         
+        # Preparar valores para inserção/atualização
+        valores = {
+            'total_registros': metrics.get('total_pagamentos', 0) if tipo == 'pagamentos' else metrics.get('total_contas_abertas', 0),
+            'beneficiarios_unicos': metrics.get('beneficiarios_unicos', 0) if tipo == 'pagamentos' else metrics.get('beneficiarios_contas', 0),
+            'contas_unicas': metrics.get('contas_unicas', 0),
+            'valor_total': metrics.get('valor_total', 0),
+            'pagamentos_duplicados': metrics.get('pagamentos_duplicados', 0),
+            'valor_duplicados': metrics.get('valor_total_duplicados', 0),
+            'projetos_ativos': metrics.get('projetos_ativos', 0),
+            'registros_problema': metrics.get('total_registros_criticos', 0),
+            'cpfs_ajuste': metrics.get('total_cpfs_ajuste', 0),
+            'total_contas_abertas': metrics.get('total_contas_abertas', 0) if tipo == 'inscricoes' else 0,
+            'beneficiarios_contas': metrics.get('beneficiarios_contas', 0) if tipo == 'inscricoes' else 0
+        }
+        
         if existe:
             conn.execute('''
                 UPDATE metricas_mensais 
                 SET total_registros = ?, beneficiarios_unicos = ?, contas_unicas = ?, 
                     valor_total = ?, pagamentos_duplicados = ?, valor_duplicados = ?, 
-                    projetos_ativos = ?, registros_problema = ?, cpfs_ajuste = ?, data_calculo = ?
+                    projetos_ativos = ?, registros_problema = ?, cpfs_ajuste = ?, 
+                    total_contas_abertas = ?, beneficiarios_contas = ?, data_calculo = ?
                 WHERE tipo = ? AND mes_referencia = ? AND ano_referencia = ?
             ''', (
-                metrics.get('total_pagamentos', 0) if tipo == 'pagamentos' else metrics.get('total_contas_abertas', 0),
-                metrics.get('beneficiarios_unicos', 0) if tipo == 'pagamentos' else metrics.get('beneficiarios_contas', 0),
-                metrics.get('contas_unicas', 0),
-                metrics.get('valor_total', 0),
-                metrics.get('pagamentos_duplicados', 0),
-                metrics.get('valor_total_duplicados', 0),
-                metrics.get('projetos_ativos', 0),
-                metrics.get('total_registros_criticos', 0),
-                metrics.get('total_cpfs_ajuste', 0),
+                valores['total_registros'],
+                valores['beneficiarios_unicos'],
+                valores['contas_unicas'],
+                valores['valor_total'],
+                valores['pagamentos_duplicados'],
+                valores['valor_duplicados'],
+                valores['projetos_ativos'],
+                valores['registros_problema'],
+                valores['cpfs_ajuste'],
+                valores['total_contas_abertas'],
+                valores['beneficiarios_contas'],
                 data_hora_atual_brasilia(),
                 tipo, mes_ref, ano_ref
             ))
@@ -698,18 +736,21 @@ def salvar_metricas_db(conn, tipo, mes_ref, ano_ref, metrics):
             conn.execute('''
                 INSERT INTO metricas_mensais (tipo, mes_referencia, ano_referencia, total_registros, 
                             beneficiarios_unicos, contas_unicas, valor_total, pagamentos_duplicados, 
-                            valor_duplicados, projetos_ativos, registros_problema, cpfs_ajuste, data_calculo)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            valor_duplicados, projetos_ativos, registros_problema, cpfs_ajuste,
+                            total_contas_abertas, beneficiarios_contas, data_calculo)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (tipo, mes_ref, ano_ref, 
-                  metrics.get('total_pagamentos', 0) if tipo == 'pagamentos' else metrics.get('total_contas_abertas', 0),
-                  metrics.get('beneficiarios_unicos', 0) if tipo == 'pagamentos' else metrics.get('beneficiarios_contas', 0),
-                  metrics.get('contas_unicas', 0),
-                  metrics.get('valor_total', 0),
-                  metrics.get('pagamentos_duplicados', 0),
-                  metrics.get('valor_total_duplicados', 0),
-                  metrics.get('projetos_ativos', 0),
-                  metrics.get('total_registros_criticos', 0),
-                  metrics.get('total_cpfs_ajuste', 0),
+                  valores['total_registros'],
+                  valores['beneficiarios_unicos'],
+                  valores['contas_unicas'],
+                  valores['valor_total'],
+                  valores['pagamentos_duplicados'],
+                  valores['valor_duplicados'],
+                  valores['projetos_ativos'],
+                  valores['registros_problema'],
+                  valores['cpfs_ajuste'],
+                  valores['total_contas_abertas'],
+                  valores['beneficiarios_contas'],
                   data_hora_atual_brasilia()))
         
         conn.commit()
@@ -1134,24 +1175,37 @@ def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_co
     
     return analise_ausencia
 
-def verificar_duplicidade_periodo(conn, mes_ref, ano_ref, tipo_arquivo):
-    """Verifica se já existe arquivo para o mesmo período"""
+def verificar_duplicidade_periodo(conn, mes_ref, ano_ref, tipo_arquivo, nome_arquivo=None):
+    """Verifica se já existe arquivo para o mesmo período - MELHORADA"""
     try:
         if tipo_arquivo == 'pagamentos':
-            cursor = conn.execute(
-                "SELECT nome_arquivo, data_importacao FROM pagamentos WHERE mes_referencia = ? AND ano_referencia = ?",
-                (mes_ref, ano_ref)
-            )
+            if nome_arquivo:
+                # Verificar por nome específico
+                cursor = conn.execute(
+                    "SELECT nome_arquivo, data_importacao FROM pagamentos WHERE mes_referencia = ? AND ano_referencia = ? AND nome_arquivo = ?",
+                    (mes_ref, ano_ref, nome_arquivo)
+                )
+            else:
+                cursor = conn.execute(
+                    "SELECT nome_arquivo, data_importacao FROM pagamentos WHERE mes_referencia = ? AND ano_referencia = ?",
+                    (mes_ref, ano_ref)
+                )
         else:
-            cursor = conn.execute(
-                "SELECT nome_arquivo, data_importacao FROM inscricoes WHERE mes_referencia = ? AND ano_referencia = ?",
-                (mes_ref, ano_ref)
-            )
+            if nome_arquivo:
+                # Verificar por nome específico
+                cursor = conn.execute(
+                    "SELECT nome_arquivo, data_importacao FROM inscricoes WHERE mes_referencia = ? AND ano_referencia = ? AND nome_arquivo = ?",
+                    (mes_ref, ano_ref, nome_arquivo)
+                )
+            else:
+                cursor = conn.execute(
+                    "SELECT nome_arquivo, data_importacao FROM inscricoes WHERE mes_referencia = ? AND ano_referencia = ?",
+                    (mes_ref, ano_ref)
+                )
         
         resultado = cursor.fetchall()
         return resultado
     except Exception as e:
-        # Se a tabela não existir ainda, retorna lista vazia
         return []
 
 def processar_dados(dados, nomes_arquivos=None):
@@ -1685,7 +1739,7 @@ def gerar_csv_dados_tratados(dados, tipo_dados='pagamentos'):
 
 # ========== FUNÇÕES DE CARREGAMENTO DE DADOS ==========
 def carregar_dados(conn, email_usuario):
-    """Carrega dados do usuário - CORREÇÃO: MANTÉM DADOS EXISTENTES NO session_state"""
+    """Carrega dados do usuário - CORREÇÃO: IMPEDIR DUPLICIDADE E SALVAR CÁLCULOS"""
     st.sidebar.header("📤 Carregar Dados Mensais")
     
     # Upload de arquivos
@@ -1710,6 +1764,8 @@ def carregar_dados(conn, email_usuario):
         st.session_state.mes_ref_carregado = None
     if 'ano_ref_carregado' not in st.session_state:
         st.session_state.ano_ref_carregado = None
+    if 'processed_metrics' not in st.session_state:
+        st.session_state.processed_metrics = {}
     
     # Detectar mês/ano dos nomes dos arquivos
     mes_ref_detectado = None
@@ -1733,7 +1789,7 @@ def carregar_dados(conn, email_usuario):
             arquivo_que_detectou = upload_contas.name
             st.sidebar.info(f"📅 Detectado no arquivo '{upload_contas.name}': {mes_ref}/{ano_ref}")
     
-    # Seleção de mês e ano - CORREÇÃO: Usar valores detectados OU valores já carregados
+    # Seleção de mês e ano
     col1, col2 = st.sidebar.columns(2)
     with col1:
         meses = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
@@ -1788,27 +1844,26 @@ def carregar_dados(conn, email_usuario):
     nomes_arquivos = st.session_state.nomes_arquivos_carregados.copy()
     dados_processados = False
     
-    # CORREÇÃO: SÓ VERIFICAR DUPLICIDADE DEPOIS DE PROCESSAR O ARQUIVO
-    # Processar pagamentos
+    # Processar pagamentos com verificação ANTES
     if upload_pagamentos:
+        # VERIFICAR DUPLICIDADE ANTES DE PROCESSAR
+        arquivos_existentes = verificar_duplicidade_periodo(conn, mes_ref, ano_ref, 'pagamentos', upload_pagamentos.name)
+        
+        if arquivos_existentes:
+            st.sidebar.error(f"❌ Arquivo '{upload_pagamentos.name}' já existe para {mes_ref}/{ano_ref}!")
+            st.sidebar.info(f"Já importado em: {arquivos_existentes[0][1]}")
+            
+            # Opção de sobrescrever
+            sobrescrever = st.sidebar.checkbox(f"Sobrescrever arquivo '{upload_pagamentos.name}' para {mes_ref}/{ano_ref}?", key="sobrescrever_pagamentos")
+            if not sobrescrever:
+                # Retornar dados existentes sem processar novo upload
+                return dados, nomes_arquivos, mes_ref, ano_ref, False
+            else:
+                st.sidebar.warning("⚠️ Arquivo existente será substituído!")
+        
+        # Processar arquivo
         df = processar_arquivo(upload_pagamentos, 'pagamentos')
         if df is not None:
-            # AGORA verificar duplicidade
-            arquivos_existentes = verificar_duplicidade_periodo(conn, mes_ref, ano_ref, 'pagamentos')
-            
-            if arquivos_existentes:
-                st.sidebar.warning(f"⚠️ Já existem {len(arquivos_existentes)} arquivo(s) de pagamentos para {mes_ref}/{ano_ref}:")
-                for arquivo in arquivos_existentes:
-                    st.sidebar.info(f"• {arquivo[0]} (importado em {arquivo[1]})")
-                
-                # Pedir confirmação para continuar
-                if st.sidebar.checkbox(f"Continuar mesmo assim (sobrescreverá dados existentes para {mes_ref}/{ano_ref})", key="pagamentos_checkbox"):
-                    pass
-                else:
-                    st.sidebar.error("Upload cancelado pelo usuário.")
-                    # Retornar dados existentes sem processar novo upload
-                    return dados, nomes_arquivos, mes_ref, ano_ref, False
-            
             nomes_arquivos['pagamentos'] = upload_pagamentos.name
             
             # Identificar e remover linha de totais
@@ -1820,7 +1875,7 @@ def carregar_dados(conn, email_usuario):
             df = processar_colunas_data(df)
             df = padronizar_documentos(df)
             
-            # CORREÇÃO: Adicionar dados SEM apagar os existentes
+            # Adicionar dados
             dados['pagamentos'] = df
             
             # Salvar no banco
@@ -1831,43 +1886,50 @@ def carregar_dados(conn, email_usuario):
                 'linha_totais_removida': linha_totais is not None
             }
             
-            if salvar_pagamentos_db(conn, mes_ref, ano_ref, upload_pagamentos.name, 
-                                   upload_pagamentos.getvalue(), df, metadados, email_usuario):
+            sucesso, mensagem = salvar_pagamentos_db(conn, mes_ref, ano_ref, upload_pagamentos.name, 
+                                                   upload_pagamentos.getvalue(), df, metadados, email_usuario)
+            
+            if sucesso:
+                st.sidebar.success(mensagem)
                 dados_processados = True
+                registrar_log_admin(conn, email_usuario, "IMPORTACAO", "pagamentos", None, 
+                                  f"Arquivo: {upload_pagamentos.name}, Mês/Ano: {mes_ref}/{ano_ref}")
+            else:
+                st.sidebar.error(mensagem)
             
             df_validos = filtrar_pagamentos_validos(df)
             total_invalidos = len(df) - len(df_validos)
-            st.sidebar.success(f"✅ Pagamentos: {len(df_validos)} válidos + {total_invalidos} sem conta")
+            st.sidebar.info(f"📊 Pagamentos: {len(df_validos)} válidos + {total_invalidos} sem conta")
             
             if linha_totais is not None:
                 st.sidebar.info("📝 Linha de totais identificada e removida da análise")
     
-    # Processar inscrições
+    # Processar inscrições com verificação ANTES
     if upload_contas:
+        # VERIFICAR DUPLICIDADE ANTES DE PROCESSAR
+        arquivos_existentes = verificar_duplicidade_periodo(conn, mes_ref, ano_ref, 'inscricoes', upload_contas.name)
+        
+        if arquivos_existentes:
+            st.sidebar.error(f"❌ Arquivo '{upload_contas.name}' já existe para {mes_ref}/{ano_ref}!")
+            st.sidebar.info(f"Já importado em: {arquivos_existentes[0][1]}")
+            
+            # Opção de sobrescrever
+            sobrescrever = st.sidebar.checkbox(f"Sobrescrever arquivo '{upload_contas.name}' para {mes_ref}/{ano_ref}?", key="sobrescrever_inscricoes")
+            if not sobrescrever:
+                # Retornar dados existentes sem processar novo upload
+                return dados, nomes_arquivos, mes_ref, ano_ref, False
+            else:
+                st.sidebar.warning("⚠️ Arquivo existente será substituído!")
+        
+        # Processar arquivo
         df = processar_arquivo(upload_contas, 'inscrições')
         if df is not None:
-            # AGORA verificar duplicidade
-            arquivos_existentes = verificar_duplicidade_periodo(conn, mes_ref, ano_ref, 'inscricoes')
-            
-            if arquivos_existentes:
-                st.sidebar.warning(f"⚠️ Já existem {len(arquivos_existentes)} arquivo(s) de inscrições para {mes_ref}/{ano_ref}:")
-                for arquivo in arquivos_existentes:
-                    st.sidebar.info(f"• {arquivo[0]} (importado em {arquivo[1]})")
-                
-                # Pedir confirmação para continuar
-                if st.sidebar.checkbox(f"Continuar mesmo assim (sobrescreverá dados existentes para {mes_ref}/{ano_ref})", key="inscricoes_checkbox"):
-                    pass
-                else:
-                    st.sidebar.error("Upload cancelado pelo usuário.")
-                    # Retornar dados existentes sem processar novo upload
-                    return dados, nomes_arquivos, mes_ref, ano_ref, False
-            
             nomes_arquivos['contas'] = upload_contas.name
             
             df = processar_colunas_data(df)
             df = padronizar_documentos(df)
             
-            # CORREÇÃO: Adicionar dados SEM apagar os existentes
+            # Adicionar dados
             dados['contas'] = df
             
             # Salvar no banco
@@ -1877,18 +1939,39 @@ def carregar_dados(conn, email_usuario):
                 'tipo_arquivo': 'inscricoes'
             }
             
-            if salvar_inscricoes_db(conn, mes_ref, ano_ref, upload_contas.name, 
-                                   upload_contas.getvalue(), df, metadados, email_usuario):
-                dados_processados = True
+            sucesso, mensagem = salvar_inscricoes_db(conn, mes_ref, ano_ref, upload_contas.name, 
+                                                   upload_contas.getvalue(), df, metadados, email_usuario)
             
-            st.sidebar.success(f"✅ Inscrições: {len(df)} registros")
+            if sucesso:
+                st.sidebar.success(mensagem)
+                dados_processados = True
+                registrar_log_admin(conn, email_usuario, "IMPORTACAO", "inscricoes", None, 
+                                  f"Arquivo: {upload_contas.name}, Mês/Ano: {mes_ref}/{ano_ref}")
+            else:
+                st.sidebar.error(mensagem)
+            
+            st.sidebar.info(f"📊 Inscrições: {len(df)} registros")
     
-    # CORREÇÃO: Atualizar session_state apenas se houve processamento bem-sucedido
+    # Atualizar session_state apenas se houve processamento bem-sucedido
     if dados_processados:
         st.session_state.dados_carregados = dados.copy()
         st.session_state.nomes_arquivos_carregados = nomes_arquivos.copy()
         st.session_state.mes_ref_carregado = mes_ref
         st.session_state.ano_ref_carregado = ano_ref
+        
+        # Processar métricas e salvar no banco
+        with st.spinner("🔄 Calculando métricas e salvando..."):
+            metrics = processar_dados(dados, nomes_arquivos)
+            
+            if 'pagamentos' in dados and not dados['pagamentos'].empty:
+                salvar_metricas_db(conn, 'pagamentos', mes_ref, ano_ref, metrics)
+            
+            if 'contas' in dados and not dados['contas'].empty:
+                salvar_metricas_db(conn, 'inscricoes', mes_ref, ano_ref, metrics)
+            
+            st.session_state.processed_metrics = metrics
+        
+        st.sidebar.success("✅ Dados processados e cálculos salvos no banco!")
     
     return dados, nomes_arquivos, mes_ref, ano_ref, dados_processados
 
@@ -1927,22 +2010,78 @@ def carregar_inscricoes_db(conn, mes_ref=None, ano_ref=None):
         st.error(f"Erro ao carregar inscrições: {e}")
         return pd.DataFrame()
 
-def carregar_metricas_db(conn, tipo=None):
-    """Carrega métricas do banco"""
+def carregar_metricas_db(conn, tipo=None, mes_ref=None, ano_ref=None):
+    """Carrega métricas do banco - MELHORADA"""
     try:
         query = "SELECT * FROM metricas_mensais"
         params = []
         
+        conditions = []
         if tipo:
-            query += " WHERE tipo = ?"
-            params = [tipo]
+            conditions.append("tipo = ?")
+            params.append(tipo)
+        
+        if mes_ref:
+            conditions.append("mes_referencia = ?")
+            params.append(mes_ref)
+        
+        if ano_ref:
+            conditions.append("ano_referencia = ?")
+            params.append(ano_ref)
+        
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
         
         query += " ORDER BY ano_referencia DESC, mes_referencia DESC"
         
         return pd.read_sql_query(query, conn, params=params)
     except Exception as e:
-        st.error(f"Erro ao carregar métricas: {e}")
+        st.error(f"Erro ao carregar métricas: {str(e)}")
         return pd.DataFrame()
+
+def carregar_metricas_periodo(conn, mes_ref, ano_ref):
+    """Carrega métricas específicas para um período"""
+    metricas_pagamentos = carregar_metricas_db(conn, tipo='pagamentos', mes_ref=mes_ref, ano_ref=ano_ref)
+    metricas_inscricoes = carregar_metricas_db(conn, tipo='inscricoes', mes_ref=mes_ref, ano_ref=ano_ref)
+    
+    metrics = {
+        'beneficiarios_unicos': 0,
+        'total_pagamentos': 0,
+        'contas_unicas': 0,
+        'projetos_ativos': 0,
+        'valor_total': 0,
+        'pagamentos_duplicados': 0,
+        'valor_total_duplicados': 0,
+        'total_contas_abertas': 0,
+        'beneficiarios_contas': 0,
+        'total_registros_criticos': 0,
+        'total_cpfs_ajuste': 0,
+        'linha_totais_removida': False
+    }
+    
+    if not metricas_pagamentos.empty:
+        row = metricas_pagamentos.iloc[0]
+        metrics.update({
+            'beneficiarios_unicos': row.get('beneficiarios_unicos', 0),
+            'total_pagamentos': row.get('total_registros', 0),
+            'contas_unicas': row.get('contas_unicas', 0),
+            'projetos_ativos': row.get('projetos_ativos', 0),
+            'valor_total': row.get('valor_total', 0),
+            'pagamentos_duplicados': row.get('pagamentos_duplicados', 0),
+            'valor_total_duplicados': row.get('valor_duplicados', 0),
+            'total_registros_criticos': row.get('registros_problema', 0),
+            'total_cpfs_ajuste': row.get('cpfs_ajuste', 0)
+        })
+    
+    if not metricas_inscricoes.empty:
+        row = metricas_inscricoes.iloc[0]
+        metrics.update({
+            'total_contas_abertas': row.get('total_registros', 0),
+            'beneficiarios_contas': row.get('beneficiarios_unicos', 0),
+            'projetos_ativos': max(metrics.get('projetos_ativos', 0), row.get('projetos_ativos', 0))
+        })
+    
+    return metrics
 
 # ========== FUNÇÕES ADMINISTRATIVAS ==========
 def gerenciar_usuarios(conn):
@@ -2478,28 +2617,37 @@ def main():
     if 'processed_metrics' not in st.session_state:
         st.session_state.processed_metrics = {}
     
-    # Carregar dados (agora mantém dados anteriores)
+    # Carregar dados
     dados, nomes_arquivos, mes_ref, ano_ref, dados_processados = carregar_dados(conn, email_autorizado)
     
     tem_dados_pagamentos = 'pagamentos' in dados and not dados['pagamentos'].empty
     tem_dados_contas = 'contas' in dados and not dados['contas'].empty
     
-    metrics = st.session_state.processed_metrics
-    
-    # CORREÇÃO: Processar métricas apenas se houve processamento bem-sucedido
-    if dados_processados:
-        with st.spinner("🔄 Processando dados..."):
-            metrics = processar_dados(dados, nomes_arquivos)
-            
-            if tem_dados_pagamentos:
-                salvar_metricas_db(conn, 'pagamentos', mes_ref, ano_ref, metrics)
-            if tem_dados_contas:
-                salvar_metricas_db(conn, 'inscricoes', mes_ref, ano_ref, metrics)
-            
-            st.session_state.processed_metrics = metrics
-    elif st.session_state.processed_metrics:
-        # Usar métricas já processadas se não houve novo processamento
+    # CARREGAR MÉTRICAS DO BANCO SE NÃO HOUVE NOVO PROCESSAMENTO
+    if not dados_processados and st.session_state.processed_metrics:
+        # Usar métricas já processadas
         metrics = st.session_state.processed_metrics
+    elif tem_dados_pagamentos or tem_dados_contas:
+        # Tentar carregar métricas do banco para este período
+        metrics = carregar_metricas_periodo(conn, mes_ref, ano_ref)
+        
+        # Se não encontrou no banco, processar agora
+        if metrics.get('total_pagamentos', 0) == 0 and metrics.get('total_contas_abertas', 0) == 0:
+            if tem_dados_pagamentos or tem_dados_contas:
+                with st.spinner("🔄 Processando dados..."):
+                    metrics = processar_dados(dados, nomes_arquivos)
+                    
+                    # Salvar no banco
+                    if tem_dados_pagamentos:
+                        salvar_metricas_db(conn, 'pagamentos', mes_ref, ano_ref, metrics)
+                    if tem_dados_contas:
+                        salvar_metricas_db(conn, 'inscricoes', mes_ref, ano_ref, metrics)
+                    
+                    st.session_state.processed_metrics = metrics
+        else:
+            st.session_state.processed_metrics = metrics
+    else:
+        metrics = st.session_state.processed_metrics if st.session_state.processed_metrics else {}
     
     # Sidebar - Exportação de relatórios
     st.sidebar.markdown("---")
