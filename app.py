@@ -1,4 +1,4 @@
-# app.py - VERSÃO CORRIGIDA - PROBLEMAS DE DETECÇÃO DE MÊS E DUPLICIDADE
+# app.py - VERSÃO CORRIGIDA - DADOS NÃO SE APAGAM ENTRE UPLOADS
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -287,7 +287,7 @@ def autenticar(conn):
 
 # ========== FUNÇÕES DE PROCESSAMENTO DE ARQUIVOS ==========
 def extrair_mes_ano_arquivo(nome_arquivo):
-    """Extrai mês e ano do nome do arquivo - VERSÃO SIMPLIFICADA E CONFIAVEL"""
+    """Extrai mês e ano do nome do arquivo"""
     if not nome_arquivo:
         return None, None
     
@@ -1135,7 +1135,7 @@ def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_co
     return analise_ausencia
 
 def verificar_duplicidade_periodo(conn, mes_ref, ano_ref, tipo_arquivo):
-    """Verifica se já existe arquivo para o mesmo período - CORRIGIDO"""
+    """Verifica se já existe arquivo para o mesmo período"""
     try:
         if tipo_arquivo == 'pagamentos':
             cursor = conn.execute(
@@ -1685,7 +1685,7 @@ def gerar_csv_dados_tratados(dados, tipo_dados='pagamentos'):
 
 # ========== FUNÇÕES DE CARREGAMENTO DE DADOS ==========
 def carregar_dados(conn, email_usuario):
-    """Carrega dados do usuário - CORREÇÃO: SÓ VERIFICA DUPLICIDADE DEPOIS DO UPLOAD"""
+    """Carrega dados do usuário - CORREÇÃO: MANTÉM DADOS EXISTENTES NO session_state"""
     st.sidebar.header("📤 Carregar Dados Mensais")
     
     # Upload de arquivos
@@ -1701,7 +1701,17 @@ def carregar_dados(conn, email_usuario):
         key="contas_upload"
     )
     
-    # Detectar mês/ano dos nomes dos arquivos - CORREÇÃO: USAR NOME DO ARQUIVO COMO REFERÊNCIA PRINCIPAL
+    # Inicializar dados no session_state se não existirem
+    if 'dados_carregados' not in st.session_state:
+        st.session_state.dados_carregados = {}
+    if 'nomes_arquivos_carregados' not in st.session_state:
+        st.session_state.nomes_arquivos_carregados = {}
+    if 'mes_ref_carregado' not in st.session_state:
+        st.session_state.mes_ref_carregado = None
+    if 'ano_ref_carregado' not in st.session_state:
+        st.session_state.ano_ref_carregado = None
+    
+    # Detectar mês/ano dos nomes dos arquivos
     mes_ref_detectado = None
     ano_ref_detectado = None
     arquivo_que_detectou = None
@@ -1723,15 +1733,17 @@ def carregar_dados(conn, email_usuario):
             arquivo_que_detectou = upload_contas.name
             st.sidebar.info(f"📅 Detectado no arquivo '{upload_contas.name}': {mes_ref}/{ano_ref}")
     
-    # Seleção de mês e ano - CORREÇÃO: Usar valores detectados como padrão
+    # Seleção de mês e ano - CORREÇÃO: Usar valores detectados OU valores já carregados
     col1, col2 = st.sidebar.columns(2)
     with col1:
         meses = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
                 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro']
         
-        # Usar mês detectado OU mês atual como padrão
+        # Prioridade: 1. Detectado no arquivo, 2. Já carregado, 3. Mês atual
         if mes_ref_detectado:
             mes_ref_padrao = mes_ref_detectado
+        elif st.session_state.mes_ref_carregado:
+            mes_ref_padrao = st.session_state.mes_ref_carregado
         else:
             mes_atual_num = agora_brasilia().month
             meses_numeros = {
@@ -1750,9 +1762,11 @@ def carregar_dados(conn, email_usuario):
         mes_ref = st.selectbox("Mês de Referência", meses, index=mes_index)
         
     with col2:
-        # Usar ano detectado OU ano atual como padrão
+        # Prioridade: 1. Detectado no arquivo, 2. Já carregado, 3. Ano atual
         if ano_ref_detectado:
             ano_ref_padrao = ano_ref_detectado
+        elif st.session_state.ano_ref_carregado:
+            ano_ref_padrao = st.session_state.ano_ref_carregado
         else:
             ano_ref_padrao = agora_brasilia().year
         
@@ -1769,8 +1783,9 @@ def carregar_dados(conn, email_usuario):
     
     st.sidebar.markdown("---")
     
-    dados = {}
-    nomes_arquivos = {}
+    # Inicializar variáveis com dados já carregados
+    dados = st.session_state.dados_carregados.copy()
+    nomes_arquivos = st.session_state.nomes_arquivos_carregados.copy()
     dados_processados = False
     
     # CORREÇÃO: SÓ VERIFICAR DUPLICIDADE DEPOIS DE PROCESSAR O ARQUIVO
@@ -1791,6 +1806,7 @@ def carregar_dados(conn, email_usuario):
                     pass
                 else:
                     st.sidebar.error("Upload cancelado pelo usuário.")
+                    # Retornar dados existentes sem processar novo upload
                     return dados, nomes_arquivos, mes_ref, ano_ref, False
             
             nomes_arquivos['pagamentos'] = upload_pagamentos.name
@@ -1804,6 +1820,7 @@ def carregar_dados(conn, email_usuario):
             df = processar_colunas_data(df)
             df = padronizar_documentos(df)
             
+            # CORREÇÃO: Adicionar dados SEM apagar os existentes
             dados['pagamentos'] = df
             
             # Salvar no banco
@@ -1842,6 +1859,7 @@ def carregar_dados(conn, email_usuario):
                     pass
                 else:
                     st.sidebar.error("Upload cancelado pelo usuário.")
+                    # Retornar dados existentes sem processar novo upload
                     return dados, nomes_arquivos, mes_ref, ano_ref, False
             
             nomes_arquivos['contas'] = upload_contas.name
@@ -1849,6 +1867,7 @@ def carregar_dados(conn, email_usuario):
             df = processar_colunas_data(df)
             df = padronizar_documentos(df)
             
+            # CORREÇÃO: Adicionar dados SEM apagar os existentes
             dados['contas'] = df
             
             # Salvar no banco
@@ -1863,6 +1882,13 @@ def carregar_dados(conn, email_usuario):
                 dados_processados = True
             
             st.sidebar.success(f"✅ Inscrições: {len(df)} registros")
+    
+    # CORREÇÃO: Atualizar session_state apenas se houve processamento bem-sucedido
+    if dados_processados:
+        st.session_state.dados_carregados = dados.copy()
+        st.session_state.nomes_arquivos_carregados = nomes_arquivos.copy()
+        st.session_state.mes_ref_carregado = mes_ref
+        st.session_state.ano_ref_carregado = ano_ref
     
     return dados, nomes_arquivos, mes_ref, ano_ref, dados_processados
 
@@ -2104,31 +2130,6 @@ def mostrar_relatorios_comparativos(conn):
         st.info("📊 Nenhum dado disponível para comparação.")
         return
     
-    # CORREÇÃO: Adicionar opção para gerar relatório de período
-    st.subheader("Relatório de Período Personalizado")
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        meses = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
-                'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro']
-        mes_inicio = st.selectbox("Mês inicial:", meses, key="mes_inicio")
-    
-    with col2:
-        ano_inicio = st.number_input("Ano inicial:", min_value=2020, max_value=2030, value=2024, key="ano_inicio")
-    
-    with col3:
-        mes_fim = st.selectbox("Mês final:", meses, index=len(meses)-1, key="mes_fim")
-        ano_fim = st.number_input("Ano final:", min_value=2020, max_value=2030, value=2024, key="ano_fim")
-    
-    periodo_inicio = f"{mes_inicio}/{ano_inicio}"
-    periodo_fim = f"{mes_fim}/{ano_fim}"
-    
-    if st.button("📄 Gerar Relatório PDF do Período", type="primary"):
-        st.info("Funcionalidade de relatório de período será implementada na próxima versão.")
-    
-    st.markdown("---")
-    
     # Comparação entre períodos
     st.subheader("Comparação entre Períodos")
     
@@ -2139,12 +2140,12 @@ def mostrar_relatorios_comparativos(conn):
         st.info("É necessário pelo menos 2 períodos para comparação.")
         return
     
-    col4, col5 = st.columns(2)
+    col1, col2 = st.columns(2)
     
-    with col4:
+    with col1:
         periodo1 = st.selectbox("Selecione o primeiro período:", periodos_disponiveis, key="periodo1")
     
-    with col5:
+    with col2:
         periodo2 = st.selectbox("Selecione o segundo período:", periodos_disponiveis, 
                                index=1 if len(periodos_disponiveis) > 1 else 0, key="periodo2")
     
@@ -2465,11 +2466,19 @@ def main():
         st.info("🔐 **Acesso Restrito** - Faça login para acessar")
         return
     
-    if 'uploaded_data' not in st.session_state:
-        st.session_state.uploaded_data = {}
+    # Inicializar session_state para dados persistentes
+    if 'dados_carregados' not in st.session_state:
+        st.session_state.dados_carregados = {}
+    if 'nomes_arquivos_carregados' not in st.session_state:
+        st.session_state.nomes_arquivos_carregados = {}
+    if 'mes_ref_carregado' not in st.session_state:
+        st.session_state.mes_ref_carregado = None
+    if 'ano_ref_carregado' not in st.session_state:
+        st.session_state.ano_ref_carregado = None
     if 'processed_metrics' not in st.session_state:
         st.session_state.processed_metrics = {}
     
+    # Carregar dados (agora mantém dados anteriores)
     dados, nomes_arquivos, mes_ref, ano_ref, dados_processados = carregar_dados(conn, email_autorizado)
     
     tem_dados_pagamentos = 'pagamentos' in dados and not dados['pagamentos'].empty
@@ -2477,7 +2486,8 @@ def main():
     
     metrics = st.session_state.processed_metrics
     
-    if dados_processados and (tem_dados_pagamentos or tem_dados_contas):
+    # CORREÇÃO: Processar métricas apenas se houve processamento bem-sucedido
+    if dados_processados:
         with st.spinner("🔄 Processando dados..."):
             metrics = processar_dados(dados, nomes_arquivos)
             
@@ -2487,6 +2497,9 @@ def main():
                 salvar_metricas_db(conn, 'inscricoes', mes_ref, ano_ref, metrics)
             
             st.session_state.processed_metrics = metrics
+    elif st.session_state.processed_metrics:
+        # Usar métricas já processadas se não houve novo processamento
+        metrics = st.session_state.processed_metrics
     
     # Sidebar - Exportação de relatórios
     st.sidebar.markdown("---")
