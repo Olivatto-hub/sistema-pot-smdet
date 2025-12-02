@@ -60,7 +60,7 @@ def init_database():
                 nome_arquivo TEXT NOT NULL,
                 dados_json TEXT NOT NULL,
                 metadados_json TEXT NOT NULL,
-                hash_arquivo TEXT UNIQUE,
+                hash_arquivo TEXT,
                 UNIQUE(mes_referencia, ano_referencia, nome_arquivo)
             )
         ''')
@@ -75,7 +75,7 @@ def init_database():
                 nome_arquivo TEXT NOT NULL,
                 dados_json TEXT NOT NULL,
                 metadados_json TEXT NOT NULL,
-                hash_arquivo TEXT UNIQUE,
+                hash_arquivo TEXT,
                 UNIQUE(mes_referencia, ano_referencia, nome_arquivo)
             )
         ''')
@@ -114,28 +114,41 @@ def init_database():
             )
         ''')
         
-        # Verificar e adicionar colunas faltantes
-        try:
-            conn.execute("SELECT cpfs_ajuste FROM metricas_mensais LIMIT 1")
-        except sqlite3.OperationalError:
-            conn.execute("ALTER TABLE metricas_mensais ADD COLUMN cpfs_ajuste INTEGER")
+        # Verificar e adicionar colunas faltantes SEM restrição UNIQUE
+        cursor = conn.execute("PRAGMA table_info(pagamentos)")
+        colunas_pagamentos = [col[1] for col in cursor.fetchall()]
         
-        # Verificar e adicionar coluna ultimo_login
-        try:
-            conn.execute("SELECT ultimo_login FROM usuarios LIMIT 1")
-        except sqlite3.OperationalError:
-            conn.execute("ALTER TABLE usuarios ADD COLUMN ultimo_login TEXT")
+        if 'cpfs_ajuste' not in [col[1] for col in conn.execute("PRAGMA table_info(metricas_mensais)").fetchall()]:
+            try:
+                conn.execute("ALTER TABLE metricas_mensais ADD COLUMN cpfs_ajuste INTEGER")
+            except Exception as e:
+                st.warning(f"Erro ao adicionar coluna cpfs_ajuste: {e}")
         
-        # Verificar e adicionar coluna hash_arquivo
-        try:
-            conn.execute("SELECT hash_arquivo FROM pagamentos LIMIT 1")
-        except sqlite3.OperationalError:
-            conn.execute("ALTER TABLE pagamentos ADD COLUMN hash_arquivo TEXT UNIQUE")
+        if 'ultimo_login' not in [col[1] for col in conn.execute("PRAGMA table_info(usuarios)").fetchall()]:
+            try:
+                conn.execute("ALTER TABLE usuarios ADD COLUMN ultimo_login TEXT")
+            except Exception as e:
+                st.warning(f"Erro ao adicionar coluna ultimo_login: {e}")
         
-        try:
-            conn.execute("SELECT hash_arquivo FROM inscricoes LIMIT 1")
-        except sqlite3.OperationalError:
-            conn.execute("ALTER TABLE inscricoes ADD COLUMN hash_arquivo TEXT UNIQUE")
+        # Verificar e adicionar coluna hash_arquivo SEM restrição UNIQUE
+        if 'hash_arquivo' not in colunas_pagamentos:
+            try:
+                conn.execute("ALTER TABLE pagamentos ADD COLUMN hash_arquivo TEXT")
+                # Criar índice para melhorar performance
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_pagamentos_hash ON pagamentos(hash_arquivo)")
+            except Exception as e:
+                st.warning(f"Erro ao adicionar coluna hash_arquivo na tabela pagamentos: {e}")
+        
+        cursor = conn.execute("PRAGMA table_info(inscricoes)")
+        colunas_inscricoes = [col[1] for col in cursor.fetchall()]
+        
+        if 'hash_arquivo' not in colunas_inscricoes:
+            try:
+                conn.execute("ALTER TABLE inscricoes ADD COLUMN hash_arquivo TEXT")
+                # Criar índice para melhorar performance
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_inscricoes_hash ON inscricoes(hash_arquivo)")
+            except Exception as e:
+                st.warning(f"Erro ao adicionar coluna hash_arquivo na tabela inscricoes: {e}")
         
         # Inserir administrador padrão se não existir
         cursor = conn.execute("SELECT * FROM usuarios WHERE email = 'admin@prefeitura.sp.gov.br'")
@@ -146,14 +159,18 @@ def init_database():
             ''', ('admin@prefeitura.sp.gov.br', 'Administrador', 'admin', data_hora_atual_brasilia(), 1))
         
         conn.commit()
-        st.sidebar.info(f"📊 Banco de dados em: {db_path}")
         return conn
         
     except Exception as e:
         st.error(f"Erro crítico ao inicializar banco de dados: {str(e)}")
         # Tentar criar banco em diretório temporário como fallback
-        conn = sqlite3.connect(':memory:', check_same_thread=False)
-        return conn
+        try:
+            conn = sqlite3.connect(':memory:', check_same_thread=False)
+            st.warning("Usando banco de dados em memória como fallback")
+            return conn
+        except:
+            st.error("Não foi possível criar banco de dados")
+            return None
 
 # Função para hash de arquivo
 def calcular_hash_arquivo(file_bytes):
@@ -2667,6 +2684,10 @@ def gerenciar_registros(conn, tipo_usuario):
 def main():
     # Inicializar banco de dados
     conn = init_database()
+    
+    if conn is None:
+        st.error("❌ Não foi possível inicializar o banco de dados. O sistema não pode continuar.")
+        return
     
     # Autenticação
     email_autorizado, tipo_usuario = autenticar(conn)
