@@ -124,7 +124,11 @@ def init_database():
             except Exception as e:
                 st.warning(f"Erro ao adicionar coluna cpfs_ajuste: {e}")
         
-        if 'ultimo_login' not in [col[1] for col in conn.execute("PRAGMA table_info(usuarios)").fetchall()]:
+        # Verificar e adicionar coluna ultimo_login se não existir
+        cursor_usuarios = conn.execute("PRAGMA table_info(usuarios)")
+        colunas_usuarios = [col[1] for col in cursor_usuarios.fetchall()]
+        
+        if 'ultimo_login' not in colunas_usuarios:
             try:
                 conn.execute("ALTER TABLE usuarios ADD COLUMN ultimo_login TEXT")
             except Exception as e:
@@ -281,6 +285,9 @@ def autenticar(conn):
             st.session_state.email_autorizado = None
             st.session_state.tipo_usuario = None
             st.session_state.tentativas_login = 0
+            # Limpar também dados de upload para garantir nova sessão limpa
+            if 'uploaded_data' in st.session_state:
+                del st.session_state.uploaded_data
             st.rerun()
         
         return st.session_state.email_autorizado, st.session_state.tipo_usuario
@@ -587,7 +594,7 @@ def salvar_inscricoes_db(conn, mes_ref, ano_ref, nome_arquivo, file_bytes, dados
         st.error(f"Erro ao salvar inscrições: {str(e)}")
         return False
 
-# CORREÇÃO: Sistema de upload de dados - MELHORADO
+# CORREÇÃO: Sistema de upload de dados - MELHORADO com persistência
 def carregar_dados(conn):
     st.sidebar.header("📤 Carregar Dados Mensais")
     
@@ -641,8 +648,12 @@ def carregar_dados(conn):
     
     st.sidebar.markdown("---")
     
-    dados = {}
-    nomes_arquivos = {}
+    # Inicializar dados na session_state se não existirem
+    if 'uploaded_data' not in st.session_state:
+        st.session_state.uploaded_data = {}
+    
+    dados = st.session_state.uploaded_data
+    nomes_arquivos = dados.get('nomes_arquivos', {})
     dados_processados = False
     
     # Carregar dados de pagamentos
@@ -673,7 +684,7 @@ def carregar_dados(conn):
                     'total_registros_originais': len(df_pagamentos),
                     'total_registros_sem_totais': len(df_pagamentos_sem_totais),
                     'colunas_disponiveis': df_pagamentos.columns.tolist(),
-                    'tipo_arquivo': 'pagamentos'
+                    'tipo_arquio': 'pagamentos'
                 }
                 
                 if salvar_pagamentos_db(conn, mes_ref, ano_ref, upload_pagamentos.name, 
@@ -708,7 +719,7 @@ def carregar_dados(conn):
                 metadados = {
                     'total_registros': len(df_contas),
                     'colunas_disponiveis': df_contas.columns.tolist(),
-                    'tipo_arquivo': 'inscricoes'
+                    'tipo_arquio': 'inscricoes'
                 }
                 
                 if salvar_inscricoes_db(conn, mes_ref, ano_ref, upload_contas.name, 
@@ -719,6 +730,12 @@ def carregar_dados(conn):
                 
         except Exception as e:
             st.sidebar.error(f"❌ Erro ao carregar inscrições: {str(e)}")
+    
+    # Salvar nomes dos arquivos nos dados
+    dados['nomes_arquivos'] = nomes_arquivos
+    
+    # Atualizar dados na session_state
+    st.session_state.uploaded_data = dados
     
     return dados, nomes_arquivos, mes_ref, ano_ref, dados_processados
 
@@ -1328,7 +1345,7 @@ def detectar_pagamentos_pendentes(dados):
     return pendentes
 
 def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_contas=None):
-    """Analisa e reporta apenas dados críticos realmente ausentes"""
+    """Analisa e reporta apenas dados críticos realmente ausentes - CORRIGIDA para não incluir linha de totais"""
     analise_ausencia = {
         'registros_criticos_problematicos': [],
         'total_registros_criticos': 0,
@@ -1355,28 +1372,55 @@ def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_co
         
         coluna_conta = obter_coluna_conta(df)
         if coluna_conta:
+            # Verificar se é linha de totais antes de marcar como ausente
             mask_conta_ausente = (
                 df[coluna_conta].isna() | 
                 (df[coluna_conta].astype(str).str.strip() == '')
             )
-            contas_ausentes = df[mask_conta_ausente]
+            
+            # Verificar se não é linha de totais
+            palavras_totais = ['TOTAL', 'SOMA', 'GERAL', 'TOTAL GERAL']
+            mask_nao_totais = ~df[coluna_conta].astype(str).str.upper().str.contains('|'.join(palavras_totais), na=False)
+            
+            mask_final = mask_conta_ausente & mask_nao_totais
+            contas_ausentes = df[mask_final]
             for idx in contas_ausentes.index:
                 if idx not in registros_problematicos:
                     registros_problematicos.append(idx)
         
         if 'Valor_Limpo' in df.columns:
+            # Verificar se não é linha de totais
+            palavras_totais = ['TOTAL', 'SOMA', 'GERAL', 'TOTAL GERAL']
             mask_valor_invalido = (
                 df['Valor_Limpo'].isna() | 
                 (df['Valor_Limpo'] == 0)
             )
-            valores_invalidos = df[mask_valor_invalido]
+            
+            # Verificar se não é linha de totais
+            coluna_conta = obter_coluna_conta(df)
+            if coluna_conta:
+                mask_nao_totais = ~df[coluna_conta].astype(str).str.upper().str.contains('|'.join(palavras_totais), na=False)
+                mask_final = mask_valor_invalido & mask_nao_totais
+            else:
+                mask_final = mask_valor_invalido
+            
+            valores_invalidos = df[mask_final]
             for idx in valores_invalidos.index:
                 if idx not in registros_problematicos:
                     registros_problematicos.append(idx)
         
+        # Filtrar apenas registros que realmente têm problemas críticos (não são linhas de totais)
         registros_problematicos_filtrados = []
         for idx in registros_problematicos:
             registro = df.loc[idx]
+            
+            # Verificar se não é linha de totais
+            coluna_conta = obter_coluna_conta(df)
+            if coluna_conta and coluna_conta in registro:
+                valor_conta = str(registro[coluna_conta]).upper() if pd.notna(registro[coluna_conta]) else ''
+                if any(palavra in valor_conta for palavra in ['TOTAL', 'SOMA', 'GERAL', 'TOTAL GERAL']):
+                    continue  # Pular linha de totais
+            
             tem_conta_valida = coluna_conta and pd.notna(registro[coluna_conta]) and str(registro[coluna_conta]).strip() != ''
             tem_valor_valido = 'Valor_Limpo' in df.columns and pd.notna(registro['Valor_Limpo']) and registro['Valor_Limpo'] > 0
             
@@ -1393,6 +1437,14 @@ def analisar_ausencia_dados(dados, nome_arquivo_pagamentos=None, nome_arquivo_co
             resumo = []
             for idx in registros_problematicos_filtrados[:100]:
                 registro = df.loc[idx]
+                
+                # Verificar se não é linha de totais
+                coluna_conta = obter_coluna_conta(df)
+                if coluna_conta and coluna_conta in registro:
+                    valor_conta = str(registro[coluna_conta]).upper() if pd.notna(registro[coluna_conta]) else ''
+                    if any(palavra in valor_conta for palavra in ['TOTAL', 'SOMA', 'GERAL', 'TOTAL GERAL']):
+                        continue  # Pular linha de totais
+                
                 info_ausencia = {
                     'Indice_Registro': idx,
                     'Linha_Planilha': registro.get('Linha_Planilha_Original', idx + 2),
@@ -1667,7 +1719,7 @@ def carregar_metricas_db(conn, tipo=None, periodo=None):
         st.error(f"Erro ao carregar métricas: {e}")
         return pd.DataFrame()
 
-# CLASSE PDF MELHORADA COM TABELAS (mantida do código original)
+# CLASSE PDF MELHORADA COM TABELAS (CORRIGIDA para nomes completos)
 class PDFWithTables(FPDF):
     def __init__(self):
         super().__init__()
@@ -1682,51 +1734,57 @@ class PDFWithTables(FPDF):
         self.ln()
     
     def add_table_row(self, data, col_widths, row_height=10):
-        """Adiciona linha da tabela com quebra de texto"""
+        """Adiciona linha da tabela com quebra de texto e ajuste automático"""
         self.set_font('Arial', '', 8)
         
         # Calcular altura necessária para a linha
         max_lines = 1
+        cell_data_lines = []
+        
         for i, cell_data in enumerate(data):
             if cell_data:
-                text_width = self.get_string_width(str(cell_data))
+                text = str(cell_data)
+                text_width = self.get_string_width(text)
                 available_width = col_widths[i] - 2  # Margem interna
+                
                 if text_width > available_width:
-                    lines = self._split_text(str(cell_data), available_width)
+                    # Dividir texto em múltiplas linhas
+                    lines = self._split_text(text, available_width)
                     max_lines = max(max_lines, len(lines))
+                    cell_data_lines.append(lines)
+                else:
+                    cell_data_lines.append([text])
+            else:
+                cell_data_lines.append([''])
         
         # Desenhar células
         y_start = self.get_y()
-        for i, cell_data in enumerate(data):
+        
+        for i in range(len(data)):
             x = self.get_x()
             y = y_start
             
-            if cell_data:
-                text_width = self.get_string_width(str(cell_data))
-                available_width = col_widths[i] - 2
-                
-                if text_width <= available_width:
-                    # Texto cabe em uma linha
-                    self.set_xy(x, y)
-                    self.cell(col_widths[i], row_height, str(cell_data), 1, 0, 'L')
-                else:
-                    # Texto precisa de múltiplas linhas
-                    lines = self._split_text(str(cell_data), available_width)
-                    for j, line in enumerate(lines):
-                        self.set_xy(x, y + (j * row_height/2))
-                        self.cell(col_widths[i], row_height/2, line, 1, 0, 'L')
+            lines = cell_data_lines[i]
+            cell_height = row_height * max(1, len(lines) * 0.5)
             
-            else:
-                self.set_xy(x, y)
-                self.cell(col_widths[i], row_height, '', 1, 0, 'L')
+            # Desenhar borda da célula
+            self.set_xy(x, y)
+            self.cell(col_widths[i], cell_height, '', 1, 0, 'L')
             
+            # Escrever texto
+            self.set_xy(x + 1, y + 1)  # Pequena margem interna
+            for j, line in enumerate(lines):
+                self.set_xy(x + 1, y + 1 + (j * row_height/2))
+                self.cell(col_widths[i] - 2, row_height/2, line, 0, 0, 'L')
+            
+            # Mover para próxima célula
             self.set_xy(x + col_widths[i], y_start)
         
         # Mover para próxima linha
         self.set_y(y_start + (max_lines * row_height/2))
     
     def _split_text(self, text, max_width):
-        """Divide texto em múltiplas linhas para caber na célula"""
+        """Divide texto em múltiplas linhas para caber na célula - CORRIGIDA para preservar nomes completos"""
         words = text.split(' ')
         lines = []
         current_line = []
@@ -1738,16 +1796,31 @@ class PDFWithTables(FPDF):
             else:
                 if current_line:
                     lines.append(' '.join(current_line))
-                current_line = [word]
+                # Verificar se a palavra sozinha cabe
+                if self.get_string_width(word) < max_width:
+                    current_line = [word]
+                else:
+                    # Palavra muito longa, dividir por caracteres
+                    current_line = []
+                    current_chars = ''
+                    for char in word:
+                        if self.get_string_width(current_chars + char) < max_width:
+                            current_chars += char
+                        else:
+                            if current_chars:
+                                lines.append(current_chars)
+                            current_chars = char
+                    if current_chars:
+                        current_line = [current_chars]
         
         if current_line:
             lines.append(' '.join(current_line))
         
         return lines
 
-# FUNÇÕES DE GERAÇÃO DE RELATÓRIOS (mantidas do código original)
+# FUNÇÕES DE GERAÇÃO DE RELATÓRIOS (CORRIGIDAS)
 def gerar_pdf_executivo(metrics, dados, nomes_arquivos, tipo_relatorio='pagamentos'):
-    """Gera relatório executivo em PDF com tabelas organizadas"""
+    """Gera relatório executivo em PDF com tabelas organizadas - CORRIGIDA"""
     pdf = PDFWithTables()
     pdf.add_page()
     
@@ -1807,7 +1880,7 @@ def gerar_pdf_executivo(metrics, dados, nomes_arquivos, tipo_relatorio='pagament
     
     pdf.ln(10)
     
-    # Alertas e problemas
+    # Alertas e problemas - CORRIGIDO: Não mostrar alerta de registros críticos se for apenas linha de totais
     if tipo_relatorio == 'pagamentos':
         pdf.set_font("Arial", 'B', 14)
         pdf.cell(0, 10, "Alertas e Problemas Identificados", 0, 1)
@@ -1859,7 +1932,7 @@ def gerar_pdf_executivo(metrics, dados, nomes_arquivos, tipo_relatorio='pagament
                 for idx, row in detalhes_cpfs_problematicos.head(15).iterrows():
                     linha_data = [
                         str(row.get('Linha_Planilha', '')),
-                        str(row.get('Nome', ''))[:30],  # Limitar tamanho do nome
+                        str(row.get('Nome', ''))[:40],  # Aumentado para 40 caracteres
                         str(row.get('Numero_Conta', ''))[:15],
                         str(row.get('Projeto', ''))[:20],
                         str(row.get('CPF_Original', ''))[:15],
@@ -1867,8 +1940,8 @@ def gerar_pdf_executivo(metrics, dados, nomes_arquivos, tipo_relatorio='pagament
                     ]
                     table_data.append(linha_data)
                 
-                # Definir larguras das colunas
-                col_widths = [15, 40, 25, 30, 25, 55]
+                # Definir larguras das colunas - CORRIGIDO: largura maior para nome
+                col_widths = [15, 50, 25, 30, 25, 55]  # Nome aumentado para 50
                 headers = ['Linha', 'Nome', 'Conta', 'Projeto', 'CPF', 'Problema']
                 
                 # Adicionar tabela
@@ -1885,7 +1958,7 @@ def gerar_pdf_executivo(metrics, dados, nomes_arquivos, tipo_relatorio='pagament
                 
                 pdf.ln(10)
             
-            # TABELA PARA CPFs COM INCONSISTÊNCIAS CRÍTICAS
+            # TABELA PARA CPFs COM INCONSISTÊNCIAS CRÍTICAS - CORRIGIDA para nomes completos
             detalhes_inconsistencias = problemas_cpf.get('detalhes_inconsistencias', pd.DataFrame())
             if not detalhes_inconsistencias.empty:
                 # Verificar se precisa de nova página
@@ -1903,14 +1976,14 @@ def gerar_pdf_executivo(metrics, dados, nomes_arquivos, tipo_relatorio='pagament
                         str(row.get('CPF', ''))[:15],
                         str(row.get('Linha_Planilha', '')),
                         str(row.get('Ocorrencia_CPF', '')),
-                        str(row.get('Nome', ''))[:25],
+                        str(row.get('Nome', ''))[:40],  # Aumentado para 40 caracteres
                         str(row.get('Numero_Conta', ''))[:15],
                         str(row.get('Problemas_Inconsistencia', ''))[:40]
                     ]
                     table_data.append(linha_data)
                 
-                # Definir larguras das colunas
-                col_widths = [25, 15, 20, 35, 25, 50]
+                # Definir larguras das colunas - CORRIGIDO: largura maior para nome
+                col_widths = [25, 15, 20, 45, 25, 50]  # Nome aumentado para 45
                 headers = ['CPF', 'Linha', 'Ocorrência', 'Nome', 'Conta', 'Problemas']
                 
                 # Adicionar tabela
@@ -1927,8 +2000,24 @@ def gerar_pdf_executivo(metrics, dados, nomes_arquivos, tipo_relatorio='pagament
                 
                 pdf.ln(10)
         
+        # CORREÇÃO: Só mostrar alerta de registros críticos se não for apenas linha de totais
         total_registros_criticos = metrics.get('total_registros_criticos', 0)
+        
+        # Verificar se há realmente registros críticos (não apenas linha de totais)
+        tem_registros_criticos_reais = False
         if total_registros_criticos > 0:
+            resumo_ausencias = metrics.get('resumo_ausencias', pd.DataFrame())
+            if not resumo_ausencias.empty:
+                # Verificar se algum dos registros não é linha de totais
+                for idx, row in resumo_ausencias.iterrows():
+                    nome_valor = str(row.get('Nome', '')).upper() if pd.notna(row.get('Nome')) else ''
+                    conta_valor = str(row.get('Conta', '')).upper() if pd.notna(row.get('Conta')) else ''
+                    if not any(palavra in nome_valor for palavra in ['TOTAL', 'SOMA', 'GERAL']) and \
+                       not any(palavra in conta_valor for palavra in ['TOTAL', 'SOMA', 'GERAL']):
+                        tem_registros_criticos_reais = True
+                        break
+        
+        if tem_registros_criticos_reais:
             # Verificar se precisa de nova página
             if pdf.get_y() > 150:
                 pdf.add_page()
@@ -1949,15 +2038,15 @@ def gerar_pdf_executivo(metrics, dados, nomes_arquivos, tipo_relatorio='pagament
                 for idx, row in resumo_ausencias.head(10).iterrows():
                     linha_data = [
                         str(row.get('Linha_Planilha', '')),
-                        str(row.get('Nome', ''))[:25],
+                        str(row.get('Nome', ''))[:35],  # Aumentado para 35 caracteres
                         str(row.get('CPF', ''))[:15],
                         str(row.get('Projeto', ''))[:20],
                         str(row.get('Problemas_Identificados', ''))[:40]
                     ]
                     table_data.append(linha_data)
                 
-                # Definir larguras das colunas
-                col_widths = [15, 35, 25, 30, 65]
+                # Definir larguras das colunas - CORRIGIDO
+                col_widths = [15, 45, 25, 30, 65]  # Nome aumentado para 45
                 headers = ['Linha', 'Nome', 'CPF', 'Projeto', 'Problemas']
                 
                 # Adicionar tabela
@@ -2054,10 +2143,17 @@ def gerar_excel_completo(metrics, dados, tipo_relatorio='pagamentos'):
         if not detalhes_inconsistencias.empty:
             detalhes_inconsistencias.to_excel(writer, sheet_name='CPFs Inconsistentes', index=False)
         
-        # Problemas de dados CRÍTICOS
+        # Problemas de dados CRÍTICOS (apenas se não for linha de totais)
         resumo_ausencias = metrics.get('resumo_ausencias', pd.DataFrame())
         if not resumo_ausencias.empty:
-            resumo_ausencias.to_excel(writer, sheet_name='Problemas Críticos', index=False)
+            # Filtrar para remover linhas que são apenas totais
+            resumo_filtrado = resumo_ausencias.copy()
+            if 'Nome' in resumo_filtrado.columns:
+                mask_totais = resumo_filtrado['Nome'].astype(str).str.upper().str.contains('TOTAL|SOMA|GERAL', na=False)
+                resumo_filtrado = resumo_filtrado[~mask_totais]
+            
+            if not resumo_filtrado.empty:
+                resumo_filtrado.to_excel(writer, sheet_name='Problemas Críticos', index=False)
     
     return output.getvalue()
 
@@ -2115,9 +2211,24 @@ def gerar_planilha_ajustes(metrics, tipo_relatorio='pagamentos'):
                 'Impacto Financeiro': 'A definir'
             })
     
-    # Ações para problemas CRÍTICOS de dados
+    # Ações para problemas CRÍTICOS de dados (apenas se não for linha de totais)
     total_registros_criticos = metrics.get('total_registros_criticos', 0)
+    
+    # Verificar se há realmente registros críticos (não apenas linha de totais)
+    tem_registros_criticos_reais = False
     if total_registros_criticos > 0:
+        resumo_ausencias = metrics.get('resumo_ausencias', pd.DataFrame())
+        if not resumo_ausencias.empty:
+            # Verificar se algum dos registros não é linha de totais
+            for idx, row in resumo_ausencias.iterrows():
+                nome_valor = str(row.get('Nome', '')).upper() if pd.notna(row.get('Nome')) else ''
+                conta_valor = str(row.get('Conta', '')).upper() if pd.notna(row.get('Conta')) else ''
+                if not any(palavra in nome_valor for palavra in ['TOTAL', 'SOMA', 'GERAL']) and \
+                   not any(palavra in conta_valor for palavra in ['TOTAL', 'SOMA', 'GERAL']):
+                    tem_registros_criticos_reais = True
+                    break
+    
+    if tem_registros_criticos_reais:
         acoes.append({
             'Tipo': 'Dados Críticos Incompletos',
             'Descrição': f'{total_registros_criticos} registros com problemas críticos (sem conta ou valor)',
@@ -2131,62 +2242,22 @@ def gerar_planilha_ajustes(metrics, tipo_relatorio='pagamentos'):
     
     return output.getvalue()
 
-# NOVA FUNÇÃO: Gerar CSV dos dados tratados por projeto
+# NOVA FUNÇÃO: Gerar CSV dos dados tratados por projeto - CORRIGIDA para manter colunas originais
 def gerar_csv_dados_tratados(dados, tipo_dados='pagamentos'):
-    """Gera arquivos CSV com dados tratados, organizados por projeto"""
+    """Gera arquivos CSV com dados tratados, mantendo colunas originais"""
     if tipo_dados == 'pagamentos' and 'pagamentos' in dados and not dados['pagamentos'].empty:
         df = dados['pagamentos'].copy()
         
-        # Adicionar coluna de projeto se não existir
-        if 'Projeto' not in df.columns:
-            df['Projeto'] = 'Geral'
-        
-        # Processar dados para CSV
-        df_csv = df.copy()
-        
-        # Garantir que todas as colunas importantes estejam presentes
-        colunas_padrao = ['CPF', 'Nome', 'Projeto', 'Valor_Limpo']
-        coluna_conta = obter_coluna_conta(df)
-        if coluna_conta:
-            colunas_padrao.insert(2, coluna_conta)
-        
-        # Selecionar apenas colunas que existem
-        colunas_finais = [col for col in colunas_padrao if col in df_csv.columns]
-        
-        # Adicionar outras colunas relevantes
-        colunas_adicionais = ['RG', 'Data', 'Status', 'Beneficiario', 'Beneficiário']
-        for col in colunas_adicionais:
-            if col in df_csv.columns and col not in colunas_finais:
-                colunas_finais.append(col)
-        
-        return df_csv[colunas_finais]
+        # Manter todas as colunas originais (ou processadas)
+        # Não filtrar, apenas retornar o DataFrame completo
+        return df
     
     elif tipo_dados == 'inscricoes' and 'contas' in dados and not dados['contas'].empty:
         df = dados['contas'].copy()
         
-        # Adicionar coluna de projeto se não existir
-        if 'Projeto' not in df.columns:
-            df['Projeto'] = 'Geral'
-        
-        # Processar dados para CSV
-        df_csv = df.copy()
-        
-        # Garantir que todas as colunas importantes estejam presentes
-        colunas_padrao = ['CPF', 'Nome', 'Projeto']
-        coluna_conta = obter_coluna_conta(df)
-        if coluna_conta:
-            colunas_padrao.insert(2, coluna_conta)
-        
-        # Selecionar apenas colunas que existem
-        colunas_finais = [col for col in colunas_padrao if col in df_csv.columns]
-        
-        # Adicionar outras colunas relevantes
-        colunas_adicionais = ['RG', 'Data', 'Status', 'Beneficiario', 'Beneficiário', 'Data_Abertura']
-        for col in colunas_adicionais:
-            if col in df_csv.columns and col not in colunas_finais:
-                colunas_finais.append(col)
-        
-        return df_csv[colunas_finais]
+        # Manter todas as colunas originais (ou processadas)
+        # Não filtrar, apenas retornar o DataFrame completo
+        return df
     
     return pd.DataFrame()
 
@@ -2350,7 +2421,7 @@ def mostrar_relatorios_comparativos(conn):
             f"{((dados_periodo2['valor_total'] - dados_periodo1['valor_total']) / dados_periodo1['valor_total'] * 100):.1f}%",
             f"{((dados_periodo2['pagamentos_duplicados'] - dados_periodo1['pagamentos_duplicados']) / max(dados_periodo1['pagamentos_duplicados'], 1) * 100):.1f}%",
             f"{((dados_periodo2['valor_duplicados'] - dados_periodo1['valor_duplicados']) / max(dados_periodo1['valor_duplicados'], 1) * 100):.1f}%",
-            f"{((dados_periodo2['projetos_ativos'] - dados_periodo1['projetos_ativos']) / max(dados_periodo1['projetos_ativos', 1]) * 100):.1f}%",
+            f"{((dados_periodo2['projetos_ativos'] - dados_periodo1['projetos_ativos']) / max(dados_periodo1.get('projetos_ativos', 1), 1) * 100):.1f}%",
             f"{((dados_periodo2.get('cpfs_ajuste', 0) - dados_periodo1.get('cpfs_ajuste', 0)) / max(dados_periodo1.get('cpfs_ajuste', 1), 1) * 100):.1f}%",
             f"{((dados_periodo2['registros_problema'] - dados_periodo1['registros_problema']) / max(dados_periodo1['registros_problema'], 1) * 100):.1f}%"
         ]
@@ -2708,19 +2779,26 @@ def main():
     
     # A partir daqui, só usuários autenticados têm acesso
     
-    # Carregar dados - AGORA COM CONTROLE DE PROCESSAMENTO
+    # Inicializar session_state para dados persistentes
+    if 'uploaded_data' not in st.session_state:
+        st.session_state.uploaded_data = {}
+    if 'processed_metrics' not in st.session_state:
+        st.session_state.processed_metrics = {}
+    
+    # Carregar dados - COM PERSISTÊNCIA
     dados, nomes_arquivos, mes_ref, ano_ref, dados_processados = carregar_dados(conn)
     
     # Verificar se há dados para processar
     tem_dados_pagamentos = 'pagamentos' in dados and not dados['pagamentos'].empty
     tem_dados_contas = 'contas' in dados and not dados['contas'].empty
     
-    # SEÇÃO MELHORADA: Download de Relatórios
+    # SEÇÃO MELHORADA: Download de Relatórios - SEMPRE DISPONÍVEL SE HOUVER DADOS
     st.sidebar.markdown("---")
     st.sidebar.header("📥 EXPORTAR RELATÓRIOS")
     
-    # PROCESSAR DADOS APENAS SE FORAM CARREGADOS NOVOS DADOS
-    metrics = {}
+    # PROCESSAR DADOS APENAS SE FORAM CARREGADOS NOVOS DADOS ou usar métricas existentes
+    metrics = st.session_state.processed_metrics
+    
     if dados_processados and (tem_dados_pagamentos or tem_dados_contas):
         with st.spinner("🔄 Processando dados para relatórios..."):
             metrics = processar_dados(dados, nomes_arquivos)
@@ -2729,56 +2807,68 @@ def main():
                 salvar_metricas_db(conn, 'pagamentos', mes_ref, ano_ref, metrics)
             if tem_dados_contas:
                 salvar_metricas_db(conn, 'inscricoes', mes_ref, ano_ref, metrics)
+            
+            # Salvar métricas na session_state para persistência
+            st.session_state.processed_metrics = metrics
     
     # Botões de download sempre visíveis e organizados
-    if tem_dados_pagamentos or tem_dados_contas:
+    if tem_dados_pagamentos or tem_dados_contas or metrics:
         col1, col2 = st.sidebar.columns(2)
         
         with col1:
             if tem_dados_pagamentos:
                 pdf_bytes = gerar_pdf_executivo(metrics, dados, nomes_arquivos, 'pagamentos')
-            else:
+            elif tem_dados_contas:
                 pdf_bytes = gerar_pdf_executivo(metrics, dados, nomes_arquivos, 'inscricoes')
+            else:
+                pdf_bytes = None
             
-            st.download_button(
-                label="📄 PDF Executivo",
-                data=pdf_bytes,
-                file_name=f"relatorio_executivo_pot_{mes_ref}_{ano_ref}_{data_hora_arquivo_brasilia()}.pdf",
-                mime="application/pdf",
-                use_container_width=True,
-                key="pdf_executivo"
-            )
+            if pdf_bytes:
+                st.download_button(
+                    label="📄 PDF Executivo",
+                    data=pdf_bytes,
+                    file_name=f"relatorio_executivo_pot_{mes_ref}_{ano_ref}_{data_hora_arquivo_brasilia()}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True,
+                    key="pdf_executivo"
+                )
         
         with col2:
             if tem_dados_pagamentos:
                 excel_bytes = gerar_excel_completo(metrics, dados, 'pagamentos')
-            else:
+            elif tem_dados_contas:
                 excel_bytes = gerar_excel_completo(metrics, dados, 'inscricoes')
+            else:
+                excel_bytes = None
             
-            st.download_button(
-                label="📊 Excel Completo",
-                data=excel_bytes,
-                file_name=f"analise_completa_pot_{mes_ref}_{ano_ref}_{data_hora_arquivo_brasilia()}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-                key="excel_completo"
-            )
+            if excel_bytes:
+                st.download_button(
+                    label="📊 Excel Completo",
+                    data=excel_bytes,
+                    file_name=f"analise_completa_pot_{mes_ref}_{ano_ref}_{data_hora_arquivo_brasilia()}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                    key="excel_completo"
+                )
         
         # Botão para planilha de ajustes
         st.sidebar.markdown("---")
         if tem_dados_pagamentos:
             ajustes_bytes = gerar_planilha_ajustes(metrics, 'pagamentos')
-        else:
+        elif tem_dados_contas:
             ajustes_bytes = gerar_planilha_ajustes(metrics, 'inscricoes')
+        else:
+            ajustes_bytes = None
         
-        st.download_button(
-            label="🔧 Planilha de Ajustes",
-            data=ajustes_bytes,
-            file_name=f"plano_ajustes_pot_{mes_ref}_{ano_ref}_{data_hora_arquivo_brasilia()}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
-            key="planilha_ajustes"
-        )
+        if ajustes_bytes:
+            st.download_button(
+                label="🔧 Planilha de Ajustes",
+                data=ajustes_bytes,
+                file_name=f"plano_ajustes_pot_{mes_ref}_{ano_ref}_{data_hora_arquivo_brasilia()}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="planilha_ajustes"
+            )
         
         # Botões para CSV dos dados tratados - SEMPRE VISÍVEIS
         st.sidebar.markdown("---")
@@ -2814,7 +2904,7 @@ def main():
     else:
         st.sidebar.info("📊 Faça upload dos dados para gerar relatórios")
     
-    # ÁREAS ADMINISTRATIVAS - APENAS PARA ADMIN
+    # ÁREAS ADMINISTRATIVAS - APENAS PARA ADMIN - CORRIGIDO
     st.sidebar.markdown("---")
     
     if tipo_usuario == 'admin':
@@ -2825,40 +2915,41 @@ def main():
             # Sub-expander para gerenciamento de usuários
             with st.expander("👥 Gerenciar Usuários", expanded=False):
                 if st.button("Abrir Gerenciador de Usuários", key="abrir_gerenciador_usuarios"):
-                    st.session_state.gerenciar_usuarios = True
+                    st.session_state.show_admin_section = 'usuarios'
             
             # Sub-expander para limpeza de dados
             with st.expander("🚨 Limpeza do Banco de Dados", expanded=False):
                 if st.button("Abrir Limpeza de Dados", key="abrir_limpeza_dados"):
-                    st.session_state.limpar_dados = True
+                    st.session_state.show_admin_section = 'limpeza'
             
             # Sub-expander para gerenciamento de registros
             with st.expander("🔍 Gerenciamento de Registros", expanded=False):
                 if st.button("Abrir Gerenciador de Registros", key="abrir_gerenciador_registros"):
-                    st.session_state.gerenciar_registros = True
+                    st.session_state.show_admin_section = 'registros'
     
-    # Verificar se deve mostrar interfaces administrativas
+    # Verificar se deve mostrar interfaces administrativas - CORRIGIDO
     if tipo_usuario == 'admin':
-        if hasattr(st.session_state, 'gerenciar_usuarios') and st.session_state.gerenciar_usuarios:
-            gerenciar_usuarios(conn)
-            if st.button("Voltar para Análise Principal", key="voltar_usuarios"):
-                st.session_state.gerenciar_usuarios = False
-                st.rerun()
-            return
-        
-        if hasattr(st.session_state, 'limpar_dados') and st.session_state.limpar_dados:
-            limpar_banco_dados_completo(conn, tipo_usuario)
-            if st.button("Voltar para Análise Principal", key="voltar_limpeza"):
-                st.session_state.limpar_dados = False
-                st.rerun()
-            return
-        
-        if hasattr(st.session_state, 'gerenciar_registros') and st.session_state.gerenciar_registros:
-            gerenciar_registros(conn, tipo_usuario)
-            if st.button("Voltar para Análise Principal", key="voltar_registros"):
-                st.session_state.gerenciar_registros = False
-                st.rerun()
-            return
+        if hasattr(st.session_state, 'show_admin_section'):
+            if st.session_state.show_admin_section == 'usuarios':
+                gerenciar_usuarios(conn)
+                if st.button("Voltar para Análise Principal", key="voltar_usuarios"):
+                    st.session_state.show_admin_section = None
+                    st.rerun()
+                return
+            
+            elif st.session_state.show_admin_section == 'limpeza':
+                limpar_banco_dados_completo(conn, tipo_usuario)
+                if st.button("Voltar para Análise Principal", key="voltar_limpeza"):
+                    st.session_state.show_admin_section = None
+                    st.rerun()
+                return
+            
+            elif st.session_state.show_admin_section == 'registros':
+                gerenciar_registros(conn, tipo_usuario)
+                if st.button("Voltar para Análise Principal", key="voltar_registros"):
+                    st.session_state.show_admin_section = None
+                    st.rerun()
+                return
     
     # Abas principais do sistema - TODAS IMPLEMENTADAS
     tab_principal, tab_dashboard, tab_relatorios, tab_historico, tab_estatisticas = st.tabs([
@@ -2962,12 +3053,36 @@ def main():
                     )
                 
                 with col8:
-                    st.metric(
-                        "Registros Críticos", 
-                        formatar_brasileiro(metrics.get('total_registros_criticos', 0)),
-                        delta_color="inverse" if metrics.get('total_registros_criticos', 0) > 0 else "off",
-                        help="Registros INVÁLIDOS (sem conta ou valor)"
-                    )
+                    # CORREÇÃO: Não mostrar alerta se for apenas linha de totais
+                    total_registros_criticos = metrics.get('total_registros_criticos', 0)
+                    
+                    # Verificar se há realmente registros críticos (não apenas linha de totais)
+                    tem_registros_criticos_reais = False
+                    if total_registros_criticos > 0:
+                        resumo_ausencias = metrics.get('resumo_ausencias', pd.DataFrame())
+                        if not resumo_ausencias.empty:
+                            # Verificar se algum dos registros não é linha de totais
+                            for idx, row in resumo_ausencias.iterrows():
+                                nome_valor = str(row.get('Nome', '')).upper() if pd.notna(row.get('Nome')) else ''
+                                conta_valor = str(row.get('Conta', '')).upper() if pd.notna(row.get('Conta')) else ''
+                                if not any(palavra in nome_valor for palavra in ['TOTAL', 'SOMA', 'GERAL']) and \
+                                   not any(palavra in conta_valor for palavra in ['TOTAL', 'SOMA', 'GERAL']):
+                                    tem_registros_criticos_reais = True
+                                    break
+                    
+                    if tem_registros_criticos_reais:
+                        st.metric(
+                            "Registros Críticos", 
+                            formatar_brasileiro(total_registros_criticos),
+                            delta_color="inverse" if total_registros_criticos > 0 else "off",
+                            help="Registros INVÁLIDOS (sem conta ou valor)"
+                        )
+                    else:
+                        st.metric(
+                            "Registros Críticos", 
+                            "0",
+                            help="Nenhum registro crítico encontrado"
+                        )
             
             if tem_dados_contas:
                 st.markdown("---")
@@ -3126,7 +3241,22 @@ def main():
                 st.subheader("Problemas Críticos de Dados")
                 
                 total_registros_criticos = metrics.get('total_registros_criticos', 0)
+                
+                # Verificar se há realmente registros críticos (não apenas linha de totais)
+                tem_registros_criticos_reais = False
                 if total_registros_criticos > 0:
+                    resumo_ausencias = metrics.get('resumo_ausencias', pd.DataFrame())
+                    if not resumo_ausencias.empty:
+                        # Verificar se algum dos registros não é linha de totais
+                        for idx, row in resumo_ausencias.iterrows():
+                            nome_valor = str(row.get('Nome', '')).upper() if pd.notna(row.get('Nome')) else ''
+                            conta_valor = str(row.get('Conta', '')).upper() if pd.notna(row.get('Conta')) else ''
+                            if not any(palavra in nome_valor for palavra in ['TOTAL', 'SOMA', 'GERAL']) and \
+                               not any(palavra in conta_valor for palavra in ['TOTAL', 'SOMA', 'GERAL']):
+                                tem_registros_criticos_reais = True
+                                break
+                
+                if tem_registros_criticos_reais:
                     st.error(f"🚨 {total_registros_criticos} registros com problemas críticos")
                     
                     resumo_ausencias = metrics.get('resumo_ausencias', pd.DataFrame())
