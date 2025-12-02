@@ -718,7 +718,8 @@ def identificar_cpfs_problematicos(df):
         'cpfs_com_caracteres_invalidos': [],
         'cpfs_com_tamanho_incorreto': [],
         'cpfs_com_nomes_diferentes': [],
-        'cpfs_com_contas_diferentes': []
+        'cpfs_com_contas_diferentes': [],
+        'cpfs_duplicados': []  # CORREÇÃO: Adicionada esta linha
     }
     
     if 'CPF' not in df.columns or df.empty:
@@ -774,7 +775,7 @@ def identificar_cpfs_problematicos(df):
         
         for cpf, grupo in cpfs_duplicados.groupby('CPF'):
             if len(grupo) > 1:
-                problemas['cpfs_duplicados'].append(cpf)
+                problemas['cpfs_duplicados'].append(cpf)  # Agora esta linha funcionará
                 
                 coluna_nome = obter_coluna_nome(grupo)
                 coluna_conta = obter_coluna_conta(grupo)
