@@ -1,4 +1,627 @@
 # app.py - Sistema de Monitoramento de Pagamentos do POT
+# VERSÃO 6.0 - SIMPLIFICADA E ESTÁVEL
+# Mínimo de dependências, máximo de estabilidade
+
+import streamlit as st
+import pandas as pd
+import numpy as np
+from io import BytesIO
+import re
+from datetime import datetime
+
+# Configuração da página Streamlit
+st.set_page_config(
+    page_title="Sistema POT - Monitoramento",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Título principal
+st.title("📊 SISTEMA DE MONITORAMENTO DE PAGAMENTOS - POT")
+st.markdown("---")
+
+# ============================================================================
+# FUNÇÕES BÁSICAS E ROBUSTAS
+# ============================================================================
+
+def limpar_valor_simples(valor):
+    """Converte valores brasileiros para float de forma simples e segura"""
+    if pd.isna(valor) or valor == '':
+        return np.nan
+    
+    try:
+        # Converter para string
+        texto = str(valor).strip()
+        
+        # Remover R$ e espaços
+        texto = texto.replace('R$', '').replace('$', '').strip()
+        
+        # Remover pontos de milhar
+        if '.' in texto and ',' in texto:
+            # Formato: 1.027,18 ou 272.486,06
+            # Remover todos os pontos
+            texto = texto.replace('.', '')
+            # Substituir vírgula por ponto
+            texto = texto.replace(',', '.')
+        elif ',' in texto:
+            # Formato: 1027,18
+            texto = texto.replace(',', '.')
+        
+        # Converter para float
+        return float(texto)
+    
+    except:
+        return np.nan
+
+def processar_arquivo_csv_robusto(arquivo):
+    """Processa CSV de forma robusta e simples"""
+    try:
+        # Ler conteúdo
+        conteudo = arquivo.getvalue().decode('utf-8-sig')
+        
+        # Substituir encoding problemático
+        conteudo = conteudo.encode('utf-8', errors='ignore').decode('utf-8')
+        
+        # Remover linhas problemáticas
+        linhas = conteudo.split('\n')
+        linhas_validas = []
+        
+        for linha in linhas:
+            linha = linha.strip()
+            if linha:
+                # Pular linhas que são apenas totais ou sumários
+                if ';;;;' in linha and 'R$' in linha:
+                    continue
+                linhas_validas.append(linha)
+        
+        if len(linhas_validas) < 2:
+            return None, "Arquivo vazio ou sem dados válidos"
+        
+        # Detectar delimitador
+        primeira_linha = linhas_validas[0]
+        if ';' in primeira_linha:
+            sep = ';'
+        else:
+            sep = ','
+        
+        # Criar DataFrame
+        try:
+            df = pd.read_csv(
+                StringIO('\n'.join(linhas_validas)), 
+                sep=sep, 
+                dtype=str,
+                on_bad_lines='skip'
+            )
+        except:
+            # Tentar método manual para CSV problemático
+            dados = []
+            for linha in linhas_validas:
+                dados.append(linha.split(sep))
+            
+            if len(dados) > 1:
+                df = pd.DataFrame(dados[1:], columns=dados[0])
+            else:
+                return None, "Não foi possível ler o CSV"
+        
+        # Padronizar nomes das colunas
+        df.columns = [str(col).strip().lower().replace(' ', '_') for col in df.columns]
+        
+        # Renomear colunas importantes
+        mapeamento = {
+            'projeto': 'projeto',
+            'nome': 'nome',
+            'valor_pagto': 'valor_pago',
+            'valor_pagamento': 'valor_pago',
+            'valorpagto': 'valor_pago',
+            'data_pagto': 'data',
+            'datapagto': 'data',
+            'agencia': 'agencia',
+            'agência': 'agencia'
+        }
+        
+        for velho, novo in mapeamento.items():
+            if velho in df.columns:
+                df.rename(columns={velho: novo}, inplace=True)
+        
+        # Garantir coluna de valor
+        if 'valor_pago' not in df.columns:
+            # Procurar coluna que tenha 'valor' no nome
+            colunas_valor = [col for col in df.columns if 'valor' in col.lower()]
+            if colunas_valor:
+                df['valor_pago'] = df[colunas_valor[0]]
+            else:
+                df['valor_pago'] = 0
+        
+        # Processar valores monetários
+        if 'valor_pago' in df.columns:
+            df['valor_pago'] = df['valor_pago'].apply(limpar_valor_simples)
+        
+        # Adicionar mês de referência do nome do arquivo
+        nome_arquivo = arquivo.name.upper()
+        meses = {
+            'JAN': 'Janeiro', 'FEV': 'Fevereiro', 'MAR': 'Março',
+            'ABR': 'Abril', 'MAI': 'Maio', 'JUN': 'Junho',
+            'JUL': 'Julho', 'AGO': 'Agosto', 'SET': 'Setembro',
+            'OUT': 'Outubro', 'NOV': 'Novembro', 'DEZ': 'Dezembro'
+        }
+        
+        mes_referencia = 'Não identificado'
+        for sigla, mes in meses.items():
+            if sigla in nome_arquivo:
+                mes_referencia = mes
+                break
+        
+        df['mes_referencia'] = mes_referencia
+        df['arquivo_origem'] = arquivo.name
+        
+        return df, f"✅ Processado: {len(df)} registros ({mes_referencia})"
+    
+    except Exception as e:
+        return None, f"❌ Erro: {str(e)}"
+
+def processar_arquivo_excel_robusto(arquivo):
+    """Processa Excel de forma simples"""
+    try:
+        # Ler Excel
+        df = pd.read_excel(arquivo, dtype=str)
+        
+        # Padronizar colunas
+        df.columns = [str(col).strip().lower().replace(' ', '_') for col in df.columns]
+        
+        # Renomear colunas importantes
+        mapeamento = {
+            'projeto': 'projeto',
+            'nome': 'nome',
+            'valor_pagto': 'valor_pago',
+            'data_pagto': 'data',
+            'agencia': 'agencia'
+        }
+        
+        for velho, novo in mapeamento.items():
+            if velho in df.columns:
+                df.rename(columns={velho: novo}, inplace=True)
+        
+        # Processar valores
+        if 'valor_pago' in df.columns:
+            df['valor_pago'] = df['valor_pago'].apply(limpar_valor_simples)
+        
+        # Adicionar informações
+        df['mes_referencia'] = 'Excel'
+        df['arquivo_origem'] = arquivo.name
+        
+        return df, f"✅ Excel processado: {len(df)} registros"
+    
+    except Exception as e:
+        return None, f"❌ Erro no Excel: {str(e)}"
+
+# ============================================================================
+# FUNÇÕES DE ANÁLISE
+# ============================================================================
+
+def calcular_resumo(df):
+    """Calcula resumo básico dos dados"""
+    resumo = {
+        'total_registros': len(df),
+        'arquivos_unicos': df['arquivo_origem'].nunique() if 'arquivo_origem' in df.columns else 1,
+        'meses_unicos': df['mes_referencia'].nunique() if 'mes_referencia' in df.columns else 1
+    }
+    
+    if 'valor_pago' in df.columns:
+        valores = df['valor_pago'].dropna()
+        if len(valores) > 0:
+            resumo['valor_total'] = float(valores.sum())
+            resumo['valor_medio'] = float(valores.mean())
+            resumo['valor_min'] = float(valores.min())
+            resumo['valor_max'] = float(valores.max())
+        else:
+            resumo['valor_total'] = 0.0
+            resumo['valor_medio'] = 0.0
+    
+    if 'projeto' in df.columns:
+        resumo['projetos_unicos'] = df['projeto'].nunique()
+    
+    return resumo
+
+def gerar_relatorio_mensal(df):
+    """Gera relatório consolidado por mês"""
+    if 'mes_referencia' not in df.columns or 'valor_pago' not in df.columns:
+        return pd.DataFrame()
+    
+    try:
+        relatorio = df.groupby('mes_referencia').agg(
+            registros=('valor_pago', 'count'),
+            valor_total=('valor_pago', 'sum'),
+            valor_medio=('valor_pago', 'mean'),
+            projetos=('projeto', 'nunique') if 'projeto' in df.columns else pd.Series([0])
+        ).round(2)
+        
+        return relatorio.sort_values('valor_total', ascending=False)
+    
+    except:
+        return pd.DataFrame()
+
+def gerar_relatorio_projetos(df):
+    """Gera relatório consolidado por projeto"""
+    if 'projeto' not in df.columns or 'valor_pago' not in df.columns:
+        return pd.DataFrame()
+    
+    try:
+        relatorio = df.groupby('projeto').agg(
+            registros=('valor_pago', 'count'),
+            valor_total=('valor_pago', 'sum'),
+            valor_medio=('valor_pago', 'mean'),
+            meses=('mes_referencia', 'nunique') if 'mes_referencia' in df.columns else pd.Series([0])
+        ).round(2)
+        
+        return relatorio.sort_values('valor_total', ascending=False)
+    
+    except:
+        return pd.DataFrame()
+
+# ============================================================================
+# INTERFACE PRINCIPAL
+# ============================================================================
+
+def main():
+    # Inicializar dados na sessão
+    if 'dados' not in st.session_state:
+        st.session_state.dados = pd.DataFrame()
+    
+    # Sidebar
+    with st.sidebar:
+        st.header("📁 CARREGAR ARQUIVOS")
+        
+        arquivos = st.file_uploader(
+            "Selecione os arquivos",
+            type=['csv', 'txt', 'xlsx', 'xls'],
+            accept_multiple_files=True,
+            help="Arquivos CSV, TXT ou Excel"
+        )
+        
+        st.markdown("---")
+        st.header("⚙️ OPÇÕES")
+        
+        modo = st.radio(
+            "Modo de processamento:",
+            ["Novo processamento", "Acumular dados"]
+        )
+        
+        st.markdown("---")
+        
+        if not st.session_state.dados.empty:
+            st.info(f"""
+            **Dados atuais:**
+            - Registros: {len(st.session_state.dados):,}
+            - Valor total: R$ {st.session_state.dados['valor_pago'].sum():,.2f}
+            - Arquivos: {st.session_state.dados['arquivo_origem'].nunique()}
+            """)
+            
+            if st.button("🧹 Limpar Dados", use_container_width=True):
+                st.session_state.dados = pd.DataFrame()
+                st.rerun()
+    
+    # Área principal
+    if not arquivos:
+        # Tela inicial
+        st.info("👋 **Bem-vindo ao Sistema POT - Versão Estável**")
+        
+        col1, col2 = st.columns([2, 1])
+        
+        with col1:
+            st.markdown("""
+            ### 📋 Como usar:
+            
+            1. **Carregue os arquivos** na barra lateral
+               - CSV, TXT, Excel
+               - Formato brasileiro (R$ 1.027,18)
+            
+            2. **Escolha o modo:**
+               - Novo processamento (substitui)
+               - Acumular dados (adiciona)
+            
+            3. **Analise os resultados:**
+               - Totais gerais
+               - Consolidação por mês
+               - Consolidação por projeto
+            
+            4. **Exporte relatórios**
+            
+            ### 🛡️ Sistema Estável:
+            
+            ✅ **Mínimo de dependências**  
+            ✅ **Processamento robusto**  
+            ✅ **Tratamento de erros**  
+            ✅ **Interface simples**  
+            """)
+        
+        with col2:
+            st.markdown("""
+            ### 📊 Dados esperados:
+            
+            **Colunas importantes:**
+            - Projeto
+            - Nome
+            - Valor Pago
+            - Data
+            - Agência
+            
+            **Formatos aceitos:**
+            - R$ 1.027,18
+            - 1027,18
+            - 1027.18
+            """)
+        
+        return
+    
+    # Processar arquivos
+    st.subheader("🔄 Processando Arquivos")
+    
+    dados_processados = []
+    mensagens = []
+    
+    for arquivo in arquivos:
+        with st.spinner(f"Processando {arquivo.name}..."):
+            if arquivo.name.lower().endswith(('.csv', '.txt')):
+                df, msg = processar_arquivo_csv_robusto(arquivo)
+            elif arquivo.name.lower().endswith(('.xlsx', '.xls')):
+                df, msg = processar_arquivo_excel_robusto(arquivo)
+            else:
+                msg = f"❌ Formato não suportado: {arquivo.name}"
+                df = None
+            
+            if df is not None:
+                dados_processados.append(df)
+                mensagens.append(f"✅ {msg}")
+            else:
+                mensagens.append(f"❌ {msg}")
+    
+    # Mostrar resultados
+    for msg in mensagens:
+        if "✅" in msg:
+            st.success(msg)
+        else:
+            st.error(msg)
+    
+    if not dados_processados:
+        st.error("Nenhum arquivo foi processado com sucesso.")
+        return
+    
+    # Consolidar dados
+    novo_df = pd.concat(dados_processados, ignore_index=True) if dados_processados else pd.DataFrame()
+    
+    # Atualizar dados da sessão
+    if modo == "Novo processamento" or st.session_state.dados.empty:
+        st.session_state.dados = novo_df
+        st.success(f"✅ {len(novo_df)} registros processados")
+    else:
+        st.session_state.dados = pd.concat([st.session_state.dados, novo_df], ignore_index=True)
+        st.success(f"✅ {len(novo_df)} novos registros adicionados. Total: {len(st.session_state.dados)}")
+    
+    df_final = st.session_state.dados
+    
+    # Calcular resumo
+    st.subheader("📈 Resumo Geral")
+    
+    resumo = calcular_resumo(df_final)
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("Total de Registros", f"{resumo['total_registros']:,}")
+    
+    with col2:
+        valor_total = resumo.get('valor_total', 0)
+        st.metric("Valor Total", f"R$ {valor_total:,.2f}")
+    
+    with col3:
+        valor_medio = resumo.get('valor_medio', 0)
+        st.metric("Valor Médio", f"R$ {valor_medio:,.2f}")
+    
+    with col4:
+        arquivos = resumo.get('arquivos_unicos', 0)
+        st.metric("Arquivos", f"{arquivos}")
+    
+    # Tabs para análise
+    tab1, tab2, tab3, tab4 = st.tabs(["📋 Dados", "📅 Por Mês", "🏢 Por Projeto", "💾 Exportar"])
+    
+    with tab1:
+        st.subheader("Dados Processados")
+        
+        # Filtros simples
+        if 'mes_referencia' in df_final.columns:
+            meses = ['Todos'] + sorted(df_final['mes_referencia'].unique().tolist())
+            mes_selecionado = st.selectbox("Filtrar por mês:", meses)
+            
+            if mes_selecionado != 'Todos':
+                df_exibir = df_final[df_final['mes_referencia'] == mes_selecionado]
+            else:
+                df_exibir = df_final
+        else:
+            df_exibir = df_final
+        
+        # Mostrar dados
+        st.dataframe(
+            df_exibir,
+            use_container_width=True,
+            height=300,
+            column_config={
+                "valor_pago": st.column_config.NumberColumn(
+                    "Valor Pago",
+                    format="R$ %.2f"
+                )
+            }
+        )
+        
+        st.info(f"Mostrando {len(df_exibir)} de {len(df_final)} registros")
+    
+    with tab2:
+        st.subheader("Consolidação por Mês")
+        
+        relatorio_mensal = gerar_relatorio_mensal(df_final)
+        
+        if not relatorio_mensal.empty:
+            st.dataframe(
+                relatorio_mensal,
+                use_container_width=True,
+                column_config={
+                    "valor_total": st.column_config.NumberColumn(
+                        "Valor Total",
+                        format="R$ %.2f"
+                    ),
+                    "valor_medio": st.column_config.NumberColumn(
+                        "Valor Médio",
+                        format="R$ %.2f"
+                    )
+                }
+            )
+            
+            # Gráfico simples
+            try:
+                import plotly.express as px
+                
+                fig = px.bar(
+                    relatorio_mensal,
+                    x=relatorio_mensal.index,
+                    y='valor_total',
+                    title='Valor Total por Mês',
+                    labels={'valor_total': 'Valor Total (R$)'},
+                    text=[f'R$ {x:,.0f}' for x in relatorio_mensal['valor_total']]
+                )
+                fig.update_traces(textposition='outside')
+                st.plotly_chart(fig, use_container_width=True)
+            except:
+                st.info("Gráfico não disponível no momento")
+        else:
+            st.info("Não há dados suficientes para consolidação mensal")
+    
+    with tab3:
+        st.subheader("Consolidação por Projeto")
+        
+        relatorio_projetos = gerar_relatorio_projetos(df_final)
+        
+        if not relatorio_projetos.empty:
+            st.dataframe(
+                relatorio_projetos.head(20),  # Limitar a 20 projetos
+                use_container_width=True,
+                height=400,
+                column_config={
+                    "valor_total": st.column_config.NumberColumn(
+                        "Valor Total",
+                        format="R$ %.2f"
+                    ),
+                    "valor_medio": st.column_config.NumberColumn(
+                        "Valor Médio",
+                        format="R$ %.2f"
+                    )
+                }
+            )
+            
+            # Gráfico simples
+            try:
+                import plotly.express as px
+                
+                top_10 = relatorio_projetos.head(10)
+                fig = px.bar(
+                    top_10,
+                    x=top_10.index,
+                    y='valor_total',
+                    title='Top 10 Projetos',
+                    labels={'valor_total': 'Valor Total (R$)'},
+                    text=[f'R$ {x:,.0f}' for x in top_10['valor_total']]
+                )
+                fig.update_traces(textposition='outside')
+                fig.update_layout(xaxis_tickangle=-45)
+                st.plotly_chart(fig, use_container_width=True)
+            except:
+                st.info("Gráfico não disponível no momento")
+        else:
+            st.info("Não há dados de projetos para análise")
+    
+    with tab4:
+        st.subheader("Exportação de Dados")
+        
+        col_exp1, col_exp2, col_exp3 = st.columns(3)
+        
+        with col_exp1:
+            # Exportar dados brutos CSV
+            csv_data = df_final.to_csv(index=False, sep=';', decimal=',')
+            st.download_button(
+                label="📥 Dados Completos (CSV)",
+                data=csv_data,
+                file_name=f"pot_dados_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+        
+        with col_exp2:
+            # Exportar relatório mensal
+            if not relatorio_mensal.empty:
+                csv_mensal = relatorio_mensal.to_csv(sep=';', decimal=',')
+                st.download_button(
+                    label="📅 Relatório Mensal (CSV)",
+                    data=csv_mensal,
+                    file_name=f"pot_mensal_{datetime.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+        
+        with col_exp3:
+            # Exportar relatório de projetos
+            if not relatorio_projetos.empty:
+                csv_projetos = relatorio_projetos.to_csv(sep=';', decimal=',')
+                st.download_button(
+                    label="🏢 Relatório Projetos (CSV)",
+                    data=csv_projetos,
+                    file_name=f"pot_projetos_{datetime.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+        
+        # Exportar tudo em Excel (se possível)
+        try:
+            from io import BytesIO
+            import openpyxl
+            
+            output = BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                df_final.to_excel(writer, sheet_name='DADOS', index=False)
+                if not relatorio_mensal.empty:
+                    relatorio_mensal.to_excel(writer, sheet_name='MENSAL')
+                if not relatorio_projetos.empty:
+                    relatorio_projetos.to_excel(writer, sheet_name='PROJETOS')
+            
+            excel_bytes = output.getvalue()
+            
+            st.download_button(
+                label="📊 Relatório Completo (Excel)",
+                data=excel_bytes,
+                file_name=f"pot_completo_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+        except:
+            st.info("Exportação em Excel não disponível")
+    
+    # Rodapé
+    st.markdown("---")
+    st.caption(f"""
+    ⚙️ Sistema POT - Versão Estável 6.0 | 
+    Data: {datetime.now().strftime('%d/%m/%Y %H:%M')} | 
+    Registros: {len(df_final):,}
+    """)
+
+# ============================================================================
+# EXECUTAR APLICAÇÃO
+# ============================================================================
+if __name__ == "__main__":
+    # Importação condicional para evitar erros
+    try:
+        from io import StringIO
+    except:
+        st.error("Erro de importação. Recarregue a página.")
+    
+    main()# app.py - Sistema de Monitoramento de Pagamentos do POT
 # VERSÃO 5.0 - COMPLETA COM MULTIPLOS ARQUIVOS E CONSOLIDAÇÃO
 # Funcionalidades:
 # 1. Processamento de múltiplos arquivos (CSV, TXT, Excel)
