@@ -1,16 +1,20 @@
+# app.py - Sistema ABAE Análise de Pagamentos
+# Arquivo único completo com todas as dependências
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-from io import StringIO
-import io
+from io import StringIO, BytesIO
 import warnings
 from datetime import datetime
+import sys
 
+# Configurar warnings
 warnings.filterwarnings('ignore')
 
-# Configuração da página
+# Configuração da página Streamlit
 st.set_page_config(
     page_title="Sistema ABAE - Análise de Pagamentos",
     page_icon="📊",
@@ -18,468 +22,879 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# CSS personalizado para melhorar a aparência
-st.markdown("""
-    <style>
-    .main-header {
-        font-size: 2.5rem;
-        color: #1E3A8A;
-        text-align: center;
-        margin-bottom: 2rem;
-    }
-    .sub-header {
-        font-size: 1.5rem;
-        color: #2563EB;
-        margin-top: 2rem;
-        margin-bottom: 1rem;
-    }
-    .metric-card {
-        background-color: #F8FAFC;
-        padding: 1.5rem;
-        border-radius: 10px;
-        border-left: 5px solid #3B82F6;
-        margin-bottom: 1rem;
-    }
-    .success-box {
-        background-color: #D1FAE5;
-        padding: 1rem;
-        border-radius: 8px;
-        border: 1px solid #10B981;
-        margin: 1rem 0;
-    }
-    .info-box {
-        background-color: #DBEAFE;
-        padding: 1rem;
-        border-radius: 8px;
-        border: 1px solid #3B82F6;
-        margin: 1rem 0;
-    }
-    </style>
-""", unsafe_allow_html=True)
-
 # Título principal
-st.markdown('<h1 class="main-header">📊 SISTEMA ABAE - ANÁLISE DE PAGAMENTOS</h1>', unsafe_allow_html=True)
+st.title("📊 SISTEMA ABAE - ANÁLISE DE PAGAMENTOS")
 st.markdown("---")
 
-# Funções de processamento
-def processar_csv(uploaded_file):
-    """Processa o arquivo CSV carregado"""
+# ============================================================================
+# FUNÇÕES DE PROCESSAMENTO DE DADOS
+# ============================================================================
+
+def processar_arquivo(uploaded_file):
+    """
+    Processa arquivo CSV ou Excel carregado pelo usuário.
+    
+    Args:
+        uploaded_file: Arquivo carregado via st.file_uploader
+        
+    Returns:
+        tuple: (DataFrame processado, mensagem de status)
+    """
     try:
-        # Ler o arquivo
-        if uploaded_file.name.endswith('.csv'):
-            # Para CSV
-            content = uploaded_file.getvalue().decode('utf-8')
-            df = pd.read_csv(StringIO(content), sep=';', decimal=',', thousands='.')
+        # Detectar tipo de arquivo
+        if uploaded_file.name.lower().endswith('.csv'):
+            # Processar CSV
+            try:
+                # Tentar UTF-8 primeiro
+                content = uploaded_file.getvalue().decode('utf-8')
+            except UnicodeDecodeError:
+                # Tentar Latin-1 se UTF-8 falhar
+                content = uploaded_file.getvalue().decode('latin-1')
+            
+            # Ler CSV com separador ; e decimal brasileiro
+            df = pd.read_csv(
+                StringIO(content), 
+                sep=';', 
+                decimal=',', 
+                thousands='.',
+                dtype=str  # Ler tudo como string inicialmente
+            )
+        
+        elif uploaded_file.name.lower().endswith(('.xlsx', '.xls')):
+            # Processar Excel
+            df = pd.read_excel(uploaded_file, dtype=str)
+        
         else:
-            # Para Excel
-            df = pd.read_excel(uploaded_file)
+            return None, "❌ Formato de arquivo não suportado. Use CSV ou Excel."
         
-        # Limpar nomes das colunas
-        df.columns = [col.strip() for col in df.columns]
+        # ====================================================================
+        # PASSO 1: PADRONIZAR NOMES DAS COLUNAS
+        # ====================================================================
+        col_rename_map = {}
+        for col in df.columns:
+            col_str = str(col).strip()
+            col_lower = col_str.lower()
+            
+            # Mapear para nomes padronizados
+            if 'ordem' in col_lower:
+                col_rename_map[col] = 'Ordem'
+            elif 'projeto' in col_lower:
+                col_rename_map[col] = 'Projeto'
+            elif any(x in col_lower for x in ['cartão', 'cartao', 'card']):
+                col_rename_map[col] = 'Num Cartao'
+            elif 'nome' in col_lower:
+                col_rename_map[col] = 'Nome'
+            elif 'distrito' in col_lower:
+                col_rename_map[col] = 'Distrito'
+            elif any(x in col_lower for x in ['agencia', 'agência']):
+                col_rename_map[col] = 'Agencia'
+            elif 'rg' in col_lower:
+                col_rename_map[col] = 'RG'
+            elif 'valor' in col_lower and 'total' in col_lower:
+                col_rename_map[col] = 'Valor Total'
+            elif 'valor' in col_lower and 'desconto' in col_lower:
+                col_rename_map[col] = 'Valor Desconto'
+            elif 'valor' in col_lower and 'pagto' in col_lower:
+                col_rename_map[col] = 'Valor Pagto'
+            elif 'data' in col_lower and 'pagto' in col_lower:
+                col_rename_map[col] = 'Data Pagto'
+            elif 'valor' in col_lower and 'dia' in col_lower:
+                col_rename_map[col] = 'Valor Dia'
+            elif any(x in col_lower for x in ['dias', 'apagar']):
+                col_rename_map[col] = 'Dias a apagar'
+            elif 'cpf' in col_lower:
+                col_rename_map[col] = 'CPF'
+            elif any(x in col_lower for x in ['gerenciadora', 'gestora']):
+                col_rename_map[col] = 'Gerenciadora'
         
-        # Converter colunas monetárias
+        # Aplicar renomeação
+        df = df.rename(columns=col_rename_map)
+        
+        # ====================================================================
+        # PASSO 2: CONVERTER COLUNAS MONETÁRIAS
+        # ====================================================================
         colunas_monetarias = ['Valor Total', 'Valor Desconto', 'Valor Pagto', 'Valor Dia']
         
         for coluna in colunas_monetarias:
             if coluna in df.columns:
-                # Remover R$, pontos e substituir vírgula por ponto
-                df[coluna] = df[coluna].astype(str).str.replace('R\$', '', regex=True)
-                df[coluna] = df[coluna].str.replace('.', '', regex=False)
-                df[coluna] = df[coluna].str.replace(',', '.', regex=False)
+                # Garantir que é string
+                df[coluna] = df[coluna].astype(str)
+                
+                # Remover caracteres não numéricos (manter números, ponto e vírgula)
+                df[coluna] = df[coluna].str.replace('R\$', '', regex=True)
+                df[coluna] = df[coluna].str.replace('$', '', regex=False)
+                df[coluna] = df[coluna].str.replace(' ', '', regex=False)
+                
+                # Substituir ponto de milhar (remover) e vírgula decimal (substituir por ponto)
+                df[coluna] = df[coluna].apply(lambda x: str(x).replace('.', '').replace(',', '.') 
+                                             if pd.notna(x) else x)
+                
+                # Converter para numérico
                 df[coluna] = pd.to_numeric(df[coluna], errors='coerce')
         
-        # Converter outras colunas numéricas
+        # ====================================================================
+        # PASSO 3: CONVERTER OUTRAS COLUNAS NUMÉRICAS
+        # ====================================================================
         if 'Dias a apagar' in df.columns:
             df['Dias a apagar'] = pd.to_numeric(df['Dias a apagar'], errors='coerce')
         
+        if 'Ordem' in df.columns:
+            df['Ordem'] = pd.to_numeric(df['Ordem'], errors='coerce')
+        
+        if 'Num Cartao' in df.columns:
+            df['Num Cartao'] = pd.to_numeric(df['Num Cartao'], errors='coerce')
+        
+        # ====================================================================
+        # PASSO 4: CONVERTER DATAS
+        # ====================================================================
+        if 'Data Pagto' in df.columns:
+            # Tentar múltiplos formatos de data
+            for fmt in ['%d/%m/%Y', '%d-%m-%Y', '%Y-%m-%d', '%d/%m/%y', '%d-%m-%y']:
+                try:
+                    df['Data Pagto'] = pd.to_datetime(df['Data Pagto'], format=fmt, errors='coerce')
+                    break
+                except:
+                    continue
+            
+            # Se nenhum formato específico funcionar, tentar inferência automática
+            if df['Data Pagto'].dtype == 'object':
+                df['Data Pagto'] = pd.to_datetime(df['Data Pagto'], errors='coerce')
+        
+        # ====================================================================
+        # PASSO 5: TRATAR VALORES NULOS E ESPAÇOS
+        # ====================================================================
+        # Colunas de texto
+        colunas_texto = ['Nome', 'Projeto', 'Gerenciadora', 'Agencia', 'RG', 'CPF']
+        for col in colunas_texto:
+            if col in df.columns:
+                df[col] = df[col].astype(str).str.strip()
+                df[col] = df[col].replace({'nan': '', 'None': '', 'NaT': ''})
+        
+        # Converter agência para string (mesmo sendo numérica, manter como texto para agrupamento)
         if 'Agencia' in df.columns:
             df['Agencia'] = df['Agencia'].astype(str).str.strip()
-        
-        if 'Data Pagto' in df.columns:
-            df['Data Pagto'] = pd.to_datetime(df['Data Pagto'], format='%d/%m/%Y', errors='coerce')
         
         return df, "✅ Arquivo processado com sucesso!"
     
     except Exception as e:
-        return None, f"❌ Erro ao processar arquivo: {str(e)}"
+        error_msg = f"❌ Erro ao processar arquivo: {str(e)}"
+        return None, error_msg
 
-def calcular_metricas(df):
-    """Calcula métricas principais"""
+# ============================================================================
+# FUNÇÕES DE ANÁLISE E RELATÓRIOS
+# ============================================================================
+
+def calcular_metricas_principais(df):
+    """
+    Calcula métricas principais do DataFrame.
+    
+    Args:
+        df: DataFrame processado
+        
+    Returns:
+        dict: Dicionário com métricas
+    """
     metricas = {}
     
-    if df is not None and not df.empty:
+    try:
         metricas['total_registros'] = len(df)
-        metricas['valor_total_pago'] = df['Valor Pagto'].sum() if 'Valor Pagto' in df.columns else 0
-        metricas['valor_medio_pago'] = df['Valor Pagto'].mean() if 'Valor Pagto' in df.columns else 0
-        metricas['total_agencias'] = df['Agencia'].nunique() if 'Agencia' in df.columns else 0
+        
+        if 'Valor Pagto' in df.columns:
+            metricas['valor_total'] = df['Valor Pagto'].sum()
+            metricas['valor_medio'] = df['Valor Pagto'].mean()
+            metricas['valor_min'] = df['Valor Pagto'].min()
+            metricas['valor_max'] = df['Valor Pagto'].max()
+            metricas['valor_std'] = df['Valor Pagto'].std()
+        
+        if 'Agencia' in df.columns:
+            metricas['total_agencias'] = df['Agencia'].nunique()
         
         if 'Gerenciadora' in df.columns:
-            gerenciadoras = df['Gerenciadora'].value_counts()
-            metricas['gerenciadoras'] = gerenciadoras.to_dict()
+            metricas['total_gerenciadoras'] = df['Gerenciadora'].nunique()
+            distrib_gerenciadora = df['Gerenciadora'].value_counts()
+            metricas['gerenciadora_principal'] = distrib_gerenciadora.index[0] if len(distrib_gerenciadora) > 0 else 'N/A'
+            metricas['total_vista'] = distrib_gerenciadora.get('VISTA', 0)
+            metricas['total_rede'] = distrib_gerenciadora.get('REDE CIDAD�', 0)
+        
+        if 'Dias a apagar' in df.columns:
+            metricas['dias_medio'] = df['Dias a apagar'].mean()
+            metricas['dias_total'] = df['Dias a apagar'].sum()
+        
+        if 'Valor Dia' in df.columns:
+            metricas['valor_dia_medio'] = df['Valor Dia'].mean()
         
         if 'Projeto' in df.columns:
             metricas['projeto_principal'] = df['Projeto'].mode()[0] if not df['Projeto'].mode().empty else 'N/A'
     
+    except Exception as e:
+        st.error(f"Erro ao calcular métricas: {e}")
+    
     return metricas
 
-# Sidebar - Upload e Controles
-with st.sidebar:
-    st.markdown("## 📁 Upload de Arquivo")
+def gerar_relatorio_agencia(df):
+    """
+    Gera relatório consolidado por agência.
     
-    uploaded_file = st.file_uploader(
-        "Carregue seu arquivo CSV ou Excel",
-        type=['csv', 'xlsx', 'xls'],
-        help="Arquivos devem conter as colunas: Ordem, Projeto, Num Cartao, Nome, Agencia, Valor Pagto, etc."
-    )
+    Args:
+        df: DataFrame processado
+        
+    Returns:
+        DataFrame: Relatório por agência
+    """
+    if 'Agencia' not in df.columns or 'Valor Pagto' not in df.columns:
+        return pd.DataFrame()
     
-    st.markdown("---")
-    st.markdown("## ⚙️ Configurações")
+    try:
+        relatorio = df.groupby('Agencia').agg({
+            'Nome': 'count',
+            'Valor Pagto': ['sum', 'mean', 'min', 'max', 'std'],
+            'Dias a apagar': 'mean' if 'Dias a apagar' in df.columns else None,
+            'Valor Dia': 'mean' if 'Valor Dia' in df.columns else None
+        }).round(2)
+        
+        # Simplificar nomes das colunas
+        relatorio.columns = ['Qtd Beneficiários', 'Valor Total', 'Valor Médio', 
+                            'Valor Mínimo', 'Valor Máximo', 'Desvio Padrão']
+        
+        # Adicionar colunas extras se existirem
+        col_index = 6
+        if 'Dias a apagar' in df.columns:
+            relatorio.insert(col_index, 'Dias Médios', df.groupby('Agencia')['Dias a apagar'].mean().round(2))
+            col_index += 1
+        
+        if 'Valor Dia' in df.columns:
+            relatorio.insert(col_index, 'Valor Dia Médio', df.groupby('Agencia')['Valor Dia'].mean().round(2))
+        
+        return relatorio.sort_values('Valor Total', ascending=False)
     
-    show_raw_data = st.checkbox("Mostrar dados brutos", value=False)
-    show_analytics = st.checkbox("Mostrar análises detalhadas", value=True)
-    show_charts = st.checkbox("Mostrar gráficos", value=True)
-    
-    st.markdown("---")
-    st.markdown("## 📊 Filtros")
-    
-    # Filtros dinâmicos
-    if uploaded_file:
-        try:
-            df, _ = processar_csv(uploaded_file)
-            
-            if df is not None:
-                # Filtro por Agência
-                if 'Agencia' in df.columns:
-                    agencias = sorted(df['Agencia'].dropna().unique())
-                    selected_agencias = st.multiselect(
-                        "Filtrar por Agência:",
-                        options=agencias,
-                        default=agencias[:5] if len(agencias) > 5 else agencias
-                    )
-                
-                # Filtro por Gerenciadora
-                if 'Gerenciadora' in df.columns:
-                    gerenciadoras = sorted(df['Gerenciadora'].dropna().unique())
-                    selected_gerenciadoras = st.multiselect(
-                        "Filtrar por Gerenciadora:",
-                        options=gerenciadoras,
-                        default=gerenciadoras
-                    )
-                
-                # Filtro por valor mínimo
-                if 'Valor Pagto' in df.columns:
-                    min_valor = float(df['Valor Pagto'].min())
-                    max_valor = float(df['Valor Pagto'].max())
-                    valor_range = st.slider(
-                        "Faixa de Valor Pago:",
-                        min_value=min_valor,
-                        max_value=max_valor,
-                        value=(min_valor, max_valor)
-                    )
-        except:
-            pass
+    except Exception as e:
+        st.error(f"Erro ao gerar relatório por agência: {e}")
+        return pd.DataFrame()
 
-# Área principal do aplicativo
-if uploaded_file is None:
-    st.markdown("""
-    <div class="info-box">
-    <h3>👋 Bem-vindo ao Sistema ABAE!</h3>
-    <p>Este sistema foi desenvolvido para análise de pagamentos do projeto ABAE.</p>
-    <p><strong>Para começar:</strong></p>
-    <ol>
-        <li>Use a barra lateral à esquerda para carregar seu arquivo</li>
-        <li>O sistema aceita arquivos CSV ou Excel</li>
-        <li>Após o upload, as análises serão geradas automaticamente</li>
-    </ol>
-    <p><strong>Estrutura esperada do arquivo:</strong></p>
-    <ul>
-        <li>Ordem</li>
-        <li>Projeto</li>
-        <li>Num Cartao</li>
-        <li>Nome</li>
-        <li>Agencia</li>
-        <li>Valor Total</li>
-        <li>Valor Pagto</li>
-        <li>Valor Dia</li>
-        <li>Dias a apagar</li>
-        <li>Gerenciadora</li>
-    </ul>
-    </div>
-    """, unsafe_allow_html=True)
+def gerar_relatorio_gerenciadora(df):
+    """
+    Gera relatório consolidado por gerenciadora.
     
-    # Exemplo de como os dados devem estar formatados
-    st.markdown("### 📋 Exemplo de Formato dos Dados")
-    exemplo_data = {
-        'Ordem': [1, 2, 3],
-        'Projeto': ['BUSCA ATIVA', 'BUSCA ATIVA', 'BUSCA ATIVA'],
-        'Num Cartao': [14735, 130329, 152979],
-        'Nome': ['Vanessa Falco Chaves', 'Erica Claudia Albano', 'Rosemary De Moraes Alves'],
-        'Agencia': ['7025', '1549', '6969'],
-        'Valor Total': ['R$ 1.593,90', 'R$ 1.593,90', 'R$ 1.593,90'],
-        'Valor Pagto': ['R$ 1.593,90', 'R$ 1.593,90', 'R$ 1.593,90'],
-        'Valor Dia': ['R$ 53,13', 'R$ 53,13', 'R$ 53,13'],
-        'Dias a apagar': [30, 30, 30],
-        'Gerenciadora': ['VISTA', 'VISTA', 'VISTA']
-    }
-    st.dataframe(pd.DataFrame(exemplo_data), use_container_width=True)
+    Args:
+        df: DataFrame processado
+        
+    Returns:
+        DataFrame: Relatório por gerenciadora
+    """
+    if 'Gerenciadora' not in df.columns or 'Valor Pagto' not in df.columns:
+        return pd.DataFrame()
+    
+    try:
+        relatorio = df.groupby('Gerenciadora').agg({
+            'Nome': 'count',
+            'Valor Pagto': ['sum', 'mean', 'min', 'max'],
+            'Dias a apagar': 'mean' if 'Dias a apagar' in df.columns else None,
+            'Agencia': 'nunique'
+        }).round(2)
+        
+        # Simplificar nomes das colunas
+        relatorio.columns = ['Qtd Beneficiários', 'Valor Total', 'Valor Médio', 
+                            'Valor Mínimo', 'Valor Máximo', 'Dias Médios', 'Qtd Agências']
+        
+        return relatorio.sort_values('Valor Total', ascending=False)
+    
+    except Exception as e:
+        st.error(f"Erro ao gerar relatório por gerenciadora: {e}")
+        return pd.DataFrame()
 
-else:
-    # Processar arquivo
-    with st.spinner('Processando arquivo...'):
-        df, message = processar_csv(uploaded_file)
+# ============================================================================
+# FUNÇÕES DE VISUALIZAÇÃO (GRÁFICOS)
+# ============================================================================
+
+def criar_grafico_distribuicao_valores(df):
+    """
+    Cria histograma da distribuição de valores.
     
-    if df is not None:
-        st.markdown(f'<div class="success-box">{message}</div>', unsafe_allow_html=True)
+    Args:
+        df: DataFrame processado
         
-        # Métricas principais
-        st.markdown('<h2 class="sub-header">📈 Métricas Principais</h2>', unsafe_allow_html=True)
+    Returns:
+        plotly.graph_objects.Figure: Gráfico de histograma
+    """
+    if 'Valor Pagto' not in df.columns:
+        return None
+    
+    try:
+        fig = px.histogram(
+            df,
+            x='Valor Pagto',
+            nbins=30,
+            title='Distribuição de Valores Pagos',
+            labels={'Valor Pagto': 'Valor Pago (R$)'},
+            color_discrete_sequence=['#3366CC']
+        )
         
-        col1, col2, col3, col4 = st.columns(4)
+        fig.update_layout(
+            xaxis_title='Valor Pago (R$)',
+            yaxis_title='Quantidade de Beneficiários',
+            bargap=0.1,
+            showlegend=False
+        )
         
-        with col1:
-            st.metric(
-                label="Total de Registros",
-                value=f"{len(df):,}",
-                help="Número total de beneficiários"
+        return fig
+    
+    except Exception as e:
+        st.error(f"Erro ao criar gráfico de distribuição: {e}")
+        return None
+
+def criar_grafico_top_agencias(df, top_n=10):
+    """
+    Cria gráfico de barras das top agências.
+    
+    Args:
+        df: DataFrame processado
+        top_n: Número de agências para mostrar
+        
+    Returns:
+        plotly.graph_objects.Figure: Gráfico de barras
+    """
+    if 'Agencia' not in df.columns or 'Valor Pagto' not in df.columns:
+        return None
+    
+    try:
+        # Calcular totais por agência
+        agencia_totals = df.groupby('Agencia')['Valor Pagto'].sum().sort_values(ascending=False).head(top_n)
+        
+        fig = go.Figure(data=[
+            go.Bar(
+                x=agencia_totals.index,
+                y=agencia_totals.values,
+                text=[f'R$ {val:,.2f}' for val in agencia_totals.values],
+                textposition='auto',
+                marker_color='#4CAF50'
             )
-        
-        with col2:
-            valor_total = df['Valor Pagto'].sum() if 'Valor Pagto' in df.columns else 0
-            st.metric(
-                label="Valor Total Pago",
-                value=f"R$ {valor_total:,.2f}",
-                help="Soma de todos os pagamentos"
-            )
-        
-        with col3:
-            valor_medio = df['Valor Pagto'].mean() if 'Valor Pagto' in df.columns else 0
-            st.metric(
-                label="Valor Médio",
-                value=f"R$ {valor_medio:,.2f}",
-                help="Valor médio por beneficiário"
-            )
-        
-        with col4:
-            total_agencias = df['Agencia'].nunique() if 'Agencia' in df.columns else 0
-            st.metric(
-                label="Agências Únicas",
-                value=f"{total_agencias}",
-                help="Número de agências diferentes"
-            )
-        
-        # Abas para diferentes análises
-        tab1, tab2, tab3, tab4, tab5 = st.tabs([
-            "📋 Dados Brutos", 
-            "🏢 Análise por Agência", 
-            "🏦 Por Gerenciadora", 
-            "👥 Beneficiários", 
-            "📊 Gráficos"
         ])
         
-        with tab1:
-            if show_raw_data:
-                st.markdown("### Dados Completos")
-                st.dataframe(df, use_container_width=True)
-                
-                # Estatísticas descritivas
-                st.markdown("### Estatísticas Descritivas")
-                if 'Valor Pagto' in df.columns:
-                    st.dataframe(df['Valor Pagto'].describe(), use_container_width=True)
-            
-        with tab2:
-            if 'Agencia' in df.columns:
-                st.markdown("### Análise por Agência")
-                
-                # Agrupar por agência
-                agencia_stats = df.groupby('Agencia').agg({
-                    'Nome': 'count',
-                    'Valor Pagto': ['sum', 'mean', 'min', 'max'],
-                    'Dias a apagar': 'mean' if 'Dias a apagar' in df.columns else None
-                }).round(2)
-                
-                # Renomear colunas
-                agencia_stats.columns = ['Total Beneficiários', 'Valor Total', 'Valor Médio', 'Valor Mínimo', 'Valor Máximo']
-                if 'Dias a apagar' in df.columns:
-                    agencia_stats['Dias Médios'] = df.groupby('Agencia')['Dias a apagar'].mean().round(2)
-                
-                st.dataframe(agencia_stats.sort_values('Valor Total', ascending=False), use_container_width=True)
-                
-                # Top 10 agências
-                st.markdown("#### Top 10 Agências por Valor Total")
-                top_10 = agencia_stats.nlargest(10, 'Valor Total')
-                st.dataframe(top_10, use_container_width=True)
+        fig.update_layout(
+            title=f'Top {top_n} Agências por Valor Total',
+            xaxis_title='Agência',
+            yaxis_title='Valor Total (R$)',
+            xaxis_tickangle=-45
+        )
         
-        with tab3:
-            if 'Gerenciadora' in df.columns:
-                st.markdown("### Análise por Gerenciadora")
-                
-                # Agrupar por gerenciadora
-                gerenciadora_stats = df.groupby('Gerenciadora').agg({
-                    'Nome': 'count',
-                    'Valor Pagto': ['sum', 'mean'],
-                    'Dias a apagar': 'mean' if 'Dias a apagar' in df.columns else None
-                }).round(2)
-                
-                gerenciadora_stats.columns = ['Total Beneficiários', 'Valor Total', 'Valor Médio']
-                if 'Dias a apagar' in df.columns:
-                    gerenciadora_stats['Dias Médios'] = df.groupby('Gerenciadora')['Dias a apagar'].mean().round(2)
-                
-                st.dataframe(gerenciadora_stats, use_container_width=True)
-                
-                # Gráfico de pizza
-                if show_charts:
-                    fig = px.pie(
-                        values=gerenciadora_stats['Total Beneficiários'],
-                        names=gerenciadora_stats.index,
-                        title='Distribuição por Gerenciadora',
-                        hole=0.3
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
+        return fig
+    
+    except Exception as e:
+        st.error(f"Erro ao criar gráfico de top agências: {e}")
+        return None
+
+def criar_grafico_pizza_gerenciadora(df):
+    """
+    Cria gráfico de pizza por gerenciadora.
+    
+    Args:
+        df: DataFrame processado
         
-        with tab4:
-            st.markdown("### Análise de Beneficiários")
-            
-            # Top beneficiários por valor
-            if 'Valor Pagto' in df.columns and 'Nome' in df.columns:
-                top_beneficiarios = df.nlargest(10, 'Valor Pagto')[['Nome', 'Valor Pagto', 'Agencia', 'Gerenciadora']]
-                st.markdown("#### Top 10 Beneficiários (Maior Valor)")
-                st.dataframe(top_beneficiarios, use_container_width=True)
-            
-            # Distribuição de valores
-            if 'Valor Pagto' in df.columns:
-                st.markdown("#### Distribuição de Valores Pagos")
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    fig1 = px.histogram(
-                        df, 
-                        x='Valor Pagto',
-                        nbins=20,
-                        title='Histograma de Valores',
-                        labels={'Valor Pagto': 'Valor Pago (R$)'}
-                    )
-                    st.plotly_chart(fig1, use_container_width=True)
-                
-                with col2:
-                    fig2 = px.box(
-                        df,
-                        y='Valor Pagto',
-                        title='Box Plot - Valores Pagos',
-                        labels={'Valor Pagto': 'Valor Pago (R$)'}
-                    )
-                    st.plotly_chart(fig2, use_container_width=True)
+    Returns:
+        plotly.graph_objects.Figure: Gráfico de pizza
+    """
+    if 'Gerenciadora' not in df.columns:
+        return None
+    
+    try:
+        contagem = df['Gerenciadora'].value_counts()
         
-        with tab5:
-            if show_charts:
-                st.markdown("### Visualizações Gráficas")
-                
-                # Gráfico 1: Top agências
-                if 'Agencia' in df.columns and 'Valor Pagto' in df.columns:
-                    top_agencias_chart = df.groupby('Agencia')['Valor Pagto'].sum().nlargest(10)
-                    fig1 = px.bar(
-                        x=top_agencias_chart.index.astype(str),
-                        y=top_agencias_chart.values,
-                        title='Top 10 Agências por Valor Total',
-                        labels={'x': 'Agência', 'y': 'Valor Total (R$)'}
-                    )
-                    fig1.update_traces(
-                        text=[f'R$ {val:,.2f}' for val in top_agencias_chart.values],
-                        textposition='auto'
-                    )
-                    st.plotly_chart(fig1, use_container_width=True)
-                
-                # Gráfico 2: Dispersão
-                if 'Valor Pagto' in df.columns and 'Dias a apagar' in df.columns:
-                    fig2 = px.scatter(
-                        df,
-                        x='Dias a apagar',
-                        y='Valor Pagto',
-                        title='Relação: Dias vs Valor',
-                        labels={'Dias a apagar': 'Dias a Pagar', 'Valor Pagto': 'Valor Pago (R$)'},
-                        color='Gerenciadora' if 'Gerenciadora' in df.columns else None
-                    )
-                    st.plotly_chart(fig2, use_container_width=True)
-                
-                # Gráfico 3: Heatmap de correlação
-                numeric_cols = df.select_dtypes(include=[np.number]).columns
-                if len(numeric_cols) > 1:
-                    corr_matrix = df[numeric_cols].corr()
-                    fig3 = px.imshow(
-                        corr_matrix,
-                        title='Matriz de Correlação',
-                        text_auto=True,
-                        aspect="auto"
-                    )
-                    st.plotly_chart(fig3, use_container_width=True)
+        fig = go.Figure(data=[
+            go.Pie(
+                labels=contagem.index,
+                values=contagem.values,
+                hole=0.3,
+                textinfo='label+percent',
+                marker_colors=px.colors.qualitative.Set3
+            )
+        ])
         
-        # Seção de exportação
+        fig.update_layout(
+            title='Distribuição por Gerenciadora'
+        )
+        
+        return fig
+    
+    except Exception as e:
+        st.error(f"Erro ao criar gráfico de pizza: {e}")
+        return None
+
+def criar_grafico_dispersao_dias_valor(df):
+    """
+    Cria gráfico de dispersão entre dias e valores.
+    
+    Args:
+        df: DataFrame processado
+        
+    Returns:
+        plotly.graph_objects.Figure: Gráfico de dispersão
+    """
+    if 'Dias a apagar' not in df.columns or 'Valor Pagto' not in df.columns:
+        return None
+    
+    try:
+        fig = px.scatter(
+            df,
+            x='Dias a apagar',
+            y='Valor Pagto',
+            title='Relação: Dias a Pagar vs Valor Pago',
+            labels={
+                'Dias a apagar': 'Dias a Pagar',
+                'Valor Pagto': 'Valor Pago (R$)'
+            },
+            color='Gerenciadora' if 'Gerenciadora' in df.columns else None,
+            opacity=0.7
+        )
+        
+        fig.update_traces(marker=dict(size=8))
+        
+        return fig
+    
+    except Exception as e:
+        st.error(f"Erro ao criar gráfico de dispersão: {e}")
+        return None
+
+# ============================================================================
+# FUNÇÕES DE EXPORTAÇÃO
+# ============================================================================
+
+def exportar_para_excel(df, relatorio_agencia, relatorio_gerenciadora):
+    """
+    Exporta dados para arquivo Excel com múltiplas abas.
+    
+    Args:
+        df: DataFrame principal
+        relatorio_agencia: Relatório por agência
+        relatorio_gerenciadora: Relatório por gerenciadora
+        
+    Returns:
+        bytes: Dados do arquivo Excel em bytes
+    """
+    output = BytesIO()
+    
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        # Aba 1: Dados completos
+        df.to_excel(writer, sheet_name='Dados Completos', index=False)
+        
+        # Aba 2: Relatório por agência
+        if not relatorio_agencia.empty:
+            relatorio_agencia.to_excel(writer, sheet_name='Por Agência')
+        
+        # Aba 3: Relatório por gerenciadora
+        if not relatorio_gerenciadora.empty:
+            relatorio_gerenciadora.to_excel(writer, sheet_name='Por Gerenciadora')
+        
+        # Aba 4: Resumo estatístico
+        if 'Valor Pagto' in df.columns:
+            resumo_stats = df['Valor Pagto'].describe().to_frame().T
+            resumo_stats.to_excel(writer, sheet_name='Resumo Estatístico')
+        
+        # Aba 5: Top beneficiários
+        if 'Nome' in df.columns and 'Valor Pagto' in df.columns:
+            top_benef = df.nlargest(20, 'Valor Pagto')[['Nome', 'Valor Pagto', 'Agencia', 'Gerenciadora']]
+            top_benef.to_excel(writer, sheet_name='Top Beneficiários', index=False)
+    
+    return output.getvalue()
+
+# ============================================================================
+# INTERFACE PRINCIPAL DO STREAMLIT
+# ============================================================================
+
+def main():
+    """
+    Função principal que executa a aplicação Streamlit.
+    """
+    
+    # ========================================================================
+    # SIDEBAR - CONFIGURAÇÕES E UPLOAD
+    # ========================================================================
+    with st.sidebar:
+        st.header("📁 CONFIGURAÇÃO DO SISTEMA")
+        
+        # Upload do arquivo
+        uploaded_file = st.file_uploader(
+            "Carregue o arquivo de dados",
+            type=['csv', 'xlsx'],
+            help="Suporta CSV (separado por ;) ou Excel"
+        )
+        
         st.markdown("---")
-        st.markdown('<h2 class="sub-header">💾 Exportação de Dados</h2>', unsafe_allow_html=True)
         
-        col1, col2, col3 = st.columns(3)
+        # Opções de visualização
+        st.header("⚙️ OPÇÕES DE VISUALIZAÇÃO")
+        mostrar_graficos = st.checkbox("Mostrar gráficos", value=True)
+        mostrar_dados_brutos = st.checkbox("Mostrar dados completos", value=False)
+        top_n_agencias = st.slider("Top N agências nos gráficos", 5, 20, 10)
+        
+        st.markdown("---")
+        
+        # Informações do sistema
+        st.header("ℹ️ INFORMAÇÕES")
+        st.info(
+            "**Sistema ABAE - Análise de Pagamentos**\n\n"
+            "Versão: 2.0\n"
+            f"Data: {datetime.now().strftime('%d/%m/%Y')}\n"
+            "Desenvolvido para análise de dados do projeto ABAE"
+        )
+    
+    # ========================================================================
+    # ÁREA PRINCIPAL - CONTEÚDO DINÂMICO
+    # ========================================================================
+    
+    # Caso 1: Nenhum arquivo carregado
+    if uploaded_file is None:
+        st.info("👋 **Bem-vindo ao Sistema ABAE!**")
+        
+        col1, col2 = st.columns([2, 1])
         
         with col1:
-            # Exportar para CSV
-            csv = df.to_csv(index=False, sep=';', decimal=',')
-            st.download_button(
-                label="📥 Baixar CSV Processado",
-                data=csv,
-                file_name="dados_abae_processados.csv",
-                mime="text/csv"
-            )
+            st.markdown("""
+            ### 📋 Como usar o sistema:
+            
+            1. **Carregue seu arquivo** usando a barra lateral à esquerda
+            2. **Formatos suportados:**
+               - CSV (separado por ponto-e-vírgula)
+               - Excel (.xlsx, .xls)
+            
+            3. **Estrutura esperada do arquivo:**
+               - Ordem;Projeto;Num Cartao;Nome;Distrito;Agencia;RG
+               - Valor Total;Valor Desconto;Valor Pagto;Data Pagto
+               - Valor Dia;Dias a apagar;CPF;Gerenciadora
+            
+            4. **Formato dos valores monetários:**
+               - R$ 1.593,90 (vírgula como decimal)
+               - Sistema converte automaticamente
+            """)
         
         with col2:
-            # Exportar resumo por agência
-            if 'Agencia' in df.columns:
-                agencia_summary = df.groupby('Agencia')['Valor Pagto'].agg(['count', 'sum', 'mean']).round(2)
-                agencia_summary_csv = agencia_summary.to_csv(sep=';', decimal=',')
-                st.download_button(
-                    label="📥 Resumo por Agência",
-                    data=agencia_summary_csv,
-                    file_name="resumo_agencias.csv",
-                    mime="text/csv"
-                )
-        
-        with col3:
-            # Exportar para Excel
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                df.to_excel(writer, sheet_name='Dados Completos', index=False)
-                
-                if 'Agencia' in df.columns:
-                    agencia_stats.to_excel(writer, sheet_name='Por Agencia')
-                
-                if 'Gerenciadora' in df.columns:
-                    gerenciadora_stats.to_excel(writer, sheet_name='Por Gerenciadora')
+            st.markdown("""
+            ### 🚀 Funcionalidades:
             
-            excel_data = output.getvalue()
+            ✅ **Processamento automático**
+            ✅ **Análise por agência**
+            ✅ **Análise por gerenciadora**
+            ✅ **Gráficos interativos**
+            ✅ **Exportação para Excel**
+            ✅ **Filtros dinâmicos**
+            ✅ **Relatórios detalhados**
+            """)
+        
+        # Exemplo de dados
+        with st.expander("📝 **Exemplo de dados (formato esperado)**"):
+            exemplo_data = {
+                'Ordem': [1, 2, 3],
+                'Projeto': ['BUSCA ATIVA', 'BUSCA ATIVA', 'BUSCA ATIVA'],
+                'Num Cartao': [14735, 130329, 152979],
+                'Nome': ['Vanessa Falco Chaves', 'Erica Claudia Albano', 'Rosemary De Moraes Alves'],
+                'Distrito': [0, 0, 0],
+                'Agencia': ['7025', '1549', '6969'],
+                'RG': ['438455885', '445934864', '586268327'],
+                'Valor Total': ['R$ 1.593,90', 'R$ 1.593,90', 'R$ 1.593,90'],
+                'Valor Desconto': ['R$ 0,00', 'R$ 0,00', 'R$ 0,00'],
+                'Valor Pagto': ['R$ 1.593,90', 'R$ 1.593,90', 'R$ 1.593,90'],
+                'Data Pagto': ['20/10/2025', '20/10/2025', '20/10/2025'],
+                'Valor Dia': ['R$ 53,13', 'R$ 53,13', 'R$ 53,13'],
+                'Dias a apagar': [30, 30, 30],
+                'CPF': ['30490002870', '', '8275372801'],
+                'Gerenciadora': ['VISTA', 'VISTA', 'VISTA']
+            }
+            
+            st.dataframe(pd.DataFrame(exemplo_data), use_container_width=True)
+        
+        return
+    
+    # Caso 2: Arquivo carregado - processar
+    with st.spinner(f'Processando {uploaded_file.name}...'):
+        df, mensagem = processar_arquivo(uploaded_file)
+    
+    if df is None:
+        st.error(mensagem)
+        return
+    
+    # Sucesso no processamento
+    st.success(mensagem)
+    st.markdown(f"**Arquivo:** `{uploaded_file.name}` | **Registros:** {len(df):,} | **Colunas:** {len(df.columns)}")
+    st.markdown("---")
+    
+    # ========================================================================
+    # SEÇÃO 1: MÉTRICAS PRINCIPAIS
+    # ========================================================================
+    st.header("📈 MÉTRICAS PRINCIPAIS")
+    
+    metricas = calcular_metricas_principais(df)
+    
+    # Cards com métricas
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("Total de Registros", f"{metricas.get('total_registros', 0):,}")
+    
+    with col2:
+        valor_total = metricas.get('valor_total', 0)
+        st.metric("Valor Total Pago", f"R$ {valor_total:,.2f}")
+    
+    with col3:
+        valor_medio = metricas.get('valor_medio', 0)
+        st.metric("Valor Médio", f"R$ {valor_medio:,.2f}")
+    
+    with col4:
+        total_agencias = metricas.get('total_agencias', 0)
+        st.metric("Agências Únicas", f"{total_agencias}")
+    
+    # Segunda linha de métricas
+    col5, col6, col7, col8 = st.columns(4)
+    
+    with col5:
+        dias_medio = metricas.get('dias_medio', 0)
+        st.metric("Dias Médios", f"{dias_medio:.1f}")
+    
+    with col6:
+        valor_dia_medio = metricas.get('valor_dia_medio', 0)
+        st.metric("Valor/Dia Médio", f"R$ {valor_dia_medio:.2f}")
+    
+    with col7:
+        total_vista = metricas.get('total_vista', 0)
+        st.metric("VISTA", f"{total_vista:,}")
+    
+    with col8:
+        total_rede = metricas.get('total_rede', 0)
+        st.metric("REDE CIDADÃO", f"{total_rede:,}")
+    
+    st.markdown("---")
+    
+    # ========================================================================
+    # SEÇÃO 2: ANÁLISES DETALHADAS (ABAS)
+    # ========================================================================
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "📋 VISÃO GERAL", 
+        "🏢 POR AGÊNCIA", 
+        "🏦 POR GERENCIADORA", 
+        "📊 GRÁFICOS", 
+        "💾 EXPORTAR"
+    ])
+    
+    # ========================================================================
+    # ABA 1: VISÃO GERAL
+    # ========================================================================
+    with tab1:
+        if mostrar_dados_brutos:
+            st.subheader("Dados Processados (Visualização)")
+            st.dataframe(df, use_container_width=True, height=400)
+        
+        # Estatísticas descritivas
+        st.subheader("📊 Estatísticas Descritivas")
+        
+        if 'Valor Pagto' in df.columns:
+            col_stat1, col_stat2 = st.columns(2)
+            
+            with col_stat1:
+                st.markdown("**Valores Pagos**")
+                stats_df = df['Valor Pagto'].describe().to_frame().T.round(2)
+                st.dataframe(stats_df, use_container_width=True)
+            
+            with col_stat2:
+                if 'Dias a apagar' in df.columns:
+                    st.markdown("**Dias a Pagar**")
+                    dias_stats = df['Dias a apagar'].describe().to_frame().T.round(2)
+                    st.dataframe(dias_stats, use_container_width=True)
+        
+        # Informações do dataset
+        with st.expander("🔍 Informações Detalhadas do Dataset"):
+            col_info1, col_info2 = st.columns(2)
+            
+            with col_info1:
+                st.write("**Colunas disponíveis:**")
+                for col in df.columns:
+                    na_count = df[col].isna().sum()
+                    st.write(f"- `{col}`: {df[col].dtype} ({na_count} nulos)")
+            
+            with col_info2:
+                st.write("**Resumo do processamento:**")
+                st.write(f"- Data/hora: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
+                st.write(f"- Memória aproximada: {sys.getsizeof(df) / 1024 / 1024:.2f} MB")
+                
+                if 'Data Pagto' in df.columns:
+                    st.write(f"- Período: {df['Data Pagto'].min().strftime('%d/%m/%Y')} a {df['Data Pagto'].max().strftime('%d/%m/%Y')}")
+    
+    # ========================================================================
+    # ABA 2: POR AGÊNCIA
+    # ========================================================================
+    with tab2:
+        st.subheader("🏢 Análise por Agência")
+        
+        relatorio_agencia = gerar_relatorio_agencia(df)
+        
+        if not relatorio_agencia.empty:
+            st.dataframe(relatorio_agencia, use_container_width=True)
+            
+            # Top 10 agências
+            st.subheader(f"🏆 Top {top_n_agencias} Agências")
+            top_agencias = relatorio_agencia.head(top_n_agencias)
+            st.dataframe(top_agencias, use_container_width=True)
+        else:
+            st.warning("Não foi possível gerar relatório por agência. Verifique se as colunas 'Agencia' e 'Valor Pagto' estão presentes.")
+    
+    # ========================================================================
+    # ABA 3: POR GERENCIADORA
+    # ========================================================================
+    with tab3:
+        st.subheader("🏦 Análise por Gerenciadora")
+        
+        relatorio_gerenciadora = gerar_relatorio_gerenciadora(df)
+        
+        if not relatorio_gerenciadora.empty:
+            st.dataframe(relatorio_gerenciadora, use_container_width=True)
+            
+            # Comparativo VISTA vs REDE
+            if 'VISTA' in relatorio_gerenciadora.index or 'REDE CIDAD�' in relatorio_gerenciadora.index:
+                st.subheader("📊 Comparativo VISTA vs REDE CIDADÃO")
+                
+                comparativo_data = []
+                if 'VISTA' in relatorio_gerenciadora.index:
+                    vista_data = relatorio_gerenciadora.loc['VISTA']
+                    comparativo_data.append({
+                        'Gerenciadora': 'VISTA',
+                        'Beneficiários': vista_data['Qtd Beneficiários'],
+                        'Valor Total': vista_data['Valor Total'],
+                        'Valor Médio': vista_data['Valor Médio']
+                    })
+                
+                if 'REDE CIDAD�' in relatorio_gerenciadora.index:
+                    rede_data = relatorio_gerenciadora.loc['REDE CIDAD�']
+                    comparativo_data.append({
+                        'Gerenciadora': 'REDE CIDADÃO',
+                        'Beneficiários': rede_data['Qtd Beneficiários'],
+                        'Valor Total': rede_data['Valor Total'],
+                        'Valor Médio': rede_data['Valor Médio']
+                    })
+                
+                if comparativo_data:
+                    st.dataframe(pd.DataFrame(comparativo_data), use_container_width=True)
+        else:
+            st.warning("Não foi possível gerar relatório por gerenciadora. Verifique se a coluna 'Gerenciadora' está presente.")
+    
+    # ========================================================================
+    # ABA 4: GRÁFICOS
+    # ========================================================================
+    with tab4:
+        if not mostrar_graficos:
+            st.info("Ative a opção 'Mostrar gráficos' na sidebar para visualizar os gráficos.")
+        else:
+            st.subheader("📊 Visualizações Gráficas")
+            
+            # Gráfico 1: Distribuição de valores
+            fig1 = criar_grafico_distribuicao_valores(df)
+            if fig1:
+                st.plotly_chart(fig1, use_container_width=True)
+            
+            # Gráficos em colunas
+            col_g1, col_g2 = st.columns(2)
+            
+            with col_g1:
+                # Gráfico 2: Top agências
+                fig2 = criar_grafico_top_agencias(df, top_n_agencias)
+                if fig2:
+                    st.plotly_chart(fig2, use_container_width=True)
+            
+            with col_g2:
+                # Gráfico 3: Pizza por gerenciadora
+                fig3 = criar_grafico_pizza_gerenciadora(df)
+                if fig3:
+                    st.plotly_chart(fig3, use_container_width=True)
+            
+            # Gráfico 4: Dispersão
+            fig4 = criar_grafico_dispersao_dias_valor(df)
+            if fig4:
+                st.plotly_chart(fig4, use_container_width=True)
+    
+    # ========================================================================
+    # ABA 5: EXPORTAÇÃO
+    # ========================================================================
+    with tab5:
+        st.subheader("💾 Exportação de Dados")
+        
+        col_exp1, col_exp2, col_exp3 = st.columns(3)
+        
+        with col_exp1:
+            # Exportar CSV
+            csv_data = df.to_csv(index=False, sep=';', decimal=',')
             st.download_button(
-                label="📥 Baixar Excel Completo",
-                data=excel_data,
-                file_name="relatorio_completo_abae.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                label="📥 Baixar CSV",
+                data=csv_data,
+                file_name="dados_abae_processados.csv",
+                mime="text/csv",
+                use_container_width=True
             )
         
-        # Informações do processamento
+        with col_exp2:
+            # Exportar Excel
+            excel_bytes = exportar_para_excel(df, relatorio_agencia, relatorio_gerenciadora)
+            st.download_button(
+                label="📥 Baixar Excel Completo",
+                data=excel_bytes,
+                file_name="relatorio_abae_completo.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+        
+        with col_exp3:
+            # Exportar JSON
+            json_data = df.to_json(orient='records', indent=2, force_ascii=False)
+            st.download_button(
+                label="📥 Baixar JSON",
+                data=json_data,
+                file_name="dados_abae.json",
+                mime="application/json",
+                use_container_width=True
+            )
+        
         st.markdown("---")
-        with st.expander("ℹ️ Informações do Processamento"):
-            st.write(f"**Arquivo:** {uploaded_file.name}")
-            st.write(f"**Tamanho:** {uploaded_file.size:,} bytes")
-            st.write(f"**Colunas no dataset:** {', '.join(df.columns)}")
-            st.write(f"**Registros processados:** {len(df):,}")
-            st.write(f"**Data do processamento:** {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
+        
+        # Opções avançadas de exportação
+        with st.expander("⚙️ Opções Avançadas de Exportação"):
+            st.markdown("### Exportar Relatórios Individuais")
+            
+            col_exp4, col_exp5 = st.columns(2)
+            
+            with col_exp4:
+                if not relatorio_agencia.empty:
+                    agencia_csv = relatorio_agencia.to_csv(sep=';', decimal=',')
+                    st.download_button(
+                        label="📊 Relatório por Agência (CSV)",
+                        data=agencia_csv,
+                        file_name="relatorio_agencias.csv",
+                        mime="text/csv",
+                        use_container_width=True
+                    )
+            
+            with col_exp5:
+                if not relatorio_gerenciadora.empty:
+                    gerenciadora_csv = relatorio_gerenciadora.to_csv(sep=';', decimal=',')
+                    st.download_button(
+                        label="🏦 Relatório por Gerenciadora (CSV)",
+                        data=gerenciadora_csv,
+                        file_name="relatorio_gerenciadoras.csv",
+                        mime="text/csv",
+                        use_container_width=True
+                    )
     
-    else:
-        st.error(f"Erro ao processar o arquivo: {message}")
+    # ========================================================================
+    # RODAPÉ
+    # ========================================================================
+    st.markdown("---")
+    st.markdown(
+        f"""
+        <div style='text-align: center; color: gray; font-size: 0.9em;'>
+        Sistema ABAE - Análise de Pagamentos | 
+        Processado em: {datetime.now().strftime('%d/%m/%Y %H:%M')} | 
+        Desenvolvido para o projeto ABAE
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
-# Rodapé
-st.markdown("---")
-st.markdown(
-    """
-    <div style="text-align: center; color: #666; font-size: 0.9rem; margin-top: 2rem;">
-    <p>Sistema ABAE - Análise de Pagamentos | Desenvolvido para processamento de dados do projeto</p>
-    <p>📧 Suporte: sistema.abae@analise.com | 📞 (11) 99999-9999</p>
-    </div>
-    """,
-    unsafe_allow_html=True
-)
+# ============================================================================
+# EXECUÇÃO PRINCIPAL
+# ============================================================================
+if __name__ == "__main__":
+    main()
