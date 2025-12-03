@@ -17,117 +17,72 @@ def carregar_dados(uploaded_file):
         
         for encoding in encodings:
             try:
-                # Ler o arquivo CSV com encoding correto
-                uploaded_file.seek(0)  # Resetar o ponteiro do arquivo
+                uploaded_file.seek(0)
                 df = pd.read_csv(uploaded_file, sep=';', encoding=encoding, decimal=',', thousands='.')
-                
-                # Limpar nomes das colunas
-                df.columns = [col.strip() for col in df.columns]
-                
-                # Verificar se as colunas necessárias existem
-                colunas_necessarias = ['Projeto', 'Nome', 'Valor Total', 'Valor Pagto', 'Data Pagto']
-                
-                for coluna in colunas_necessarias:
-                    if coluna not in df.columns:
-                        # Tentar versões alternativas
-                        if coluna == 'Nome' and 'Nome' not in df.columns:
-                            # Procurar coluna que contenha 'nome'
-                            nome_cols = [col for col in df.columns if 'nome' in col.lower()]
-                            if nome_cols:
-                                df = df.rename(columns={nome_cols[0]: 'Nome'})
-                        
-                        if coluna == 'Projeto' and 'Projeto' not in df.columns:
-                            # Procurar coluna que contenha 'projeto'
-                            proj_cols = [col for col in df.columns if 'projeto' in col.lower()]
-                            if proj_cols:
-                                df = df.rename(columns={proj_cols[0]: 'Projeto'})
-                        
-                        if coluna == 'Valor Total' and 'Valor Total' not in df.columns:
-                            # Procurar coluna que contenha 'valor total'
-                            vt_cols = [col for col in df.columns if 'valor' in col.lower() and 'total' in col.lower()]
-                            if vt_cols:
-                                df = df.rename(columns={vt_cols[0]: 'Valor Total'})
-                
-                # Verificar novamente
-                for coluna in colunas_necessarias:
-                    if coluna not in df.columns:
-                        continue  # Continuar para tentar processar mesmo sem todas as colunas
-                
-                # Converter colunas de valor para numérico
-                if 'Valor Total' in df.columns:
-                    # Remover R$, pontos e converter vírgula para ponto
-                    df['Valor Total'] = df['Valor Total'].astype(str).str.replace('R\$', '', regex=False)
-                    df['Valor Total'] = df['Valor Total'].str.replace('.', '', regex=False)
-                    df['Valor Total'] = df['Valor Total'].str.replace(',', '.', regex=False)
-                    df['Valor Total'] = pd.to_numeric(df['Valor Total'], errors='coerce')
-                
-                if 'Valor Pagto' in df.columns:
-                    df['Valor Pagto'] = df['Valor Pagto'].astype(str).str.replace('R\$', '', regex=False)
-                    df['Valor Pagto'] = df['Valor Pagto'].str.replace('.', '', regex=False)
-                    df['Valor Pagto'] = df['Valor Pagto'].str.replace(',', '.', regex=False)
-                    df['Valor Pagto'] = pd.to_numeric(df['Valor Pagto'], errors='coerce')
-                
-                # Converter data
-                if 'Data Pagto' in df.columns:
-                    # Tentar diferentes formatos de data
-                    for fmt in ['%d/%m/%Y', '%d/%m/%y', '%Y-%m-%d', '%d-%m-%Y']:
-                        try:
-                            df['Data Pagto'] = pd.to_datetime(df['Data Pagto'], format=fmt, errors='raise')
-                            break
-                        except:
-                            continue
-                    else:
-                        # Se nenhum formato funcionar, tentar inferir
-                        df['Data Pagto'] = pd.to_datetime(df['Data Pagto'], errors='coerce')
-                
-                st.success(f"✅ Arquivo carregado com encoding: {encoding}")
-                return df
-                
+                break
             except UnicodeDecodeError:
                 continue
-            except Exception as e:
-                st.warning(f"Tentativa com encoding {encoding} falhou: {str(e)}")
+            except Exception:
                 continue
+        else:
+            # Última tentativa com error handling
+            uploaded_file.seek(0)
+            df = pd.read_csv(uploaded_file, sep=';', encoding='latin-1', errors='replace', decimal=',', thousands='.')
         
-        # Se nenhum encoding funcionou, tentar com erro
-        uploaded_file.seek(0)
-        df = pd.read_csv(uploaded_file, sep=';', encoding='latin-1', errors='replace', decimal=',', thousands='.')
-        st.warning("⚠️ Arquivo carregado com substituição de caracteres inválidos")
+        # Limpar nomes das colunas
+        df.columns = [str(col).strip() for col in df.columns]
+        
+        # Corrigir nomes das colunas
+        col_mapping = {}
+        for col in df.columns:
+            col_lower = str(col).lower()
+            if 'nome' in col_lower:
+                col_mapping[col] = 'Nome'
+            elif 'projeto' in col_lower:
+                col_mapping[col] = 'Projeto'
+            elif 'valor total' in col_lower:
+                col_mapping[col] = 'Valor Total'
+            elif 'valor pagto' in col_lower or 'valor pago' in col_lower:
+                col_mapping[col] = 'Valor Pagto'
+            elif 'data pagto' in col_lower or 'data pago' in col_lower:
+                col_mapping[col] = 'Data Pagto'
+        
+        df = df.rename(columns=col_mapping)
+        
+        # Processar colunas de valor
+        if 'Valor Total' in df.columns:
+            df['Valor Total'] = pd.to_numeric(
+                df['Valor Total'].astype(str)
+                .str.replace('R\$', '', regex=False)
+                .str.replace(' ', '', regex=False)
+                .str.replace('.', '', regex=False)
+                .str.replace(',', '.', regex=False),
+                errors='coerce'
+            )
+        
+        if 'Valor Pagto' in df.columns:
+            df['Valor Pagto'] = pd.to_numeric(
+                df['Valor Pagto'].astype(str)
+                .str.replace('R\$', '', regex=False)
+                .str.replace(' ', '', regex=False)
+                .str.replace('.', '', regex=False)
+                .str.replace(',', '.', regex=False),
+                errors='coerce'
+            )
+        
+        # Processar data
+        if 'Data Pagto' in df.columns:
+            df['Data Pagto'] = pd.to_datetime(df['Data Pagto'], dayfirst=True, errors='coerce')
+        
         return df
         
     except Exception as e:
-        st.error(f"Erro crítico ao processar o arquivo: {str(e)}")
-        st.write("Dica: O arquivo deve estar no formato CSV com separador ';'")
+        st.error(f"Erro ao processar o arquivo: {str(e)}")
         return None
-
-# Funções para métricas
-def calcular_metricas(df):
-    metricas = {}
-    
-    if 'Nome' in df.columns:
-        metricas['Total Pessoas'] = len(df)
-    
-    if 'Valor Total' in df.columns:
-        metricas['Valor Total'] = df['Valor Total'].sum()
-        metricas['Média por Pessoa'] = df['Valor Total'].mean()
-        metricas['Maior Valor'] = df['Valor Total'].max()
-        metricas['Menor Valor'] = df['Valor Total'].min()
-    
-    if 'Valor Pagto' in df.columns:
-        metricas['Valor Pago'] = df['Valor Pagto'].sum()
-    
-    return metricas
-
-# Função para formatar valores monetários
-def formatar_moeda(valor):
-    try:
-        return f"R$ {float(valor):,.2f}"
-    except:
-        return f"R$ {valor}"
 
 # Interface principal
 st.header("📤 Upload do Arquivo")
-uploaded_file = st.file_uploader("Carregue o arquivo CSV (PGTO ABASTECE)", type=['csv'])
+uploaded_file = st.file_uploader("Carregue o arquivo CSV", type=['csv'])
 
 if uploaded_file is not None:
     # Carregar dados
@@ -135,94 +90,76 @@ if uploaded_file is not None:
         df = carregar_dados(uploaded_file)
     
     if df is not None:
-        # Mostrar informações do arquivo
-        st.success(f"✅ Arquivo processado com sucesso!")
+        st.success(f"✅ Arquivo processado! {len(df)} registros carregados.")
         
-        # Mostrar prévia dos dados
-        with st.expander("📋 Visualizar dados carregados", expanded=True):
-            st.write(f"**Total de registros:** {len(df)}")
-            st.write(f"**Colunas disponíveis:** {', '.join(df.columns.tolist())}")
-            st.dataframe(df.head(10))
+        # Mostrar prévia
+        with st.expander("📋 Visualizar dados (primeiras 20 linhas)"):
+            st.dataframe(df.head(20))
         
-        # Sidebar com filtros
+        # Filtros na sidebar
         st.sidebar.header("🔍 Filtros")
         
-        # Filtro por Projeto (se existir)
+        # Filtro por Projeto
         if 'Projeto' in df.columns:
-            projetos = sorted(df['Projeto'].dropna().unique())
-            projeto_selecionado = st.sidebar.selectbox("Selecione o Projeto:", ['Todos'] + list(projetos))
+            projetos = ['Todos'] + sorted([p for p in df['Projeto'].dropna().unique() if isinstance(p, str)])
+            projeto_selecionado = st.sidebar.selectbox("Projeto:", projetos)
         else:
             projeto_selecionado = 'Todos'
-            st.sidebar.warning("Coluna 'Projeto' não encontrada")
         
-        # Filtro por valor (se existir)
+        # Filtro por Valor
         if 'Valor Total' in df.columns:
-            min_valor = float(df['Valor Total'].min())
-            max_valor = float(df['Valor Total'].max())
-            
-            min_valor, max_valor = st.sidebar.slider(
-                "Filtrar por Valor Total:",
-                min_valor,
-                max_valor,
-                (min_valor, max_valor)
-            )
+            valor_min = float(df['Valor Total'].min())
+            valor_max = float(df['Valor Total'].max())
+            if valor_min < valor_max:
+                intervalo = st.sidebar.slider("Valor Total:", valor_min, valor_max, (valor_min, valor_max))
+            else:
+                intervalo = (valor_min, valor_max)
+                st.sidebar.write(f"Valor: R$ {valor_min:,.2f}")
         else:
-            min_valor, max_valor = 0, 0
-            st.sidebar.warning("Coluna 'Valor Total' não encontrada")
+            intervalo = (0, 0)
         
-        # Filtro por nome (se existir)
-        if 'Nome' in df.columns:
-            nome_filtro = st.sidebar.text_input("Filtrar por nome:")
-        else:
-            nome_filtro = ""
-            st.sidebar.warning("Coluna 'Nome' não encontrada")
+        # Filtro por Nome
+        nome_filtro = st.sidebar.text_input("Nome (parcial):")
         
         # Aplicar filtros
         df_filtrado = df.copy()
         
-        # Filtrar por projeto
         if projeto_selecionado != 'Todos' and 'Projeto' in df_filtrado.columns:
             df_filtrado = df_filtrado[df_filtrado['Projeto'] == projeto_selecionado]
         
-        # Filtrar por valor
-        if 'Valor Total' in df_filtrado.columns:
+        if 'Valor Total' in df_filtrado.columns and intervalo[0] != intervalo[1]:
             df_filtrado = df_filtrado[
-                (df_filtrado['Valor Total'] >= min_valor) & 
-                (df_filtrado['Valor Total'] <= max_valor)
+                (df_filtrado['Valor Total'] >= intervalo[0]) & 
+                (df_filtrado['Valor Total'] <= intervalo[1])
             ]
         
-        # Filtrar por nome
         if nome_filtro and 'Nome' in df_filtrado.columns:
             df_filtrado = df_filtrado[
                 df_filtrado['Nome'].astype(str).str.contains(nome_filtro, case=False, na=False)
             ]
         
-        # Métricas principais
-        st.header("📊 Métricas Gerais")
-        metricas = calcular_metricas(df_filtrado)
+        # Métricas
+        st.header("📊 Métricas")
         
-        # Layout de métricas
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
-            if 'Total Pessoas' in metricas:
-                st.metric("👥 Total de Pessoas", f"{metricas['Total Pessoas']:,}")
-            if 'Maior Valor' in metricas:
-                st.metric("📈 Maior Valor", formatar_moeda(metricas['Maior Valor']))
+            st.metric("Total de Registros", len(df_filtrado))
+            if 'Valor Total' in df_filtrado.columns:
+                st.metric("Maior Valor", f"R$ {df_filtrado['Valor Total'].max():,.2f}")
         
         with col2:
-            if 'Valor Total' in metricas:
-                st.metric("💰 Valor Total", formatar_moeda(metricas['Valor Total']))
-            if 'Menor Valor' in metricas:
-                st.metric("📉 Menor Valor", formatar_moeda(metricas['Menor Valor']))
+            if 'Valor Total' in df_filtrado.columns:
+                st.metric("Valor Total", f"R$ {df_filtrado['Valor Total'].sum():,.2f}")
+                st.metric("Menor Valor", f"R$ {df_filtrado['Valor Total'].min():,.2f}")
         
         with col3:
-            if 'Valor Pago' in metricas:
-                st.metric("💵 Valor Pago", formatar_moeda(metricas['Valor Pago']))
+            if 'Valor Pagto' in df_filtrado.columns:
+                st.metric("Valor Pago", f"R$ {df_filtrado['Valor Pagto'].sum():,.2f}")
         
         with col4:
-            if 'Média por Pessoa' in metricas:
-                st.metric("📊 Média por Pessoa", formatar_moeda(metricas['Média por Pessoa']))
+            if 'Valor Total' in df_filtrado.columns:
+                st.metric("Média por Pessoa", f"R$ {df_filtrado['Valor Total'].mean():,.2f}")
         
         # Análise por Projeto
         if 'Projeto' in df_filtrado.columns:
@@ -231,193 +168,147 @@ if uploaded_file is not None:
             # Estatísticas por projeto
             projeto_stats = df_filtrado.groupby('Projeto').agg({
                 'Nome': 'count',
-                'Valor Total': ['sum', 'mean', 'min', 'max'],
-                'Valor Pagto': 'sum'
+                'Valor Total': ['sum', 'mean', 'min', 'max']
             }).round(2)
             
-            # Renomear colunas
-            projeto_stats.columns = ['Quantidade', 'Valor Total', 'Média', 'Mínimo', 'Máximo', 'Valor Pago']
-            
             # Formatar para exibição
-            projeto_display = projeto_stats.copy()
-            for col in ['Valor Total', 'Média', 'Mínimo', 'Máximo', 'Valor Pago']:
-                projeto_display[col] = projeto_display[col].apply(lambda x: f"R$ {x:,.2f}" if pd.notnull(x) else "-")
+            projeto_display = pd.DataFrame({
+                'Quantidade': projeto_stats[('Nome', 'count')],
+                'Valor Total': projeto_stats[('Valor Total', 'sum')].apply(lambda x: f"R$ {x:,.2f}"),
+                'Média': projeto_stats[('Valor Total', 'mean')].apply(lambda x: f"R$ {x:,.2f}"),
+                'Mínimo': projeto_stats[('Valor Total', 'min')].apply(lambda x: f"R$ {x:,.2f}"),
+                'Máximo': projeto_stats[('Valor Total', 'max')].apply(lambda x: f"R$ {x:,.2f}")
+            })
             
             st.dataframe(projeto_display)
             
-            # Gráficos por projeto
+            # Gráficos SIMPLIFICADOS - sem histograma problemático
             col_chart1, col_chart2 = st.columns(2)
             
             with col_chart1:
                 st.subheader("Quantidade por Projeto")
-                contagem_projetos = df_filtrado['Projeto'].value_counts()
-                st.bar_chart(contagem_projetos)
+                contagem = df_filtrado['Projeto'].value_counts()
+                st.bar_chart(contagem)
             
             with col_chart2:
                 st.subheader("Valor Total por Projeto")
-                valor_por_projeto = df_filtrado.groupby('Projeto')['Valor Total'].sum().sort_values()
-                st.bar_chart(valor_por_projeto)
+                valor_total = df_filtrado.groupby('Projeto')['Valor Total'].sum()
+                st.bar_chart(valor_total)
         
-        # Histograma de valores
-        if 'Valor Total' in df_filtrado.columns:
-            st.header("📊 Distribuição de Valores")
-            
-            # Criar bins para histograma
-            bins = st.slider("Número de intervalos:", 5, 50, 20)
-            
-            # Criar histograma com pandas
-            hist_series = pd.cut(df_filtrado['Valor Total'], bins=bins).value_counts().sort_index()
-            st.bar_chart(hist_series)
-        
-        # Tabelas detalhadas
+        # Tabela de dados
         st.header("📋 Dados Detalhados")
         
-        tab1, tab2, tab3 = st.tabs(["📊 Todos os Dados", "🏆 Top Valores", "🔍 Pesquisa"])
+        # Formatar para exibição
+        df_display = df_filtrado.copy()
         
-        with tab1:
-            st.subheader("Dados Filtrados")
-            st.write(f"Mostrando {len(df_filtrado)} registros")
-            
-            # Formatar colunas para exibição
-            df_display = df_filtrado.copy()
-            
-            if 'Valor Total' in df_display.columns:
-                df_display['Valor Total'] = df_display['Valor Total'].apply(lambda x: f"R$ {x:,.2f}" if pd.notnull(x) else "-")
-            
-            if 'Valor Pagto' in df_display.columns:
-                df_display['Valor Pagto'] = df_display['Valor Pagto'].apply(lambda x: f"R$ {x:,.2f}" if pd.notnull(x) else "-")
-            
-            if 'Data Pagto' in df_display.columns:
-                df_display['Data Pagto'] = df_display['Data Pagto'].dt.strftime('%d/%m/%Y')
-            
-            st.dataframe(df_display)
+        # Formatar colunas
+        format_cols = []
+        if 'Valor Total' in df_display.columns:
+            format_cols.append('Valor Total')
+        if 'Valor Pagto' in df_display.columns:
+            format_cols.append('Valor Pagto')
         
-        with tab2:
-            st.subheader("Top 10 Maiores Valores")
-            if 'Valor Total' in df_filtrado.columns:
-                top_10 = df_filtrado.nlargest(10, 'Valor Total')[['Nome', 'Projeto', 'Valor Total', 'Data Pagto']].copy()
-                top_10['Valor Total'] = top_10['Valor Total'].apply(lambda x: f"R$ {x:,.2f}")
-                if 'Data Pagto' in top_10.columns:
-                    top_10['Data Pagto'] = top_10['Data Pagto'].dt.strftime('%d/%m/%Y')
-                st.dataframe(top_10)
-            
-            st.subheader("Top 10 Menores Valores")
-            if 'Valor Total' in df_filtrado.columns:
-                bottom_10 = df_filtrado.nsmallest(10, 'Valor Total')[['Nome', 'Projeto', 'Valor Total', 'Data Pagto']].copy()
-                bottom_10['Valor Total'] = bottom_10['Valor Total'].apply(lambda x: f"R$ {x:,.2f}")
-                if 'Data Pagto' in bottom_10.columns:
-                    bottom_10['Data Pagto'] = bottom_10['Data Pagto'].dt.strftime('%d/%m/%Y')
-                st.dataframe(bottom_10)
+        for col in format_cols:
+            df_display[col] = df_display[col].apply(lambda x: f"R$ {x:,.2f}" if pd.notnull(x) else "")
         
-        with tab3:
-            st.subheader("Pesquisa Avançada")
+        if 'Data Pagto' in df_display.columns:
+            df_display['Data Pagto'] = df_display['Data Pagto'].dt.strftime('%d/%m/%Y')
+        
+        # Selecionar colunas para exibir
+        cols_to_show = []
+        for col in ['Nome', 'Projeto', 'Valor Total', 'Valor Pagto', 'Data Pagto']:
+            if col in df_display.columns:
+                cols_to_show.append(col)
+        
+        st.dataframe(df_display[cols_to_show])
+        
+        # Pesquisa específica
+        st.header("🔍 Pesquisa Específica")
+        
+        search_col, search_btn = st.columns([4, 1])
+        with search_col:
+            search_term = st.text_input("Digite o nome para pesquisa:")
+        
+        if search_term and 'Nome' in df_filtrado.columns:
+            resultados = df_filtrado[
+                df_filtrado['Nome'].astype(str).str.contains(search_term, case=False, na=False)
+            ]
             
-            col_search1, col_search2 = st.columns(2)
-            
-            with col_search1:
-                search_nome = st.text_input("Digite o nome completo ou parcial:")
-            
-            with col_search2:
-                if 'Projeto' in df_filtrado.columns:
-                    search_projeto = st.selectbox("Projeto:", ['Todos'] + list(df_filtrado['Projeto'].unique()))
-                else:
-                    search_projeto = 'Todos'
-            
-            if st.button("🔍 Pesquisar"):
-                resultados = df_filtrado.copy()
+            if len(resultados) > 0:
+                st.success(f"Encontrados {len(resultados)} resultados")
                 
-                if search_nome and 'Nome' in resultados.columns:
-                    resultados = resultados[
-                        resultados['Nome'].astype(str).str.contains(search_nome, case=False, na=False)
-                    ]
+                # Formatar resultados
+                resultados_display = resultados.copy()
+                if 'Valor Total' in resultados_display.columns:
+                    resultados_display['Valor Total'] = resultados_display['Valor Total'].apply(
+                        lambda x: f"R$ {x:,.2f}" if pd.notnull(x) else ""
+                    )
+                if 'Data Pagto' in resultados_display.columns:
+                    resultados_display['Data Pagto'] = resultados_display['Data Pagto'].dt.strftime('%d/%m/%Y')
                 
-                if search_projeto != 'Todos' and 'Projeto' in resultados.columns:
-                    resultados = resultados[resultados['Projeto'] == search_projeto]
-                
-                if len(resultados) > 0:
-                    st.success(f"Encontrados {len(resultados)} resultado(s)")
-                    
-                    # Formatar para exibição
-                    resultados_display = resultados.copy()
-                    
-                    if 'Valor Total' in resultados_display.columns:
-                        resultados_display['Valor Total'] = resultados_display['Valor Total'].apply(
-                            lambda x: f"R$ {x:,.2f}" if pd.notnull(x) else "-"
-                        )
-                    
-                    if 'Valor Pagto' in resultados_display.columns:
-                        resultados_display['Valor Pagto'] = resultados_display['Valor Pagto'].apply(
-                            lambda x: f"R$ {x:,.2f}" if pd.notnull(x) else "-"
-                        )
-                    
-                    if 'Data Pagto' in resultados_display.columns:
-                        resultados_display['Data Pagto'] = resultados_display['Data Pagto'].dt.strftime('%d/%m/%Y')
-                    
-                    st.dataframe(resultados_display)
-                else:
-                    st.warning("Nenhum resultado encontrado")
+                st.dataframe(resultados_display[cols_to_show])
+            else:
+                st.warning("Nenhum resultado encontrado")
         
-        # Exportação de dados
+        # Exportação
         st.header("📥 Exportar Dados")
         
-        col_export1, col_export2 = st.columns(2)
+        col_csv, col_excel = st.columns(2)
         
-        with col_export1:
-            # CSV
-            csv_data = df_filtrado.to_csv(index=False, sep=';', decimal=',')
+        with col_csv:
+            csv = df_filtrado.to_csv(index=False, sep=';', decimal=',')
             st.download_button(
-                label="⬇️ Baixar CSV",
-                data=csv_data,
+                label="📄 Baixar CSV",
+                data=csv,
                 file_name="dados_filtrados.csv",
                 mime="text/csv",
                 use_container_width=True
             )
         
-        with col_export2:
-            # Excel
+        with col_excel:
             try:
                 output = BytesIO()
                 with pd.ExcelWriter(output, engine='openpyxl') as writer:
                     df_filtrado.to_excel(writer, sheet_name='Dados', index=False)
-                    if 'Projeto' in df_filtrado.columns:
-                        projeto_stats.to_excel(writer, sheet_name='Resumo por Projeto')
                 output.seek(0)
                 
                 st.download_button(
-                    label="⬇️ Baixar Excel",
+                    label="📊 Baixar Excel",
                     data=output,
                     file_name="dados_filtrados.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True
                 )
             except:
-                st.warning("Funcionalidade Excel não disponível")
+                st.info("Para exportar em Excel, instale: pip install openpyxl")
+        
+        # Informações
+        with st.expander("📊 Informações do Dataset"):
+            st.write(f"**Total de registros:** {len(df)}")
+            st.write(f"**Registros após filtros:** {len(df_filtrado)}")
+            st.write(f"**Colunas disponíveis:** {', '.join(df.columns.tolist())}")
+            
+            if 'Data Pagto' in df.columns:
+                st.write(f"**Período:** {df['Data Pagto'].min().strftime('%d/%m/%Y')} a {df['Data Pagto'].max().strftime('%d/%m/%Y')}")
 
 else:
-    st.info("👆 Faça upload de um arquivo CSV para começar a análise")
+    st.info("👆 Faça upload de um arquivo CSV para começar")
     
     st.markdown("""
-    ### 📋 Instruções:
-    1. O arquivo deve ser um CSV com separador ponto-e-vírgula (;)
-    2. Formatos suportados:
-       - Valores: R$ 1.593,90 ou 1593,90
-       - Data: DD/MM/YYYY
-    3. Colunas esperadas:
-       - Projeto
-       - Nome
-       - Valor Total
-       - Valor Pagto
-       - Data Pagto
+    ### 📋 Formato esperado:
+    - Arquivo CSV com separador ponto-e-vírgula (;)
+    - Colunas esperadas: Projeto, Nome, Valor Total, Valor Pagto, Data Pagto
+    - Formato de valores: R$ 1.593,90
+    - Formato de data: DD/MM/YYYY
     
     ### 🚀 Funcionalidades:
     - Filtros por projeto, valor e nome
-    - Métricas e estatísticas
+    - Métricas em tempo real
     - Análise por projeto
-    - Gráficos interativos
-    - Pesquisa avançada
-    - Exportação em CSV/Excel
+    - Pesquisa de dados
+    - Exportação em CSV
     """)
 
 # Rodapé
 st.divider()
-st.caption("Sistema de Análise de Pagamentos v1.0")
+st.caption("Sistema de Análise de Pagamentos © 2024")
