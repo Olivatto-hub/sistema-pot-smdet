@@ -1,4 +1,4 @@
-# app.py - Sistema ABAE Análise de Pagamentos
+# app.py - Sistema de Monitoramento de Pagamentos do POT
 # Arquivo único completo com todas as dependências
 
 import streamlit as st
@@ -8,7 +8,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from io import StringIO, BytesIO
 import warnings
-from datetime import datetime
+from datetime import datetime, timedelta
 import sys
 
 # Configurar warnings
@@ -16,14 +16,14 @@ warnings.filterwarnings('ignore')
 
 # Configuração da página Streamlit
 st.set_page_config(
-    page_title="Sistema ABAE - Análise de Pagamentos",
+    page_title="Sistema POT - Monitoramento de Pagamentos",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
 # Título principal
-st.title("📊 SISTEMA ABAE - ANÁLISE DE PAGAMENTOS")
+st.title("📊 SISTEMA DE MONITORAMENTO DE PAGAMENTOS - PROGRAMA OPERACIONAL DE TRABALHO (POT)")
 st.markdown("---")
 
 # ============================================================================
@@ -111,7 +111,7 @@ def processar_arquivo(uploaded_file):
         df = df.rename(columns=col_rename_map)
         
         # ====================================================================
-        # PASSO 2: CONVERTER COLUNAS MONETÁRIAS
+        # PASSO 2: CONVERTER COLUNAS MONETÁRIAS (CORRIGIR DUPLICAÇÃO)
         # ====================================================================
         colunas_monetarias = ['Valor Total', 'Valor Desconto', 'Valor Pagto', 'Valor Dia']
         
@@ -124,6 +124,28 @@ def processar_arquivo(uploaded_file):
                 df[coluna] = df[coluna].str.replace('R\$', '', regex=True)
                 df[coluna] = df[coluna].str.replace('$', '', regex=False)
                 df[coluna] = df[coluna].str.replace(' ', '', regex=False)
+                df[coluna] = df[coluna].str.replace('"', '', regex=False)  # Remover aspas
+                
+                # CORREÇÃO: Verificar se há duplicação (ex: 1.593,901.593,90)
+                def corrigir_duplicacao(valor):
+                    if pd.isna(valor):
+                        return valor
+                    
+                    str_val = str(valor)
+                    # Verificar se parece ter valores duplicados
+                    parts = str_val.split('.')
+                    if len(parts) > 2:
+                        # Tentar detectar padrão de duplicação
+                        mid_point = len(str_val) // 2
+                        primeira_metade = str_val[:mid_point]
+                        segunda_metade = str_val[mid_point:]
+                        
+                        if primeira_metade == segunda_metade:
+                            return primeira_metade
+                    
+                    return str_val
+                
+                df[coluna] = df[coluna].apply(corrigir_duplicacao)
                 
                 # Substituir ponto de milhar (remover) e vírgula decimal (substituir por ponto)
                 df[coluna] = df[coluna].apply(lambda x: str(x).replace('.', '').replace(',', '.') 
@@ -131,6 +153,10 @@ def processar_arquivo(uploaded_file):
                 
                 # Converter para numérico
                 df[coluna] = pd.to_numeric(df[coluna], errors='coerce')
+                
+                # Verificar valores extremos suspeitos (valores muito altos)
+                if df[coluna].max() > 100000:  # Valores acima de 100 mil são suspeitos
+                    st.warning(f"⚠️ Valores suspeitos detectados na coluna {coluna}. Verifique duplicação.")
         
         # ====================================================================
         # PASSO 3: CONVERTER OUTRAS COLUNAS NUMÉRICAS
@@ -174,6 +200,10 @@ def processar_arquivo(uploaded_file):
         if 'Agencia' in df.columns:
             df['Agencia'] = df['Agencia'].astype(str).str.strip()
         
+        # Corrigir caracteres especiais
+        if 'Gerenciadora' in df.columns:
+            df['Gerenciadora'] = df['Gerenciadora'].str.replace('�', 'Ã', regex=False)
+        
         return df, "✅ Arquivo processado com sucesso!"
     
     except Exception as e:
@@ -181,8 +211,130 @@ def processar_arquivo(uploaded_file):
         return None, error_msg
 
 # ============================================================================
-# FUNÇÕES DE ANÁLISE E RELATÓRIOS
+# FUNÇÕES DE DETECÇÃO DE INCONSISTÊNCIAS
 # ============================================================================
+
+def detectar_inconsistencias(df):
+    """
+    Detecta inconsistências, dados críticos e casos suspeitos.
+    
+    Args:
+        df: DataFrame processado
+        
+    Returns:
+        dict: Dicionário com inconsistências detectadas
+    """
+    inconsistencias = {
+        'dados_faltantes': [],
+        'valores_suspeitos': [],
+        'duplicidades': [],
+        'inconsistencias_criticas': [],
+        'alertas': []
+    }
+    
+    try:
+        # 1. Dados faltantes críticos
+        if 'Nome' in df.columns:
+            nulos_nome = df['Nome'].isna().sum() + (df['Nome'] == '').sum()
+            if nulos_nome > 0:
+                inconsistencias['dados_faltantes'].append(
+                    f"Nome em branco: {nulos_nome} registros"
+                )
+        
+        if 'CPF' in df.columns:
+            cpf_invalidos = df['CPF'].apply(lambda x: len(str(x)) < 11 if pd.notna(x) and str(x).strip() != '' else False).sum()
+            if cpf_invalidos > 0:
+                inconsistencias['dados_faltantes'].append(
+                    f"CPF inválido/curto: {cpf_invalidos} registros"
+                )
+        
+        if 'Valor Pagto' in df.columns:
+            nulos_valor = df['Valor Pagto'].isna().sum()
+            if nulos_valor > 0:
+                inconsistencias['dados_faltantes'].append(
+                    f"Valor de pagamento em branco: {nulos_valor} registros"
+                )
+        
+        # 2. Valores suspeitos
+        if 'Valor Pagto' in df.columns:
+            # Valores zerados ou negativos
+            zerados = (df['Valor Pagto'] <= 0).sum()
+            if zerados > 0:
+                inconsistencias['valores_suspeitos'].append(
+                    f"Valores zerados/negativos: {zerados} registros"
+                )
+            
+            # Valores muito altos (suspeitos)
+            valor_medio = df['Valor Pagto'].mean()
+            valor_std = df['Valor Pagto'].std()
+            limite_superior = valor_medio + (3 * valor_std)
+            
+            valores_extremos = (df['Valor Pagto'] > limite_superior).sum()
+            if valores_extremos > 0:
+                inconsistencias['valores_suspeitos'].append(
+                    f"Valores extremamente altos (acima de R$ {limite_superior:,.2f}): {valores_extremos} registros"
+                )
+        
+        # 3. Duplicidades suspeitas
+        if 'CPF' in df.columns:
+            # Verificar CPFs duplicados
+            cpf_duplicados = df['CPF'][df['CPF'] != ''].duplicated().sum()
+            if cpf_duplicados > 0:
+                inconsistencias['duplicidades'].append(
+                    f"CPFs duplicados: {cpf_duplicados} registros"
+                )
+        
+        if 'Nome' in df.columns and 'Agencia' in df.columns:
+            # Mesmo nome na mesma agência em datas próximas
+            dups_nome_agencia = df.duplicated(subset=['Nome', 'Agencia'], keep=False).sum()
+            if dups_nome_agencia > 0:
+                inconsistencias['duplicidades'].append(
+                    f"Nomes repetidos na mesma agência: {dups_nome_agencia} registros"
+                )
+        
+        # 4. Inconsistências críticas
+        if 'Valor Total' in df.columns and 'Valor Desconto' in df.columns and 'Valor Pagto' in df.columns:
+            # Verificar se Valor Total = Valor Desconto + Valor Pagto
+            inconsistencias_valores = ((df['Valor Total'].fillna(0) - 
+                                      (df['Valor Desconto'].fillna(0) + df['Valor Pagto'].fillna(0))).abs() > 0.01).sum()
+            
+            if inconsistencias_valores > 0:
+                inconsistencias['inconsistencias_criticas'].append(
+                    f"Inconsistência nos valores (Total ≠ Desconto + Pagto): {inconsistencias_valores} registros"
+                )
+        
+        if 'Dias a apagar' in df.columns and 'Valor Dia' in df.columns and 'Valor Pagto' in df.columns:
+            # Verificar se Valor Pagto ≈ Dias a apagar * Valor Dia
+            diferenca = (df['Valor Pagto'].fillna(0) - 
+                        (df['Dias a apagar'].fillna(0) * df['Valor Dia'].fillna(0))).abs()
+            
+            inconsistencias_calc = (diferenca > 1).sum()  # Tolerância de R$ 1
+            if inconsistencias_calc > 0:
+                inconsistencias['inconsistencias_criticas'].append(
+                    f"Inconsistência no cálculo (Pagto ≠ Dias × Valor Dia): {inconsistencias_calc} registros"
+                )
+        
+        # 5. Alertas gerais
+        if 'Data Pagto' in df.columns:
+            datas_futuras = (df['Data Pagto'] > datetime.now()).sum()
+            if datas_futuras > 0:
+                inconsistencias['alertas'].append(
+                    f"Datas de pagamento futuras: {datas_futuras} registros"
+                )
+        
+        if 'Valor Dia' in df.columns:
+            valor_dia_minimo = 30  # Valor mínimo esperado por dia
+            abaixo_minimo = (df['Valor Dia'] < valor_dia_minimo).sum()
+            if abaixo_minimo > 0:
+                inconsistencias['alertas'].append(
+                    f"Valor por dia abaixo de R$ {valor_dia_minimo}: {abaixo_minimo} registros"
+                )
+        
+        return inconsistencias
+    
+    except Exception as e:
+        st.error(f"Erro ao detectar inconsistências: {e}")
+        return inconsistencias
 
 def calcular_metricas_principais(df):
     """
@@ -200,7 +352,19 @@ def calcular_metricas_principais(df):
         metricas['total_registros'] = len(df)
         
         if 'Valor Pagto' in df.columns:
-            metricas['valor_total'] = df['Valor Pagto'].sum()
+            # CORREÇÃO: Verificar se há duplicação antes de calcular
+            valor_total = df['Valor Pagto'].sum()
+            
+            # Verificação adicional para valores duplicados
+            if valor_total > 10000000:  # Se valor total acima de 10 milhões
+                st.warning("⚠️ Valor total suspeitamente alto. Verifique possíveis duplicações.")
+                
+                # Tentar detectar e corrigir automaticamente
+                valores_suspeitos = df[df['Valor Pagto'] > 10000]  # Valores acima de 10k são suspeitos
+                if len(valores_suspeitos) > 0:
+                    st.info(f"🔍 {len(valores_suspeitos)} valores acima de R$ 10.000 encontrados")
+            
+            metricas['valor_total'] = valor_total
             metricas['valor_medio'] = df['Valor Pagto'].mean()
             metricas['valor_min'] = df['Valor Pagto'].min()
             metricas['valor_max'] = df['Valor Pagto'].max()
@@ -214,7 +378,7 @@ def calcular_metricas_principais(df):
             distrib_gerenciadora = df['Gerenciadora'].value_counts()
             metricas['gerenciadora_principal'] = distrib_gerenciadora.index[0] if len(distrib_gerenciadora) > 0 else 'N/A'
             metricas['total_vista'] = distrib_gerenciadora.get('VISTA', 0)
-            metricas['total_rede'] = distrib_gerenciadora.get('REDE CIDAD�', 0)
+            metricas['total_rede'] = distrib_gerenciadora.get('REDE CIDADÃO', 0)
         
         if 'Dias a apagar' in df.columns:
             metricas['dias_medio'] = df['Dias a apagar'].mean()
@@ -225,11 +389,24 @@ def calcular_metricas_principais(df):
         
         if 'Projeto' in df.columns:
             metricas['projeto_principal'] = df['Projeto'].mode()[0] if not df['Projeto'].mode().empty else 'N/A'
+        
+        # Verificação cruzada de valores
+        if 'Valor Pagto' in df.columns:
+            # Verificar se o valor médio parece realista
+            valor_medio = metricas['valor_medio']
+            if valor_medio > 5000:  # Valor médio acima de 5 mil é suspeito
+                metricas['alerta_valor_medio'] = f"Valor médio suspeito: R$ {valor_medio:,.2f}"
+            else:
+                metricas['alerta_valor_medio'] = "OK"
     
     except Exception as e:
         st.error(f"Erro ao calcular métricas: {e}")
     
     return metricas
+
+# ============================================================================
+# FUNÇÕES DE ANÁLISE E RELATÓRIOS
+# ============================================================================
 
 def gerar_relatorio_agencia(df):
     """
@@ -259,11 +436,13 @@ def gerar_relatorio_agencia(df):
         # Adicionar colunas extras se existirem
         col_index = 6
         if 'Dias a apagar' in df.columns:
-            relatorio.insert(col_index, 'Dias Médios', df.groupby('Agencia')['Dias a apagar'].mean().round(2))
+            dias_medios = df.groupby('Agencia')['Dias a apagar'].mean().round(2)
+            relatorio.insert(col_index, 'Dias Médios', dias_medios)
             col_index += 1
         
         if 'Valor Dia' in df.columns:
-            relatorio.insert(col_index, 'Valor Dia Médio', df.groupby('Agencia')['Valor Dia'].mean().round(2))
+            valor_dia_medio = df.groupby('Agencia')['Valor Dia'].mean().round(2)
+            relatorio.insert(col_index, 'Valor Dia Médio', valor_dia_medio)
         
         return relatorio.sort_values('Valor Total', ascending=False)
     
@@ -458,7 +637,7 @@ def criar_grafico_dispersao_dias_valor(df):
 # FUNÇÕES DE EXPORTAÇÃO
 # ============================================================================
 
-def exportar_para_excel(df, relatorio_agencia, relatorio_gerenciadora):
+def exportar_para_excel(df, relatorio_agencia, relatorio_gerenciadora, inconsistencias):
     """
     Exporta dados para arquivo Excel com múltiplas abas.
     
@@ -466,6 +645,7 @@ def exportar_para_excel(df, relatorio_agencia, relatorio_gerenciadora):
         df: DataFrame principal
         relatorio_agencia: Relatório por agência
         relatorio_gerenciadora: Relatório por gerenciadora
+        inconsistencias: Dicionário com inconsistências
         
     Returns:
         bytes: Dados do arquivo Excel em bytes
@@ -484,15 +664,26 @@ def exportar_para_excel(df, relatorio_agencia, relatorio_gerenciadora):
         if not relatorio_gerenciadora.empty:
             relatorio_gerenciadora.to_excel(writer, sheet_name='Por Gerenciadora')
         
-        # Aba 4: Resumo estatístico
-        if 'Valor Pagto' in df.columns:
-            resumo_stats = df['Valor Pagto'].describe().to_frame().T
-            resumo_stats.to_excel(writer, sheet_name='Resumo Estatístico')
+        # Aba 4: Inconsistências detectadas
+        inconsistencias_df = pd.DataFrame([
+            ['Dados Faltantes', len(inconsistencias.get('dados_faltantes', [])), '; '.join(inconsistencias.get('dados_faltantes', []))],
+            ['Valores Suspeitos', len(inconsistencias.get('valores_suspeitos', [])), '; '.join(inconsistencias.get('valores_suspeitos', []))],
+            ['Duplicidades', len(inconsistencias.get('duplicidades', [])), '; '.join(inconsistencias.get('duplicidades', []))],
+            ['Inconsistências Críticas', len(inconsistencias.get('inconsistencias_criticas', [])), '; '.join(inconsistencias.get('inconsistencias_criticas', []))],
+            ['Alertas', len(inconsistencias.get('alertas', [])), '; '.join(inconsistencias.get('alertas', []))]
+        ], columns=['Categoria', 'Quantidade', 'Descrição'])
+        
+        inconsistencias_df.to_excel(writer, sheet_name='Inconsistências', index=False)
         
         # Aba 5: Top beneficiários
         if 'Nome' in df.columns and 'Valor Pagto' in df.columns:
             top_benef = df.nlargest(20, 'Valor Pagto')[['Nome', 'Valor Pagto', 'Agencia', 'Gerenciadora']]
             top_benef.to_excel(writer, sheet_name='Top Beneficiários', index=False)
+        
+        # Aba 6: Resumo estatístico
+        if 'Valor Pagto' in df.columns:
+            resumo_stats = df['Valor Pagto'].describe().to_frame().T
+            resumo_stats.to_excel(writer, sheet_name='Resumo Estatístico')
     
     return output.getvalue()
 
@@ -524,17 +715,30 @@ def main():
         st.header("⚙️ OPÇÕES DE VISUALIZAÇÃO")
         mostrar_graficos = st.checkbox("Mostrar gráficos", value=True)
         mostrar_dados_brutos = st.checkbox("Mostrar dados completos", value=False)
+        mostrar_inconsistencias = st.checkbox("Mostrar inconsistências", value=True)
         top_n_agencias = st.slider("Top N agências nos gráficos", 5, 20, 10)
+        
+        # Opção para corrigir valores duplicados
+        st.markdown("---")
+        st.header("🔧 CORREÇÃO DE DADOS")
+        auto_corrigir_duplicacao = st.checkbox(
+            "Tentar correção automática de valores duplicados",
+            value=True,
+            help="Tenta detectar e corrigir valores que parecem estar duplicados"
+        )
         
         st.markdown("---")
         
         # Informações do sistema
         st.header("ℹ️ INFORMAÇÕES")
         st.info(
-            "**Sistema ABAE - Análise de Pagamentos**\n\n"
-            "Versão: 2.0\n"
+            "**Sistema de Monitoramento de Pagamentos - POT**\n\n"
+            "Versão: 3.0\n"
             f"Data: {datetime.now().strftime('%d/%m/%Y')}\n"
-            "Desenvolvido para análise de dados do projeto ABAE"
+            "Desenvolvido para monitoramento dos projetos do POT\n\n"
+            "**Projetos incluídos:**\n"
+            "- ABAE\n"
+            "- Outros projetos do POT"
         )
     
     # ========================================================================
@@ -543,7 +747,7 @@ def main():
     
     # Caso 1: Nenhum arquivo carregado
     if uploaded_file is None:
-        st.info("👋 **Bem-vindo ao Sistema ABAE!**")
+        st.info("👋 **Bem-vindo ao Sistema de Monitoramento de Pagamentos do POT!**")
         
         col1, col2 = st.columns([2, 1])
         
@@ -561,9 +765,10 @@ def main():
                - Valor Total;Valor Desconto;Valor Pagto;Data Pagto
                - Valor Dia;Dias a apagar;CPF;Gerenciadora
             
-            4. **Formato dos valores monetários:**
-               - R$ 1.593,90 (vírgula como decimal)
-               - Sistema converte automaticamente
+            4. **Funcionalidades de correção:**
+               - Detecção automática de valores duplicados
+               - Identificação de inconsistências críticas
+               - Alertas para dados suspeitos
             """)
         
         with col2:
@@ -573,10 +778,12 @@ def main():
             ✅ **Processamento automático**
             ✅ **Análise por agência**
             ✅ **Análise por gerenciadora**
+            ✅ **Detecção de inconsistências**
             ✅ **Gráficos interativos**
             ✅ **Exportação para Excel**
             ✅ **Filtros dinâmicos**
             ✅ **Relatórios detalhados**
+            ✅ **Correção de valores duplicados**
             """)
         
         # Exemplo de dados
@@ -617,9 +824,142 @@ def main():
     st.markdown("---")
     
     # ========================================================================
-    # SEÇÃO 1: MÉTRICAS PRINCIPAIS
+    # SEÇÃO 1: DETECÇÃO DE INCONSISTÊNCIAS
+    # ========================================================================
+    if mostrar_inconsistencias:
+        st.header("🔍 DETECÇÃO DE INCONSISTÊNCIAS E DADOS CRÍTICOS")
+        
+        with st.spinner("Analisando inconsistências..."):
+            inconsistencias = detectar_inconsistencias(df)
+        
+        # Mostrar inconsistências em abas
+        tab_incon1, tab_incon2, tab_incon3, tab_incon4, tab_incon5 = st.tabs([
+            "📋 RESUMO", 
+            "❌ DADOS FALTANTES", 
+            "⚠️ VALORES SUSPEITOS", 
+            "🔁 DUPLICIDADES", 
+            "🚨 CRÍTICOS"
+        ])
+        
+        with tab_incon1:
+            st.subheader("Resumo de Inconsistências")
+            
+            col_res1, col_res2, col_res3, col_res4 = st.columns(4)
+            
+            with col_res1:
+                total_faltantes = len(inconsistencias.get('dados_faltantes', []))
+                st.metric("Dados Faltantes", total_faltantes)
+            
+            with col_res2:
+                total_suspeitos = len(inconsistencias.get('valores_suspeitos', []))
+                st.metric("Valores Suspeitos", total_suspeitos)
+            
+            with col_res3:
+                total_duplicidades = len(inconsistencias.get('duplicidades', []))
+                st.metric("Duplicidades", total_duplicidades)
+            
+            with col_res4:
+                total_criticos = len(inconsistencias.get('inconsistencias_criticas', []))
+                st.metric("Críticos", total_criticos)
+            
+            # Lista de alertas
+            if inconsistencias.get('alertas'):
+                st.subheader("⚠️ Alertas Gerais")
+                for alerta in inconsistencias.get('alertas', []):
+                    st.warning(alerta)
+        
+        with tab_incon2:
+            if inconsistencias.get('dados_faltantes'):
+                st.subheader("Dados Faltantes ou Inválidos")
+                for item in inconsistencias.get('dados_faltantes', []):
+                    st.error(item)
+                
+                # Mostrar exemplos de dados faltantes
+                if 'Nome' in df.columns:
+                    nulos_nome = df[df['Nome'].isna() | (df['Nome'] == '')]
+                    if not nulos_nome.empty:
+                        with st.expander("Ver registros com nome em branco"):
+                            st.dataframe(nulos_nome[['Ordem', 'Agencia', 'Valor Pagto']].head(10), use_container_width=True)
+            else:
+                st.success("✅ Nenhum dado faltante crítico encontrado")
+        
+        with tab_incon3:
+            if inconsistencias.get('valores_suspeitos'):
+                st.subheader("Valores Suspeitos")
+                for item in inconsistencias.get('valores_suspeitos', []):
+                    st.warning(item)
+                
+                # Mostrar valores extremos
+                if 'Valor Pagto' in df.columns:
+                    valor_medio = df['Valor Pagto'].mean()
+                    valor_std = df['Valor Pagto'].std()
+                    limite_superior = valor_medio + (3 * valor_std)
+                    
+                    valores_extremos = df[df['Valor Pagto'] > limite_superior]
+                    if not valores_extremos.empty:
+                        with st.expander(f"Ver valores acima de R$ {limite_superior:,.2f}"):
+                            st.dataframe(valores_extremos[['Nome', 'Agencia', 'Valor Pagto', 'Dias a apagar']].sort_values('Valor Pagto', ascending=False).head(10), use_container_width=True)
+            else:
+                st.success("✅ Nenhum valor suspeito encontrado")
+        
+        with tab_incon4:
+            if inconsistencias.get('duplicidades'):
+                st.subheader("Possíveis Duplicidades")
+                for item in inconsistencias.get('duplicidades', []):
+                    st.info(item)
+                
+                # Mostrar CPFs duplicados
+                if 'CPF' in df.columns:
+                    cpf_duplicados = df[df['CPF'].duplicated(keep=False) & (df['CPF'] != '')]
+                    if not cpf_duplicados.empty:
+                        with st.expander("Ver CPFs duplicados"):
+                            st.dataframe(cpf_duplicados[['CPF', 'Nome', 'Agencia', 'Valor Pagto']].sort_values('CPF').head(20), use_container_width=True)
+            else:
+                st.success("✅ Nenhuma duplicidade crítica encontrada")
+        
+        with tab_incon5:
+            if inconsistencias.get('inconsistencias_criticas'):
+                st.subheader("Inconsistências Críticas")
+                for item in inconsistencias.get('inconsistencias_criticas', []):
+                    st.error(item)
+                
+                # Mostrar inconsistências de cálculo
+                if all(col in df.columns for col in ['Valor Total', 'Valor Desconto', 'Valor Pagto']):
+                    df_calc = df.copy()
+                    df_calc['Diferença'] = (df_calc['Valor Total'].fillna(0) - 
+                                          (df_calc['Valor Desconto'].fillna(0) + df_calc['Valor Pagto'].fillna(0))).abs()
+                    
+                    inconsistencias_calc = df_calc[df_calc['Diferença'] > 0.01]
+                    if not inconsistencias_calc.empty:
+                        with st.expander("Ver inconsistências de cálculo"):
+                            st.dataframe(inconsistencias_calc[['Nome', 'Valor Total', 'Valor Desconto', 'Valor Pagto', 'Diferença']].head(10), use_container_width=True)
+            else:
+                st.success("✅ Nenhuma inconsistência crítica encontrada")
+        
+        st.markdown("---")
+    
+    # ========================================================================
+    # SEÇÃO 2: MÉTRICAS PRINCIPAIS (COM VERIFICAÇÃO DE DUPLICAÇÃO)
     # ========================================================================
     st.header("📈 MÉTRICAS PRINCIPAIS")
+    
+    # Verificação explícita de valores duplicados
+    if 'Valor Pagto' in df.columns:
+        valor_total = df['Valor Pagto'].sum()
+        
+        # Verificar se o valor total parece realista
+        if valor_total > 10000000:  # Acima de 10 milhões
+            st.warning(f"""
+            ⚠️ **ATENÇÃO: Valor total suspeito**  
+            Valor total calculado: R$ {valor_total:,.2f}  
+            
+            Possíveis causas:
+            1. Valores duplicados no arquivo fonte
+            2. Erro na formatação dos números
+            3. Dados de múltiplos períodos agrupados
+            
+            **Ação recomendada:** Verifique manualmente os valores mais altos.
+            """)
     
     metricas = calcular_metricas_principais(df)
     
@@ -636,6 +976,10 @@ def main():
     with col3:
         valor_medio = metricas.get('valor_medio', 0)
         st.metric("Valor Médio", f"R$ {valor_medio:,.2f}")
+        
+        # Mostrar alerta se valor médio for suspeito
+        if 'alerta_valor_medio' in metricas and metricas['alerta_valor_medio'] != "OK":
+            st.caption(f"⚠️ {metricas['alerta_valor_medio']}")
     
     with col4:
         total_agencias = metricas.get('total_agencias', 0)
@@ -663,7 +1007,7 @@ def main():
     st.markdown("---")
     
     # ========================================================================
-    # SEÇÃO 2: ANÁLISES DETALHADAS (ABAS)
+    # SEÇÃO 3: ANÁLISES DETALHADAS (ABAS)
     # ========================================================================
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "📋 VISÃO GERAL", 
@@ -714,7 +1058,10 @@ def main():
                 st.write(f"- Memória aproximada: {sys.getsizeof(df) / 1024 / 1024:.2f} MB")
                 
                 if 'Data Pagto' in df.columns:
-                    st.write(f"- Período: {df['Data Pagto'].min().strftime('%d/%m/%Y')} a {df['Data Pagto'].max().strftime('%d/%m/%Y')}")
+                    min_date = df['Data Pagto'].min()
+                    max_date = df['Data Pagto'].max()
+                    if pd.notna(min_date) and pd.notna(max_date):
+                        st.write(f"- Período: {min_date.strftime('%d/%m/%Y')} a {max_date.strftime('%d/%m/%Y')}")
     
     # ========================================================================
     # ABA 2: POR AGÊNCIA
@@ -746,7 +1093,7 @@ def main():
             st.dataframe(relatorio_gerenciadora, use_container_width=True)
             
             # Comparativo VISTA vs REDE
-            if 'VISTA' in relatorio_gerenciadora.index or 'REDE CIDAD�' in relatorio_gerenciadora.index:
+            if 'VISTA' in relatorio_gerenciadora.index or 'REDE CIDADÃO' in relatorio_gerenciadora.index:
                 st.subheader("📊 Comparativo VISTA vs REDE CIDADÃO")
                 
                 comparativo_data = []
@@ -759,8 +1106,8 @@ def main():
                         'Valor Médio': vista_data['Valor Médio']
                     })
                 
-                if 'REDE CIDAD�' in relatorio_gerenciadora.index:
-                    rede_data = relatorio_gerenciadora.loc['REDE CIDAD�']
+                if 'REDE CIDADÃO' in relatorio_gerenciadora.index:
+                    rede_data = relatorio_gerenciadora.loc['REDE CIDADÃO']
                     comparativo_data.append({
                         'Gerenciadora': 'REDE CIDADÃO',
                         'Beneficiários': rede_data['Qtd Beneficiários'],
@@ -821,18 +1168,18 @@ def main():
             st.download_button(
                 label="📥 Baixar CSV",
                 data=csv_data,
-                file_name="dados_abae_processados.csv",
+                file_name="dados_pot_processados.csv",
                 mime="text/csv",
                 use_container_width=True
             )
         
         with col_exp2:
-            # Exportar Excel
-            excel_bytes = exportar_para_excel(df, relatorio_agencia, relatorio_gerenciadora)
+            # Exportar Excel com inconsistências
+            excel_bytes = exportar_para_excel(df, relatorio_agencia, relatorio_gerenciadora, inconsistencias)
             st.download_button(
                 label="📥 Baixar Excel Completo",
                 data=excel_bytes,
-                file_name="relatorio_abae_completo.xlsx",
+                file_name="relatorio_pot_completo.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True
             )
@@ -843,7 +1190,7 @@ def main():
             st.download_button(
                 label="📥 Baixar JSON",
                 data=json_data,
-                file_name="dados_abae.json",
+                file_name="dados_pot.json",
                 mime="application/json",
                 use_container_width=True
             )
@@ -854,7 +1201,7 @@ def main():
         with st.expander("⚙️ Opções Avançadas de Exportação"):
             st.markdown("### Exportar Relatórios Individuais")
             
-            col_exp4, col_exp5 = st.columns(2)
+            col_exp4, col_exp5, col_exp6 = st.columns(3)
             
             with col_exp4:
                 if not relatorio_agencia.empty:
@@ -877,6 +1224,26 @@ def main():
                         mime="text/csv",
                         use_container_width=True
                     )
+            
+            with col_exp6:
+                # Exportar inconsistências
+                if inconsistencias:
+                    incon_df = pd.DataFrame([
+                        ['Dados Faltantes', '; '.join(inconsistencias.get('dados_faltantes', []))],
+                        ['Valores Suspeitos', '; '.join(inconsistencias.get('valores_suspeitos', []))],
+                        ['Duplicidades', '; '.join(inconsistencias.get('duplicidades', []))],
+                        ['Inconsistências Críticas', '; '.join(inconsistencias.get('inconsistencias_criticas', []))],
+                        ['Alertas', '; '.join(inconsistencias.get('alertas', []))]
+                    ], columns=['Categoria', 'Descrição'])
+                    
+                    incon_csv = incon_df.to_csv(index=False, sep=';')
+                    st.download_button(
+                        label="🔍 Inconsistências (CSV)",
+                        data=incon_csv,
+                        file_name="inconsistencias.csv",
+                        mime="text/csv",
+                        use_container_width=True
+                    )
     
     # ========================================================================
     # RODAPÉ
@@ -885,9 +1252,9 @@ def main():
     st.markdown(
         f"""
         <div style='text-align: center; color: gray; font-size: 0.9em;'>
-        Sistema ABAE - Análise de Pagamentos | 
+        Sistema de Monitoramento de Pagamentos - Programa Operacional de Trabalho (POT) | 
         Processado em: {datetime.now().strftime('%d/%m/%Y %H:%M')} | 
-        Desenvolvido para o projeto ABAE
+        Inconsistências detectadas: {sum(len(v) for v in inconsistencias.values() if isinstance(v, list))}
         </div>
         """,
         unsafe_allow_html=True
