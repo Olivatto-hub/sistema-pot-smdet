@@ -5,26 +5,33 @@ from datetime import datetime
 import streamlit as st
 import warnings
 import chardet
-import numpy as np  # IMPORTANTE: Adicionado numpy
+import numpy as np
+import io
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
 
 warnings.filterwarnings('ignore')
 
 # Configuração da página
 st.set_page_config(
-    page_title="Sistema POT - Monitoramento de Pagamentos",
+    page_title="Sistema POT - Monitoramento Completo",
     page_icon="💰",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-class SistemaPOTStreamlit:
+class SistemaPOTCompleto:
     def __init__(self):
         self.df = None
         self.dados_limpos = None
+        self.dados_faltantes = None
+        self.inconsistencias = None
         self.arquivo_processado = False
         self.nome_arquivo = ""
         self.total_pagamentos = 0
-        self.coluna_valor_pagto = None  # Armazenar nome da coluna de valor de pagamento
+        self.coluna_valor_pagto = None
+        self.relatorio_executivo = {}
         
     def detectar_encoding(self, arquivo_path):
         """Detecta o encoding do arquivo"""
@@ -34,8 +41,6 @@ class SistemaPOTStreamlit:
             
             resultado = chardet.detect(raw_data)
             encoding = resultado['encoding']
-            confianca = resultado['confidence']
-            
             return encoding_map.get(encoding, encoding) if encoding else 'latin-1'
             
         except:
@@ -68,39 +73,34 @@ class SistemaPOTStreamlit:
             
             valor_str = str(valor_str)
             
-            # Se já começar com número, provavelmente já é numérico
-            if re.match(r'^\d', valor_str.strip()):
-                try:
-                    return float(valor_str.replace(',', '.'))
-                except:
-                    pass
-            
             # Remover R$ e espaços
             valor_str = valor_str.replace('R$', '').replace(' ', '').strip()
             
-            # Verificar se tem vírgula como separador decimal
-            if ',' in valor_str and '.' in valor_str:
-                # Formato: 1.593,90 - remover pontos de milhar, substituir vírgula decimal
+            # Se já for número com ponto
+            if re.match(r'^\d+\.?\d*$', valor_str):
+                return float(valor_str)
+            
+            # Formato brasileiro: 1.593,90
+            if '.' in valor_str and ',' in valor_str:
+                # Remover pontos de milhar
                 partes = valor_str.split(',')
                 if len(partes) == 2:
                     inteiro = partes[0].replace('.', '')
                     return float(f"{inteiro}.{partes[1]}")
             
+            # Formato europeu: 1593,90
             elif ',' in valor_str:
-                # Formato: 1593,90
                 return float(valor_str.replace(',', '.'))
             
-            else:
-                # Formato: 1593.90 ou 1593
-                return float(valor_str)
+            return float(valor_str)
                 
-        except Exception as e:
+        except:
             return 0.0
     
     def processar_arquivo_streamlit(self, arquivo_upload):
         """Processa arquivo CSV de pagamentos do POT"""
         try:
-            with st.spinner("📥 Lendo arquivo..."):
+            with st.spinner("📥 Lendo e processando arquivo..."):
                 # Salvar arquivo temporariamente
                 temp_path = f"temp_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
                 with open(temp_path, 'wb') as f:
@@ -116,11 +116,14 @@ class SistemaPOTStreamlit:
                 if os.path.exists(temp_path):
                     os.remove(temp_path)
             
-            with st.spinner("🧹 Limpando dados..."):
+            with st.spinner("🧹 Limpando e analisando dados..."):
                 self._limpar_dados()
+                self._analisar_dados_faltantes()
+                self._analisar_inconsistencias()
                 
-            with st.spinner("📊 Calculando estatísticas..."):
+            with st.spinner("📊 Calculando estatísticas e gerando relatórios..."):
                 self._calcular_estatisticas()
+                self._gerar_relatorio_executivo()
                 
             self.arquivo_processado = True
             self.nome_arquivo = arquivo_upload.name
@@ -141,7 +144,7 @@ class SistemaPOTStreamlit:
         # Remover linhas totalmente vazias
         df_limpo = df_limpo.dropna(how='all')
         
-        # Padronizar nomes das colunas (remover acentos, espaços, minúsculas)
+        # Padronizar nomes das colunas
         mapeamento_colunas = {}
         for col in df_limpo.columns:
             col_limpa = str(col).strip().lower()
@@ -157,7 +160,6 @@ class SistemaPOTStreamlit:
         df_limpo = df_limpo.rename(columns=mapeamento_colunas)
         
         # IDENTIFICAR COLUNA DE VALOR DE PAGAMENTO
-        # Lista de possíveis nomes (em ordem de prioridade)
         possiveis_nomes_valor = [
             'valor_pagto', 'valor_pagamento', 'valor_total', 'valor', 
             'pagto', 'pagamento', 'total', 'valorpagto'
@@ -169,17 +171,7 @@ class SistemaPOTStreamlit:
                 self.coluna_valor_pagto = nome
                 break
         
-        # Se não encontrou, procurar por colunas que contenham essas palavras
-        if self.coluna_valor_pagto is None:
-            for col in df_limpo.columns:
-                col_lower = col.lower()
-                if any(termo in col_lower for termo in ['pagto', 'pagamento', 'valor']):
-                    self.coluna_valor_pagto = col
-                    break
-        
-        st.info(f"🔍 Coluna de valor identificada: {self.coluna_valor_pagto}")
-        
-        # Converter todas as colunas que parecem ser valores monetários
+        # Converter colunas de valor
         colunas_valor = []
         for col in df_limpo.columns:
             col_lower = col.lower()
@@ -189,25 +181,14 @@ class SistemaPOTStreamlit:
         for coluna in colunas_valor:
             df_limpo[coluna] = df_limpo[coluna].apply(self.converter_valor)
         
-        # Converter outras colunas numéricas
-        for col in df_limpo.columns:
-            # Tentar converter para numérico se não for texto óbvio
-            if col not in ['nome', 'distrito', 'agencia', 'rg']:
-                try:
-                    df_limpo[col] = pd.to_numeric(df_limpo[col], errors='ignore')
-                except:
-                    pass
-        
-        # Procurar coluna de dias
+        # Converter outras colunas
         for col in df_limpo.columns:
             if 'dia' in col.lower() or 'dias' in col.lower():
                 try:
                     df_limpo[col] = pd.to_numeric(df_limpo[col], errors='coerce')
                 except:
                     pass
-        
-        # Procurar coluna de data
-        for col in df_limpo.columns:
+            
             if 'data' in col.lower():
                 try:
                     df_limpo[col] = pd.to_datetime(df_limpo[col], format='%d/%m/%Y', errors='coerce')
@@ -219,65 +200,324 @@ class SistemaPOTStreamlit:
         
         # Remover linhas onde o valor de pagamento é zero ou negativo
         if self.coluna_valor_pagto and self.coluna_valor_pagto in df_limpo.columns:
-            antes = len(df_limpo)
             df_limpo = df_limpo[df_limpo[self.coluna_valor_pagto] > 0]
-            depois = len(df_limpo)
-            st.info(f"📊 Removidos {antes - depois} registros com valor ≤ 0")
         
         self.dados_limpos = df_limpo
     
-    def _calcular_estatisticas(self):
-        """Calcula estatísticas dos dados - CORRIGIDO"""
-        if self.dados_limpos is None or len(self.dados_limpos) == 0:
-            st.error("❌ Nenhum dado para calcular estatísticas")
+    def _analisar_dados_faltantes(self):
+        """Analisa dados faltantes no dataset"""
+        if self.dados_limpos is None or self.dados_limpos.empty:
             return
         
-        # USAR A COLUNA IDENTIFICADA DE VALOR DE PAGAMENTO
-        if self.coluna_valor_pagto and self.coluna_valor_pagto in self.dados_limpos.columns:
-            # Calcular soma TOTAL e precisa
-            self.total_pagamentos = self.dados_limpos[self.coluna_valor_pagto].sum()
-            
-            # Verificação extra: calcular também usando numpy para garantir
-            total_numpy = np.sum(self.dados_limpos[self.coluna_valor_pagto].values)
-            
-            st.success(f"💰 Valor total calculado: R$ {self.total_pagamentos:,.2f}")
-            st.info(f"✅ Verificação com numpy: R$ {total_numpy:,.2f}")
-            
-            # Mostrar alguns valores para debug
-            with st.expander("🔍 Ver primeiros valores da coluna"):
-                st.write(f"Coluna: {self.coluna_valor_pagto}")
-                st.write(f"Primeiros 5 valores: {self.dados_limpos[self.coluna_valor_pagto].head(5).tolist()}")
-                st.write(f"Média: R$ {self.dados_limpos[self.coluna_valor_pagto].mean():,.2f}")
-                st.write(f"Contagem: {len(self.dados_limpos)} registros")
+        # Analisar valores faltantes por coluna
+        faltantes_por_coluna = self.dados_limpos.isnull().sum()
+        percentual_faltantes = (faltantes_por_coluna / len(self.dados_limpos)) * 100
+        
+        self.dados_faltantes = pd.DataFrame({
+            'Coluna': faltantes_por_coluna.index,
+            'Valores_Faltantes': faltantes_por_coluna.values,
+            'Percentual_Faltante': percentual_faltantes.values.round(2),
+            'Tipo_Dado': self.dados_limpos.dtypes.values
+        })
+        
+        # Identificar linhas com dados faltantes críticos
+        colunas_criticas = []
+        for col in self.dados_limpos.columns:
+            if col in ['nome', 'agencia', self.coluna_valor_pagto]:
+                colunas_criticas.append(col)
+        
+        if colunas_criticas:
+            mask = self.dados_limpos[colunas_criticas].isnull().any(axis=1)
+            self.linhas_com_faltantes_criticos = self.dados_limpos[mask].copy()
         else:
-            st.error(f"❌ Coluna de valor não encontrada: {self.coluna_valor_pagto}")
-            # Tentar encontrar qualquer coluna numérica
-            colunas_numericas = self.dados_limpos.select_dtypes(include=[np.number]).columns
-            if len(colunas_numericas) > 0:
-                st.warning(f"Colunas numéricas disponíveis: {list(colunas_numericas)}")
-                # Usar a primeira coluna numérica como fallback
-                col_fallback = colunas_numericas[0]
-                self.total_pagamentos = self.dados_limpos[col_fallback].sum()
-                st.warning(f"⚠️ Usando coluna alternativa '{col_fallback}': R$ {self.total_pagamentos:,.2f}")
+            self.linhas_com_faltantes_criticos = pd.DataFrame()
+    
+    def _analisar_inconsistencias(self):
+        """Analisa inconsistências nos dados"""
+        if self.dados_limpos is None or self.dados_limpos.empty:
+            return
+        
+        inconsistencias = []
+        
+        # 1. Valores negativos onde não deveriam
+        if self.coluna_valor_pagto and self.coluna_valor_pagto in self.dados_limpos.columns:
+            negativos = self.dados_limpos[self.dados_limpos[self.coluna_valor_pagto] < 0]
+            if len(negativos) > 0:
+                inconsistencias.append({
+                    'Tipo': 'Valores Negativos',
+                    'Coluna': self.coluna_valor_pagto,
+                    'Quantidade': len(negativos),
+                    'Exemplo': f"Linhas: {list(negativos.index[:3])}"
+                })
+        
+        # 2. Valores zerados
+        if self.coluna_valor_pagto and self.coluna_valor_pagto in self.dados_limpos.columns:
+            zerados = self.dados_limpos[self.dados_limpos[self.coluna_valor_pagto] == 0]
+            if len(zerados) > 0:
+                inconsistencias.append({
+                    'Tipo': 'Valores Zerados',
+                    'Coluna': self.coluna_valor_pagto,
+                    'Quantidade': len(zerados),
+                    'Exemplo': f"Linhas: {list(zerados.index[:3])}"
+                })
+        
+        # 3. Datas inválidas
+        colunas_data = [col for col in self.dados_limpos.columns if 'data' in col.lower()]
+        for col in colunas_data:
+            if pd.api.types.is_datetime64_any_dtype(self.dados_limpos[col]):
+                datas_invalidas = self.dados_limpos[self.dados_limpos[col].isnull()]
+                if len(datas_invalidas) > 0:
+                    inconsistencias.append({
+                        'Tipo': 'Datas Inválidas',
+                        'Coluna': col,
+                        'Quantidade': len(datas_invalidas),
+                        'Exemplo': f"{len(datas_invalidas)} registros sem data válida"
+                    })
+        
+        # 4. Valores fora do padrão esperado
+        if self.coluna_valor_pagto and self.coluna_valor_pagto in self.dados_limpos.columns:
+            valores = self.dados_limpos[self.coluna_valor_pagto]
+            q1 = valores.quantile(0.25)
+            q3 = valores.quantile(0.75)
+            iqr = q3 - q1
+            limite_inferior = q1 - 1.5 * iqr
+            limite_superior = q3 + 1.5 * iqr
+            
+            outliers = self.dados_limpos[
+                (valores < limite_inferior) | (valores > limite_superior)
+            ]
+            
+            if len(outliers) > 0:
+                inconsistencias.append({
+                    'Tipo': 'Valores Atípicos (Outliers)',
+                    'Coluna': self.coluna_valor_pagto,
+                    'Quantidade': len(outliers),
+                    'Exemplo': f"Valores fora de [{limite_inferior:.2f}, {limite_superior:.2f}]"
+                })
+        
+        # 5. Agências inválidas
+        if 'agencia' in self.dados_limpos.columns:
+            agencias_invalidas = self.dados_limpos[self.dados_limpos['agencia'].isnull()]
+            if len(agencias_invalidas) > 0:
+                inconsistencias.append({
+                    'Tipo': 'Agências Inválidas',
+                    'Coluna': 'agencia',
+                    'Quantidade': len(agencias_invalidas),
+                    'Exemplo': f"{len(agencias_invalidas)} registros sem agência"
+                })
+        
+        self.inconsistencias = pd.DataFrame(inconsistencias) if inconsistencias else pd.DataFrame()
+    
+    def _calcular_estatisticas(self):
+        """Calcula estatísticas dos dados"""
+        if self.dados_limpos is None or len(self.dados_limpos) == 0:
+            return
+        
+        if self.coluna_valor_pagto and self.coluna_valor_pagto in self.dados_limpos.columns:
+            self.total_pagamentos = self.dados_limpos[self.coluna_valor_pagto].sum()
+    
+    def _gerar_relatorio_executivo(self):
+        """Gera relatório executivo consolidado"""
+        self.relatorio_executivo = {
+            'data_processamento': datetime.now().strftime('%d/%m/%Y %H:%M'),
+            'nome_arquivo': self.nome_arquivo,
+            'total_registros': len(self.dados_limpos) if self.dados_limpos is not None else 0,
+            'valor_total': self.total_pagamentos,
+            'coluna_valor_principal': self.coluna_valor_pagto,
+            'dados_faltantes': self.dados_faltantes.to_dict('records') if self.dados_faltantes is not None else [],
+            'inconsistencias': self.inconsistencias.to_dict('records') if self.inconsistencias is not None else [],
+            'colunas_disponiveis': list(self.dados_limpos.columns) if self.dados_limpos is not None else []
+        }
+    
+    def gerar_relatorio_excel_completo(self):
+        """Gera relatório Excel completo com análises"""
+        if not self.arquivo_processado:
+            return None
+        
+        try:
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                # 1. Dados Completos
+                self.dados_limpos.to_excel(writer, sheet_name='Dados Completos', index=False)
+                
+                # 2. Análise de Dados Faltantes
+                if self.dados_faltantes is not None and not self.dados_faltantes.empty:
+                    self.dados_faltantes.to_excel(writer, sheet_name='Dados Faltantes', index=False)
+                    
+                    # Linhas com faltantes críticos
+                    if hasattr(self, 'linhas_com_faltantes_criticos') and not self.linhas_com_faltantes_criticos.empty:
+                        self.linhas_com_faltantes_criticos.to_excel(
+                            writer, sheet_name='Faltantes Críticos', index=False
+                        )
+                
+                # 3. Análise de Inconsistências
+                if self.inconsistencias is not None and not self.inconsistencias.empty:
+                    self.inconsistencias.to_excel(writer, sheet_name='Inconsistências', index=False)
+                
+                # 4. Estatísticas Detalhadas
+                if self.coluna_valor_pagto and self.coluna_valor_pagto in self.dados_limpos.columns:
+                    stats = self.dados_limpos[self.coluna_valor_pagto].describe()
+                    stats_df = pd.DataFrame({
+                        'Estatística': stats.index,
+                        'Valor': stats.values
+                    })
+                    stats_df.to_excel(writer, sheet_name='Estatísticas', index=False)
+                
+                # 5. Relatório Executivo
+                relatorio_df = pd.DataFrame([
+                    ['Data Processamento', self.relatorio_executivo['data_processamento']],
+                    ['Arquivo', self.relatorio_executivo['nome_arquivo']],
+                    ['Total de Registros', self.relatorio_executivo['total_registros']],
+                    ['Valor Total', f"R$ {self.relatorio_executivo['valor_total']:,.2f}"],
+                    ['Coluna Valor Principal', self.relatorio_executivo['coluna_valor_principal']],
+                    ['Colunas Disponíveis', ', '.join(self.relatorio_executivo['colunas_disponiveis'])],
+                    ['Dados Faltantes Detectados', len(self.relatorio_executivo['dados_faltantes'])],
+                    ['Inconsistências Detectadas', len(self.relatorio_executivo['inconsistencias'])]
+                ], columns=['Item', 'Valor'])
+                
+                relatorio_df.to_excel(writer, sheet_name='Relatório Executivo', index=False)
+                
+                # 6. Top 10 Agências (se existir)
+                if 'agencia' in self.dados_limpos.columns and self.coluna_valor_pagto:
+                    analise_agencia = self.dados_limpos.groupby('agencia').agg({
+                        self.coluna_valor_pagto: ['sum', 'count', 'mean']
+                    }).round(2)
+                    
+                    analise_agencia.columns = ['Valor Total', 'Quantidade', 'Média']
+                    analise_agencia = analise_agencia.sort_values('Valor Total', ascending=False)
+                    analise_agencia.to_excel(writer, sheet_name='Análise por Agência')
+            
+            output.seek(0)
+            return output
+        
+        except Exception as e:
+            st.error(f"Erro ao gerar relatório Excel: {str(e)}")
+            return None
+    
+    def gerar_relatorio_consolidado_html(self):
+        """Gera relatório consolidado em formato HTML"""
+        if not self.arquivo_processado:
+            return ""
+        
+        html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <style>
+                body {{ font-family: Arial, sans-serif; margin: 40px; }}
+                .header {{ background-color: #f0f0f0; padding: 20px; border-radius: 10px; }}
+                .section {{ margin: 30px 0; padding: 20px; border: 1px solid #ddd; border-radius: 5px; }}
+                .metric {{ display: inline-block; margin: 10px; padding: 15px; background: #007bff; color: white; border-radius: 5px; }}
+                .alert {{ background: #ffcccc; padding: 10px; border-radius: 5px; margin: 10px 0; }}
+                .success {{ background: #ccffcc; padding: 10px; border-radius: 5px; margin: 10px 0; }}
+                table {{ width: 100%; border-collapse: collapse; }}
+                th, td {{ padding: 8px; text-align: left; border-bottom: 1px solid #ddd; }}
+                th {{ background-color: #f2f2f2; }}
+            </style>
+        </head>
+        <body>
+            <div class="header">
+                <h1>📊 RELATÓRIO EXECUTIVO - SISTEMA POT</h1>
+                <p><strong>Data:</strong> {self.relatorio_executivo['data_processamento']}</p>
+                <p><strong>Arquivo:</strong> {self.relatorio_executivo['nome_arquivo']}</p>
+            </div>
+            
+            <div class="section">
+                <h2>📈 MÉTRICAS PRINCIPAIS</h2>
+                <div class="metric">Total Registros: {self.relatorio_executivo['total_registros']:,}</div>
+                <div class="metric">Valor Total: R$ {self.relatorio_executivo['valor_total']:,.2f}</div>
+                <div class="metric">Colunas: {len(self.relatorio_executivo['colunas_disponiveis'])}</div>
+            </div>
+        """
+        
+        # Dados Faltantes
+        if self.dados_faltantes is not None and not self.dados_faltantes.empty:
+            html += """
+            <div class="section">
+                <h2>⚠️ DADOS FALTANTES</h2>
+                <table>
+                    <tr>
+                        <th>Coluna</th>
+                        <th>Valores Faltantes</th>
+                        <th>Percentual</th>
+                        <th>Tipo de Dado</th>
+                    </tr>
+            """
+            
+            for _, row in self.dados_faltantes.iterrows():
+                if row['Valores_Faltantes'] > 0:
+                    html += f"""
+                    <tr>
+                        <td>{row['Coluna']}</td>
+                        <td>{row['Valores_Faltantes']:,}</td>
+                        <td>{row['Percentual_Faltante']}%</td>
+                        <td>{row['Tipo_Dado']}</td>
+                    </tr>
+                    """
+            
+            html += "</table></div>"
+        
+        # Inconsistências
+        if self.inconsistencias is not None and not self.inconsistencias.empty:
+            html += """
+            <div class="section">
+                <h2>🚨 INCONSISTÊNCIAS DETECTADAS</h2>
+                <table>
+                    <tr>
+                        <th>Tipo</th>
+                        <th>Coluna</th>
+                        <th>Quantidade</th>
+                        <th>Exemplo/Descrição</th>
+                    </tr>
+            """
+            
+            for _, row in self.inconsistencias.iterrows():
+                html += f"""
+                <tr>
+                    <td>{row['Tipo']}</td>
+                    <td>{row['Coluna']}</td>
+                    <td>{row['Quantidade']:,}</td>
+                    <td>{row['Exemplo']}</td>
+                </tr>
+                """
+            
+            html += "</table></div>"
+        
+        html += """
+            <div class="section">
+                <h2>📋 RECOMENDAÇÕES</h2>
+                <div class="success">
+                    <strong>✓ Ações Recomendadas:</strong><br>
+                    1. Corrigir dados faltantes críticos<br>
+                    2. Validar inconsistências detectadas<br>
+                    3. Revisar valores atípicos<br>
+                    4. Atualizar informações incompletas
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+        
+        return html
 
 # Inicializar sistema
-sistema = SistemaPOTStreamlit()
+sistema = SistemaPOTCompleto()
 
 # ==============================================
-# INTERFACE STREAMLIT - SIMPLIFICADA E FUNCIONAL
+# INTERFACE STREAMLIT COMPLETA
 # ==============================================
 
-st.title("💰 SISTEMA DE MONITORAMENTO DE PAGAMENTOS - POT")
+st.title("💰 SISTEMA COMPLETO DE MONITORAMENTO DE PAGAMENTOS - POT")
 st.markdown("---")
 
-# Sidebar simplificada
+# Sidebar
 with st.sidebar:
     st.header("📁 Upload do Arquivo")
     
     arquivo = st.file_uploader(
         "Selecione o arquivo CSV",
         type=['csv'],
-        help="Arquivo CSV com delimitador ponto e vírgula"
+        help="Arquivo CSV com dados de pagamentos"
     )
     
     if arquivo is not None:
@@ -306,290 +546,343 @@ if 'arquivo_processado' in st.session_state and st.session_state['arquivo_proces
         # ============================
         # DASHBOARD PRINCIPAL
         # ============================
-        st.header("📊 RESUMO DO PROCESSAMENTO")
+        st.header("📊 RESUMO EXECUTIVO")
         
-        # Métricas principais em destaque
-        st.markdown("### 📈 MÉTRICAS PRINCIPAIS")
-        
+        # Métricas principais
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
             st.metric(
                 label="📄 Total de Registros",
-                value=f"{len(sistema.dados_limpos):,}",
-                help="Número total de pagamentos processados"
+                value=f"{len(sistema.dados_limpos):,}"
             )
         
         with col2:
-            # VALOR TOTAL CORRETO
-            if sistema.coluna_valor_pagto and sistema.coluna_valor_pagto in sistema.dados_limpos.columns:
-                valor_total = sistema.dados_limpos[sistema.coluna_valor_pagto].sum()
-                st.metric(
-                    label="💰 Valor Total",
-                    value=f"R$ {valor_total:,.2f}",
-                    help=f"Soma da coluna '{sistema.coluna_valor_pagto}'"
-                )
-            else:
-                st.metric(
-                    label="💰 Valor Total",
-                    value="N/A",
-                    help="Coluna de valor não identificada"
-                )
+            valor_total = sistema.dados_limpos[sistema.coluna_valor_pagto].sum() if sistema.coluna_valor_pagto else 0
+            st.metric(
+                label="💰 Valor Total",
+                value=f"R$ {valor_total:,.2f}"
+            )
         
         with col3:
-            if sistema.coluna_valor_pagto and sistema.coluna_valor_pagto in sistema.dados_limpos.columns:
-                media = sistema.dados_limpos[sistema.coluna_valor_pagto].mean()
+            if sistema.dados_faltantes is not None:
+                total_faltantes = sistema.dados_faltantes['Valores_Faltantes'].sum()
                 st.metric(
-                    label="📊 Valor Médio",
-                    value=f"R$ {media:,.2f}",
-                    help="Média por pagamento"
+                    label="⚠️ Dados Faltantes",
+                    value=f"{total_faltantes:,}"
                 )
             else:
-                st.metric(
-                    label="📊 Valor Médio",
-                    value="N/A"
-                )
+                st.metric(label="⚠️ Dados Faltantes", value="0")
         
         with col4:
-            # Contar agências se existir coluna
-            if 'agencia' in sistema.dados_limpos.columns:
-                num_agencias = sistema.dados_limpos['agencia'].nunique()
+            if sistema.inconsistencias is not None:
+                total_inconsistencias = sistema.inconsistencias['Quantidade'].sum() if 'Quantidade' in sistema.inconsistencias.columns else 0
                 st.metric(
-                    label="🏢 Agências",
-                    value=num_agencias,
-                    help="Número de agências distintas"
+                    label="🚨 Inconsistências",
+                    value=f"{total_inconsistencias:,}"
                 )
             else:
-                st.metric(
-                    label="🏢 Agências",
-                    value="N/A"
-                )
+                st.metric(label="🚨 Inconsistências", value="0")
         
         st.markdown("---")
         
         # ============================
-        # VERIFICAÇÃO DO VALOR TOTAL
+        # ANÁLISE DE DADOS FALTANTES
         # ============================
-        st.subheader("✅ VERIFICAÇÃO DO CÁLCULO")
+        st.header("🔍 ANÁLISE DE DADOS FALTANTES")
         
-        if sistema.coluna_valor_pagto and sistema.coluna_valor_pagto in sistema.dados_limpos.columns:
-            # Calcular de 3 formas diferentes para verificar
-            col_a, col_b, col_c = st.columns(3)
+        if sistema.dados_faltantes is not None and not sistema.dados_faltantes.empty:
+            # Filtrar apenas colunas com dados faltantes
+            dados_faltantes_filtrados = sistema.dados_faltantes[
+                sistema.dados_faltantes['Valores_Faltantes'] > 0
+            ]
             
-            with col_a:
-                st.markdown("**Método 1: Pandas Sum**")
-                soma_pandas = sistema.dados_limpos[sistema.coluna_valor_pagto].sum()
-                st.code(f"R$ {soma_pandas:,.2f}")
-            
-            with col_b:
-                st.markdown("**Método 2: Numpy Sum**")
-                soma_numpy = np.sum(sistema.dados_limpos[sistema.coluna_valor_pagto].values)
-                st.code(f"R$ {soma_numpy:,.2f}")
-            
-            with col_c:
-                st.markdown("**Método 3: Loop Manual**")
-                soma_manual = 0
-                for valor in sistema.dados_limpos[sistema.coluna_valor_pagto]:
-                    try:
-                        soma_manual += float(valor)
-                    except:
-                        pass
-                st.code(f"R$ {soma_manual:,.2f}")
-            
-            # Verificar consistência
-            if abs(soma_pandas - soma_numpy) < 0.01 and abs(soma_pandas - soma_manual) < 0.01:
-                st.success("✅ Cálculos consistentes! O valor total está correto.")
+            if not dados_faltantes_filtrados.empty:
+                st.subheader("📋 Dados Faltantes por Coluna")
+                
+                col_f1, col_f2 = st.columns(2)
+                
+                with col_f1:
+                    st.dataframe(
+                        dados_faltantes_filtrados[['Coluna', 'Valores_Faltantes', 'Percentual_Faltante']],
+                        use_container_width=True,
+                        height=300
+                    )
+                
+                with col_f2:
+                    # Gráfico de barras simples
+                    chart_data = dados_faltantes_filtrados.set_index('Coluna')['Percentual_Faltante']
+                    st.bar_chart(chart_data)
+                
+                # Mostrar linhas com faltantes críticos
+                if hasattr(sistema, 'linhas_com_faltantes_criticos') and not sistema.linhas_com_faltantes_criticos.empty:
+                    st.subheader("🚨 Linhas com Faltantes Críticos")
+                    st.dataframe(
+                        sistema.linhas_com_faltantes_criticos,
+                        use_container_width=True,
+                        height=200
+                    )
+                    st.info(f"**Ação necessária:** Corrigir {len(sistema.linhas_com_faltantes_criticos)} registros com dados críticos faltantes.")
             else:
-                st.warning("⚠️ Pequena diferença nos cálculos (arredondamento).")
+                st.success("✅ Nenhum dado faltante detectado!")
+        else:
+            st.success("✅ Nenhum dado faltante detectado!")
+        
+        st.markdown("---")
+        
+        # ============================
+        # ANÁLISE DE INCONSISTÊNCIAS
+        # ============================
+        st.header("🚨 ANÁLISE DE INCONSISTÊNCIAS")
+        
+        if sistema.inconsistencias is not None and not sistema.inconsistencias.empty:
+            st.subheader("📋 Inconsistências Detectadas")
+            
+            # Tabela de inconsistências
+            st.dataframe(
+                sistema.inconsistencias,
+                use_container_width=True,
+                height=300
+            )
+            
+            # Detalhamento por tipo de inconsistência
+            st.subheader("📊 Detalhamento por Tipo")
+            
+            for _, row in sistema.inconsistencias.iterrows():
+                with st.expander(f"{row['Tipo']} - {row['Quantidade']} ocorrências"):
+                    st.write(f"**Coluna:** {row['Coluna']}")
+                    st.write(f"**Descrição:** {row['Exemplo']}")
+                    st.write(f"**Impacto:** {row['Quantidade']} registros afetados")
+                    
+                    # Botão para ver exemplos
+                    if st.button(f"Ver exemplos de {row['Tipo']}", key=f"btn_{row['Tipo']}"):
+                        # Aqui você pode mostrar exemplos específicos
+                        st.write("Exemplos serão mostrados aqui...")
+            
+            # Recomendações
+            st.subheader("🎯 RECOMENDAÇÕES DE CORREÇÃO")
+            
+            rec_col1, rec_col2 = st.columns(2)
+            
+            with rec_col1:
+                st.markdown("""
+                **Ações Imediatas:**
+                1. Corrigir valores negativos
+                2. Validar valores zerados
+                3. Completar dados faltantes críticos
+                4. Revisar datas inválidas
+                """)
+            
+            with rec_col2:
+                st.markdown("""
+                **Ações Preventivas:**
+                1. Implementar validação na entrada
+                2. Criar relatórios de qualidade
+                3. Treinar equipe de inserção
+                4. Estabelecer padrões de qualidade
+                """)
+        else:
+            st.success("✅ Nenhuma inconsistência grave detectada!")
         
         st.markdown("---")
         
         # ============================
         # VISUALIZAÇÃO DOS DADOS
         # ============================
-        st.subheader("👀 VISUALIZAÇÃO DOS DADOS")
+        st.header("👀 VISUALIZAÇÃO DOS DADOS PROCESSADOS")
         
-        # Selecionar colunas para visualizar
-        todas_colunas = sistema.dados_limpos.columns.tolist()
-        colunas_selecionadas = st.multiselect(
-            "Selecione as colunas para visualizar:",
-            options=todas_colunas,
-            default=todas_colunas[:min(6, len(todas_colunas))]
-        )
+        tab1, tab2, tab3 = st.tabs(["📋 Dados Completos", "📊 Estatísticas", "🏢 Análise por Agência"])
         
-        # Número de linhas
-        num_linhas = st.slider("Número de linhas para mostrar:", 5, 100, 20)
+        with tab1:
+            # Filtros para visualização
+            col_vis1, col_vis2 = st.columns(2)
+            
+            with col_vis1:
+                colunas_selecionadas = st.multiselect(
+                    "Selecione colunas:",
+                    options=sistema.dados_limpos.columns.tolist(),
+                    default=sistema.dados_limpos.columns.tolist()[:min(6, len(sistema.dados_limpos.columns))]
+                )
+            
+            with col_vis2:
+                num_linhas = st.slider("Linhas para mostrar:", 5, 100, 20)
+            
+            if colunas_selecionadas:
+                dados_visiveis = sistema.dados_limpos[colunas_selecionadas].head(num_linhas)
+                st.dataframe(dados_visiveis, use_container_width=True, height=400)
         
-        if colunas_selecionadas:
-            dados_visiveis = sistema.dados_limpos[colunas_selecionadas].head(num_linhas).copy()
-            
-            # Formatar valores monetários
-            for col in dados_visiveis.columns:
-                if col == sistema.coluna_valor_pagto or 'valor' in col.lower():
-                    dados_visiveis[col] = dados_visiveis[col].apply(lambda x: f"R$ {x:,.2f}" if pd.notna(x) else "")
-            
-            st.dataframe(dados_visiveis, use_container_width=True, height=400)
-        
-        st.markdown("---")
-        
-        # ============================
-        # ANÁLISE POR AGÊNCIA
-        # ============================
-        if 'agencia' in sistema.dados_limpos.columns and sistema.coluna_valor_pagto:
-            st.subheader("🏢 ANÁLISE POR AGÊNCIA")
-            
-            # Top 10 agências por valor
-            analise_agencia = sistema.dados_limpos.groupby('agencia').agg({
-                sistema.coluna_valor_pagto: ['sum', 'count', 'mean']
-            }).round(2)
-            
-            analise_agencia.columns = ['Valor Total', 'Quantidade', 'Média']
-            analise_agencia = analise_agencia.sort_values('Valor Total', ascending=False)
-            
-            col_ag1, col_ag2 = st.columns(2)
-            
-            with col_ag1:
-                st.markdown("**Top 5 Agências por Valor Total:**")
-                top5 = analise_agencia.head(5).copy()
-                top5['Valor Total'] = top5['Valor Total'].apply(lambda x: f"R$ {x:,.2f}")
-                top5['Média'] = top5['Média'].apply(lambda x: f"R$ {x:,.2f}")
-                st.dataframe(top5, use_container_width=True)
-            
-            with col_ag2:
-                st.markdown("**Distribuição por Agência:**")
-                st.write(f"Total de agências: {len(analise_agencia)}")
-                st.write(f"Agência com maior valor: {analise_agencia.index[0]}")
-                st.write(f"Valor da maior agência: R$ {analise_agencia.iloc[0]['Valor Total']:,.2f}")
-        
-        st.markdown("---")
-        
-        # ============================
-        # ESTATÍSTICAS DETALHADAS
-        # ============================
-        if sistema.coluna_valor_pagto:
-            st.subheader("📈 ESTATÍSTICAS DETALHADAS")
-            
-            col_stats1, col_stats2 = st.columns(2)
-            
-            with col_stats1:
-                st.markdown(f"**Estatísticas de '{sistema.coluna_valor_pagto}':**")
+        with tab2:
+            if sistema.coluna_valor_pagto:
                 stats = sistema.dados_limpos[sistema.coluna_valor_pagto].describe()
                 
-                stats_df = pd.DataFrame({
-                    'Estatística': ['Mínimo', '25% (Q1)', 'Mediana', '75% (Q3)', 'Máximo', 'Média', 'Desvio Padrão'],
-                    'Valor': [
-                        f"R$ {stats.get('min', 0):,.2f}",
-                        f"R$ {stats.get('25%', 0):,.2f}",
-                        f"R$ {stats.get('50%', 0):,.2f}",
-                        f"R$ {stats.get('75%', 0):,.2f}",
-                        f"R$ {stats.get('max', 0):,.2f}",
-                        f"R$ {stats.get('mean', 0):,.2f}",
-                        f"R$ {stats.get('std', 0):,.2f}"
-                    ]
-                })
-                st.dataframe(stats_df, use_container_width=True, hide_index=True)
-            
-            with col_stats2:
-                # Histograma simples usando HTML
-                st.markdown("**Distribuição de Valores:**")
+                col_stat1, col_stat2 = st.columns(2)
                 
-                # Classificar valores em faixas
-                if sistema.coluna_valor_pagto in sistema.dados_limpos.columns:
-                    valores = sistema.dados_limpos[sistema.coluna_valor_pagto]
-                    min_val = valores.min()
-                    max_val = valores.max()
-                    
-                    # Criar faixas
-                    faixas = pd.cut(valores, bins=5)
-                    contagem = faixas.value_counts().sort_index()
-                    
-                    for intervalo, count in contagem.items():
-                        percent = (count / len(valores)) * 100
-                        st.write(f"{intervalo}: {count} pagamentos ({percent:.1f}%)")
+                with col_stat1:
+                    st.markdown("**Estatísticas Descritivas:**")
+                    for stat, value in stats.items():
+                        st.write(f"**{stat}:** R$ {value:,.2f}")
+                
+                with col_stat2:
+                    st.markdown("**Distribuição:**")
+                    # Histograma simples
+                    hist_values = np.histogram(sistema.dados_limpos[sistema.coluna_valor_pagto], bins=20)
+                    hist_df = pd.DataFrame({
+                        'Faixa': [f"{hist_values[1][i]:.0f}-{hist_values[1][i+1]:.0f}" 
+                                 for i in range(len(hist_values[0]))],
+                        'Frequência': hist_values[0]
+                    })
+                    st.dataframe(hist_df, use_container_width=True, height=300)
+        
+        with tab3:
+            if 'agencia' in sistema.dados_limpos.columns and sistema.coluna_valor_pagto:
+                analise_agencia = sistema.dados_limpos.groupby('agencia').agg({
+                    sistema.coluna_valor_pagto: ['sum', 'count', 'mean']
+                }).round(2)
+                
+                analise_agencia.columns = ['Valor Total', 'Quantidade', 'Média']
+                analise_agencia = analise_agencia.sort_values('Valor Total', ascending=False)
+                
+                st.dataframe(
+                    analise_agencia.head(20),
+                    use_container_width=True,
+                    height=400
+                )
         
         st.markdown("---")
         
         # ============================
-        # DOWNLOAD DE DADOS
+        # RELATÓRIOS E EXPORTAÇÃO
         # ============================
-        st.subheader("📥 EXPORTAR DADOS")
+        st.header("📥 RELATÓRIOS E EXPORTAÇÃO")
         
-        col_dl1, col_dl2, col_dl3 = st.columns(3)
+        col_rel1, col_rel2, col_rel3 = st.columns(3)
         
-        with col_dl1:
-            # Download CSV
-            csv = sistema.dados_limpos.to_csv(index=False, sep=';', encoding='utf-8')
+        with col_rel1:
+            # Relatório Excel Completo
+            excel_data = sistema.gerar_relatorio_excel_completo()
+            if excel_data:
+                st.download_button(
+                    label="📥 Relatório Excel Completo",
+                    data=excel_data,
+                    file_name=f"relatorio_completo_pot_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+            else:
+                st.button("📥 Relatório Excel", disabled=True, use_container_width=True)
+        
+        with col_rel2:
+            # CSV dos dados processados
+            csv_data = sistema.dados_limpos.to_csv(index=False, sep=';', encoding='utf-8')
             st.download_button(
-                label="📥 Download CSV",
-                data=csv,
+                label="📥 Dados Processados (CSV)",
+                data=csv_data,
                 file_name=f"dados_processados_{datetime.now().strftime('%Y%m%d')}.csv",
                 mime="text/csv",
                 use_container_width=True
             )
         
-        with col_dl2:
-            # Download Excel
-            try:
-                output = sistema.dados_limpos.to_excel(index=False)
+        with col_rel3:
+            # Relatório HTML
+            html_relatorio = sistema.gerar_relatorio_consolidado_html()
+            if html_relatorio:
                 st.download_button(
-                    label="📥 Download Excel",
-                    data=output,
-                    file_name=f"dados_processados_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    label="📥 Relatório Executivo (HTML)",
+                    data=html_relatorio,
+                    file_name=f"relatorio_executivo_{datetime.now().strftime('%Y%m%d')}.html",
+                    mime="text/html",
                     use_container_width=True
                 )
-            except:
-                st.button("📥 Download Excel (não disponível)", disabled=True, use_container_width=True)
         
-        with col_dl3:
-            # Copiar resumo
-            if st.button("📋 Copiar Resumo", use_container_width=True):
-                resumo = f"""
-                RESUMO POT - {datetime.now().strftime('%d/%m/%Y %H:%M')}
-                Arquivo: {sistema.nome_arquivo}
-                Registros: {len(sistema.dados_limpos):,}
-                Valor Total: R$ {sistema.total_pagamentos:,.2f}
-                """
-                st.code(resumo)
+        # Relatório de Inconsistências específico
+        st.subheader("📋 RELATÓRIOS ESPECÍFICOS")
+        
+        col_rep1, col_rep2 = st.columns(2)
+        
+        with col_rep1:
+            if sistema.inconsistencias is not None and not sistema.inconsistencias.empty:
+                csv_inconsistencias = sistema.inconsistencias.to_csv(index=False, sep=';', encoding='utf-8')
+                st.download_button(
+                    label="📥 Relatório de Inconsistências",
+                    data=csv_inconsistencias,
+                    file_name=f"inconsistencias_{datetime.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+        
+        with col_rep2:
+            if sistema.dados_faltantes is not None and not sistema.dados_faltantes.empty:
+                csv_faltantes = sistema.dados_faltantes.to_csv(index=False, sep=';', encoding='utf-8')
+                st.download_button(
+                    label="📥 Relatório de Dados Faltantes",
+                    data=csv_faltantes,
+                    file_name=f"dados_faltantes_{datetime.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
     
     else:
-        st.error("❌ Erro: Dados não processados corretamente.")
+        st.error("❌ Erro no processamento dos dados.")
 else:
     # Tela inicial
     st.markdown("""
-    # 🚀 SISTEMA DE MONITORAMENTO POT
+    # 🚀 SISTEMA COMPLETO DE MONITORAMENTO POT
     
-    ### 📋 **Funcionalidades:**
+    ### 📋 **FUNCIONALIDADES INCLUÍDAS:**
     
-    1. **Processamento automático** de arquivos CSV com encoding variável
-    2. **Cálculo preciso** de valores totais de pagamentos
-    3. **Identificação automática** da coluna de valor de pagamento
-    4. **Dashboard interativo** com métricas principais
-    5. **Exportação** em CSV e Excel
+    ✅ **Processamento Completo** de arquivos CSV
+    ✅ **Análise de Dados Faltantes** com tabelas detalhadas
+    ✅ **Detecção de Inconsistências** com recomendações
+    ✅ **Relatórios Executivos** em múltiplos formatos
+    ✅ **Dashboard Interativo** com métricas em tempo real
+    ✅ **Exportação Completa** (Excel, CSV, HTML)
     
-    ### 📁 **Como usar:**
+    ### 🎯 **PARA A EQUIPE DE QUALIDADE:**
     
-    1. **Faça upload** do arquivo CSV na barra lateral
-    2. **Clique em "Processar Arquivo"**
-    3. **Verifique** as métricas calculadas
-    4. **Explore** os dados com as ferramentas disponíveis
+    1. **Localize erros rapidamente** com tabelas específicas
+    2. **Identifique padrões de problemas** com análises detalhadas
+    3. **Gere relatórios executivos** para gestão
+    4. **Monitore a qualidade dos dados** continuamente
     
-    ### ⚠️ **Formato esperado:**
+    ### 📁 **COMO USAR:**
     
-    - Arquivo CSV com **delimitador ponto e vírgula (;)**
-    - Coluna de **Valor Pagto** com valores no formato brasileiro (R$ 1.593,90)
-    - **Encoding comum:** Latin-1 (ISO-8859-1) ou UTF-8
+    1. **Faça upload** do arquivo CSV
+    2. **Analise** os dados faltantes e inconsistências
+    3. **Exporte** relatórios para a equipe
+    4. **Corrija** os problemas identificados
     """)
     
     st.markdown("---")
     
-    # Exemplo de formato esperado
-    with st.expander("📋 Exemplo do formato de arquivo esperado"):
-        st.code("""
-        Ordem;Projeto;Num Cartao;Nome;Distrito;Agencia;RG;Valor Total;Valor Desconto;Valor Pagto;Data Pagto;Valor Dia;Dias a apagar
-        1;ABASTECE;364363;PRISCILA REGINA DE OLIVEIRA;0;1530;;R$ 1.593,90;R$ 0,00;R$ 1.593,90;20/10/2025;R$ 53,13;30
-        2;ABASTECE;364629;NADIA SOUSA DA COSTA;0;3107;;R$ 1.593,90;R$ 0,00;R$ 1.593,90;20/10/2025;R$ 53,13;30
+    # Demonstração das funcionalidades
+    with st.expander("🎬 DEMONSTRAÇÃO DAS ANÁLISES"):
+        st.markdown("""
+        ### 📊 **ANÁLISE DE DADOS FALTANTES:**
+        - Tabela por coluna com quantitativos
+        - Percentual de completude
+        - Linhas críticas destacadas
+        
+        ### 🚨 **DETECÇÃO DE INCONSISTÊNCIAS:**
+        - Valores negativos/zerados
+        - Datas inválidas
+        - Valores atípicos (outliers)
+        - Agências inválidas
+        
+        ### 📥 **RELATÓRIOS EXECUTIVOS:**
+        - Excel com múltiplas abas
+        - HTML para visualização web
+        - CSV para análise adicional
         """)
+
+# ==============================================
+# CONFIGURAÇÕES
+# ==============================================
+encoding_map = {
+    'ISO-8859-1': 'latin-1',
+    'Windows-1252': 'cp1252',
+    'ascii': 'utf-8',
+    'UTF-8-SIG': 'utf-8'
+}
 
 # ==============================================
 # RODAPÉ
@@ -598,19 +891,12 @@ st.markdown("---")
 st.markdown(
     """
     <div style='text-align: center; color: gray; padding: 10px;'>
-    <strong>Sistema POT - Monitoramento de Pagamentos</strong> • 
-    Cálculo Correto de Valores • 
-    Versão 4.0 • 
-    Desenvolvido para precisão
+    <strong>Sistema POT Completo</strong> • 
+    Análise de Dados Faltantes • 
+    Detecção de Inconsistências • 
+    Relatórios Executivos • 
+    Versão 5.0
     </div>
     """,
     unsafe_allow_html=True
 )
-
-# Configurações auxiliares
-encoding_map = {
-    'ISO-8859-1': 'latin-1',
-    'Windows-1252': 'cp1252',
-    'ascii': 'utf-8',
-    'UTF-8-SIG': 'utf-8'
-}
