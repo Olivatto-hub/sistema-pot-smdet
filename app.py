@@ -52,9 +52,7 @@ def init_database():
                 data_cadastro TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 fonte_cadastro TEXT,
                 status TEXT DEFAULT 'ATIVO',
-                observacoes TEXT,
-                INDEX idx_beneficiarios_cpf (cpf),
-                INDEX idx_beneficiarios_nome (nome_normalizado)
+                observacoes TEXT
             )
         ''')
         
@@ -89,10 +87,7 @@ def init_database():
                 status TEXT DEFAULT 'ATIVA',
                 motivo_encerramento TEXT,
                 fonte_dados TEXT,
-                data_cadastro TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (cpf_titular) REFERENCES beneficiarios(cpf),
-                INDEX idx_contas_numero (numero_conta),
-                INDEX idx_contas_cpf (cpf_titular)
+                data_cadastro TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
         
@@ -109,12 +104,7 @@ def init_database():
                 dias_semana INTEGER DEFAULT 5,
                 status TEXT DEFAULT 'ATIVO',
                 motivo_desligamento TEXT,
-                data_cadastro TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (cpf_beneficiario) REFERENCES beneficiarios(cpf),
-                FOREIGN KEY (codigo_projeto) REFERENCES projetos(codigo),
-                FOREIGN KEY (numero_conta) REFERENCES contas_bancarias(numero_conta),
-                INDEX idx_vinculos_cpf (cpf_beneficiario),
-                INDEX idx_vinculos_projeto (codigo_projeto)
+                data_cadastro TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
         
@@ -139,14 +129,7 @@ def init_database():
                 arquivo_origem TEXT,
                 lote_pagamento TEXT,
                 observacoes TEXT,
-                data_processamento TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (numero_conta) REFERENCES contas_bancarias(numero_conta),
-                FOREIGN KEY (cpf_beneficiario) REFERENCES beneficiarios(cpf),
-                FOREIGN KEY (codigo_projeto) REFERENCES projetos(codigo),
-                INDEX idx_pagamentos_periodo (ano_referencia, mes_referencia),
-                INDEX idx_pagamentos_conta (numero_conta),
-                INDEX idx_pagamentos_cpf (cpf_beneficiario),
-                UNIQUE(numero_conta, mes_referencia, ano_referencia, codigo_projeto)
+                data_processamento TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
         
@@ -164,12 +147,7 @@ def init_database():
                 arquivo_origem TEXT,
                 data_importacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 status_conciliacao TEXT DEFAULT 'NAO_CONCILIADO',
-                id_pagamento_conciliado INTEGER,
-                FOREIGN KEY (numero_conta) REFERENCES contas_bancarias(numero_conta),
-                FOREIGN KEY (cpf_beneficiario) REFERENCES beneficiarios(cpf),
-                FOREIGN KEY (id_pagamento_conciliado) REFERENCES pagamentos(id),
-                INDEX idx_lancamentos_data (data_movimentacao),
-                INDEX idx_lancamentos_conta (numero_conta)
+                id_pagamento_conciliado INTEGER
             )
         ''')
         
@@ -190,9 +168,7 @@ def init_database():
                 data_processamento TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 usuario_processamento TEXT,
                 status_processamento TEXT DEFAULT 'SUCESSO',
-                erros_processamento TEXT,
-                INDEX idx_arquivos_tipo (tipo_arquivo),
-                INDEX idx_arquivos_periodo (ano_referencia, mes_referencia)
+                erros_processamento TEXT
             )
         ''')
         
@@ -213,12 +189,7 @@ def init_database():
                 usuario_responsavel TEXT,
                 data_correcao TIMESTAMP,
                 observacoes TEXT,
-                fonte_dados TEXT,
-                FOREIGN KEY (cpf_envolvido) REFERENCES beneficiarios(cpf),
-                FOREIGN KEY (numero_conta_envolvido) REFERENCES contas_bancarias(numero_conta),
-                INDEX idx_inconsistencias_tipo (tipo_inconsistencia),
-                INDEX idx_inconsistencias_status (status),
-                INDEX idx_inconsistencias_cpf (cpf_envolvido)
+                fonte_dados TEXT
             )
         ''')
         
@@ -231,8 +202,7 @@ def init_database():
                 ano_referencia INTEGER NOT NULL,
                 valor DECIMAL(15,2) NOT NULL,
                 descricao TEXT,
-                data_calculo TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(tipo_metrica, mes_referencia, ano_referencia)
+                data_calculo TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
         
@@ -249,23 +219,69 @@ def init_database():
             )
         ''')
         
-        # ===== ÍNDICES ADICIONAIS =====
-        
-        conn.execute('CREATE INDEX IF NOT EXISTS idx_pagamentos_status ON pagamentos(status_pagamento)')
-        conn.execute('CREATE INDEX IF NOT EXISTS idx_vinculos_status ON vinculos(status)')
-        conn.execute('CREATE INDEX IF NOT EXISTS idx_contas_status ON contas_bancarias(status)')
-        conn.execute('CREATE INDEX IF NOT EXISTS idx_beneficiarios_status ON beneficiarios(status)')
-        
         conn.commit()
         
+        # ===== CRIAR ÍNDICES SEPARADAMENTE =====
+        self.criar_indices(conn)
+        
         # Criar views para relatórios
-        criar_views_relatorios(conn)
+        self.criar_views_relatorios(conn)
         
         return conn
         
     except Exception as e:
         st.error(f"❌ Erro ao inicializar banco de dados: {str(e)}")
         return None
+
+def criar_indices(conn):
+    """Cria índices para melhorar performance das consultas"""
+    indices = [
+        # Beneficiários
+        "CREATE INDEX IF NOT EXISTS idx_beneficiarios_cpf ON beneficiarios(cpf)",
+        "CREATE INDEX IF NOT EXISTS idx_beneficiarios_nome ON beneficiarios(nome_normalizado)",
+        "CREATE INDEX IF NOT EXISTS idx_beneficiarios_status ON beneficiarios(status)",
+        
+        # Contas bancárias
+        "CREATE INDEX IF NOT EXISTS idx_contas_numero ON contas_bancarias(numero_conta)",
+        "CREATE INDEX IF NOT EXISTS idx_contas_cpf ON contas_bancarias(cpf_titular)",
+        "CREATE INDEX IF NOT EXISTS idx_contas_status ON contas_bancarias(status)",
+        
+        # Pagamentos
+        "CREATE INDEX IF NOT EXISTS idx_pagamentos_periodo ON pagamentos(ano_referencia, mes_referencia)",
+        "CREATE INDEX IF NOT EXISTS idx_pagamentos_conta ON pagamentos(numero_conta)",
+        "CREATE INDEX IF NOT EXISTS idx_pagamentos_cpf ON pagamentos(cpf_beneficiario)",
+        "CREATE INDEX IF NOT EXISTS idx_pagamentos_status ON pagamentos(status_pagamento)",
+        
+        # Vínculos
+        "CREATE INDEX IF NOT EXISTS idx_vinculos_cpf ON vinculos(cpf_beneficiario)",
+        "CREATE INDEX IF NOT EXISTS idx_vinculos_projeto ON vinculos(codigo_projeto)",
+        "CREATE INDEX IF NOT EXISTS idx_vinculos_status ON vinculos(status)",
+        
+        # Lançamentos BB
+        "CREATE INDEX IF NOT EXISTS idx_lancamentos_data ON lancamentos_bb(data_movimentacao)",
+        "CREATE INDEX IF NOT EXISTS idx_lancamentos_conta ON lancamentos_bb(numero_conta)",
+        "CREATE INDEX IF NOT EXISTS idx_lancamentos_status ON lancamentos_bb(status_conciliacao)",
+        
+        # Arquivos processados
+        "CREATE INDEX IF NOT EXISTS idx_arquivos_tipo ON arquivos_processados(tipo_arquivo)",
+        "CREATE INDEX IF NOT EXISTS idx_arquivos_periodo ON arquivos_processados(ano_referencia, mes_referencia)",
+        
+        # Inconsistências
+        "CREATE INDEX IF NOT EXISTS idx_inconsistencias_tipo ON inconsistencias(tipo_inconsistencia)",
+        "CREATE INDEX IF NOT EXISTS idx_inconsistencias_status ON inconsistencias(status)",
+        "CREATE INDEX IF NOT EXISTS idx_inconsistencias_cpf ON inconsistencias(cpf_envolvido)",
+        
+        # Métricas
+        "CREATE INDEX IF NOT EXISTS idx_metricas_tipo ON metricas(tipo_metrica, ano_referencia, mes_referencia)"
+    ]
+    
+    for idx_sql in indices:
+        try:
+            conn.execute(idx_sql)
+        except:
+            pass
+    
+    conn.commit()
 
 def criar_views_relatorios(conn):
     """Cria views para facilitar consultas de relatórios"""
@@ -703,19 +719,20 @@ class ProcessadorArquivos:
                 tmp_path = tmp_file.name
             
             try:
+                df = None
                 # Determinar tipo de arquivo
                 if uploaded_file.name.lower().endswith('.csv'):
                     # Tentar diferentes encodings
                     for encoding in ['latin-1', 'utf-8', 'cp1252', 'iso-8859-1']:
                         try:
                             df = pd.read_csv(tmp_path, sep=';', encoding=encoding, dtype=str, on_bad_lines='skip')
-                            if not df.empty:
+                            if df is not None and not df.empty:
                                 break
                         except:
                             continue
                     
                     # Se ainda vazio, tentar com separador automático
-                    if df.empty or len(df.columns) == 1:
+                    if df is None or df.empty or len(df.columns) == 1:
                         df = pd.read_csv(tmp_path, sep=None, engine='python', dtype=str, on_bad_lines='skip')
                 
                 elif uploaded_file.name.lower().endswith(('.xls', '.xlsx')):
@@ -729,7 +746,7 @@ class ProcessadorArquivos:
                 # Limpar arquivo temporário
                 os.unlink(tmp_path)
                 
-                if df.empty:
+                if df is None or df.empty:
                     return None, "Arquivo vazio ou sem dados"
                 
                 return df, "Arquivo lido com sucesso"
@@ -813,14 +830,13 @@ class ProcessadorArquivos:
             for inc in inconsistencias:
                 cursor.execute('''
                     INSERT INTO inconsistencias 
-                    (tipo_inconsistencia, severidade, descricao, quantidade, 
+                    (tipo_inconsistencia, severidade, descricao, 
                      fonte_dados, data_deteccao, status)
-                    VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, 'PENDENTE')
+                    VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, 'PENDENTE')
                 ''', (
                     inc['tipo'],
                     inc['severidade'],
                     inc['descricao'],
-                    inc.get('quantidade', 1),
                     fonte_dados
                 ))
             self.conn.commit()
@@ -1111,7 +1127,7 @@ class ProcessadorArquivos:
                     FROM pagamentos p
                     WHERE p.numero_conta = ?
                     AND p.status_pagamento = 'PAGO'
-                    AND ABS(p.valor_liquido - ?) < 0.01  # Tolerância de 1 centavo
+                    AND ABS(p.valor_liquido - ?) < 0.01
                     AND p.data_pagamento <= DATE(?, '+7 days')
                     AND p.data_pagamento >= DATE(?, '-7 days')
                     AND NOT EXISTS (
@@ -1133,13 +1149,6 @@ class ProcessadorArquivos:
                             id_pagamento_conciliado = ?
                         WHERE id = ?
                     ''', (pag_id, lanc_id))
-                    
-                    # Marcar pagamento como conciliado
-                    cursor.execute('''
-                        UPDATE pagamentos 
-                        SET status_pagamento = 'CONCILIADO'
-                        WHERE id = ?
-                    ''', (pag_id,))
             
             self.conn.commit()
             
@@ -1204,15 +1213,17 @@ class AnalisadorDados:
     def obter_resumo_mensal(self, mes: int = None, ano: int = None) -> pd.DataFrame:
         """Obtém resumo mensal"""
         try:
+            query = "SELECT * FROM view_resumo_mensal"
+            params = ()
+            
             if mes and ano:
-                query = '''
-                    SELECT * FROM view_resumo_mensal 
-                    WHERE mes_referencia = ? AND ano_referencia = ?
-                '''
+                query += " WHERE mes_referencia = ? AND ano_referencia = ?"
                 params = (mes, ano)
-            else:
-                query = 'SELECT * FROM view_resumo_mensal ORDER BY ano_referencia DESC, mes_referencia DESC LIMIT 12'
-                params = ()
+            
+            query += " ORDER BY ano_referencia DESC, mes_referencia DESC"
+            
+            if not mes and not ano:
+                query += " LIMIT 12"
             
             return pd.read_sql_query(query, self.conn, params=params)
         except:
