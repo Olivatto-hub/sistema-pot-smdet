@@ -1,4 +1,4 @@
-# app.py - SISTEMA POT SMDET COMPLETO COM TRATAMENTO DE ARQUIVOS VAZIOS
+# app.py - SISTEMA POT SMDET COMPLETO COM CÁLCULO CORRETO DE VALORES
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -27,7 +27,6 @@ st.set_page_config(
 class RelatorioPDF(FPDF):
     def __init__(self):
         super().__init__()
-        # Usar fonte padrão para evitar problemas
         self.set_auto_page_break(auto=True, margin=15)
     
     def header(self):
@@ -134,7 +133,6 @@ def limpar_texto_para_pdf(texto):
         return ""
     
     texto = str(texto)
-    # Substituir caracteres problemáticos
     caracteres_problematicos = {
         '•': '-', '–': '-', '—': '-', '"': "'", "'": "'",
         '\u2022': '-', '\u2013': '-', '\u2014': '-',
@@ -170,7 +168,8 @@ def detectar_coluna_conta(df):
         'Num Cartao', 'NumCartao', 'Num_Cartao', 'Num Cartão', 'Cartao',
         'Cartão', 'Conta', 'Numero Conta', 'Número Conta', 'NRO_CONTA',
         'CARTAO', 'CONTA', 'NUMCARTAO', 'NUM_CARTAO', 'NUMERO_CARTAO',
-        'NumeroCartao', 'NrCartao', 'NRCartao', 'Numero do Cartao'
+        'NumeroCartao', 'NrCartao', 'NRCartao', 'Numero do Cartao',
+        'NUMERO CARTAO', 'NÚMERO CARTAO', 'NÚMERO CARTÃO'
     ]
     
     for coluna in df.columns:
@@ -188,7 +187,7 @@ def detectar_coluna_nome(df):
     colunas_possiveis = [
         'Nome', 'Nome do beneficiário', 'Beneficiario', 'Beneficiário',
         'NOME', 'BENEFICIARIO', 'BENEFICIÁRIO', 'NOME BENEFICIARIO',
-        'NOME_BENEFICIARIO', 'NOME DO BENEFICIARIO'
+        'NOME_BENEFICIARIO', 'NOME DO BENEFICIARIO', 'NOME BENEFICIÁRIO'
     ]
     
     for coluna in df.columns:
@@ -200,25 +199,48 @@ def detectar_coluna_nome(df):
     return None
 
 def detectar_coluna_valor(df):
+    """Detecta automaticamente colunas de valor para pagamentos"""
     if df.empty:
         return None
     
+    # Lista completa de possíveis nomes de colunas de valor
     colunas_prioridade = [
-        'Valor', 'Valor Pago', 'ValorPagto', 'Valor_Pagto', 'VALOR',
-        'VALOR PAGO', 'VALOR_PAGO', 'VALOR PGTO', 'VLR_PAGO',
-        'Valor Total', 'ValorTotal', 'Valor_Total', 'VALOR TOTAL'
+        'Valor Pagto', 'ValorPagto', 'Valor_Pagto', 'Valor Pago', 'ValorPago',
+        'Valor_Pago', 'Valor Pagamento', 'ValorPagamento', 'Valor_Pagamento',
+        'Valor', 'Valor Total', 'ValorTotal', 'Valor_Total', 'VALOR',
+        'VALOR PAGO', 'VALOR_PAGO', 'VALOR PGTO', 'VLR_PAGO', 'VLR PAGO',
+        'Valor a Pagar', 'ValoraPagar', 'Valor_a_Pagar', 'VALOR A PAGAR',
+        'ValorLiquido', 'Valor Liquido', 'VALOR LIQUIDO'
     ]
     
+    # Primeiro, procurar por nomes exatos ou similares
     for coluna in df.columns:
         coluna_limpa = str(coluna).strip().upper()
         for padrao in colunas_prioridade:
             if padrao.upper() in coluna_limpa:
                 return coluna
     
-    # Procurar por colunas numéricas
+    # Se não encontrou por nome, procurar por colunas que contenham valores monetários
     for coluna in df.columns:
+        # Verificar se é coluna numérica
         if df[coluna].dtype in ['float64', 'int64', 'float32', 'int32']:
-            return coluna
+            # Verificar se os valores parecem ser monetários
+            if not df[coluna].empty:
+                amostra = df[coluna].dropna().head(10)
+                if len(amostra) > 0:
+                    # Se há valores maiores que 0, provavelmente é monetário
+                    if amostra.mean() > 0:
+                        return coluna
+    
+    # Última tentativa: verificar conteúdo da coluna
+    for coluna in df.columns:
+        if df[coluna].dtype == 'object':
+            amostra = df[coluna].dropna().head(10).astype(str)
+            # Verificar se contém padrões de valores monetários
+            padroes_monetarios = [r'[\d.,]+\s*[R$]?', r'R\$\s*[\d.,]+', r'[\d.,]+\s*[R\$]']
+            for padrao in padroes_monetarios:
+                if any(re.search(padrao, str(x), re.IGNORECASE) for x in amostra):
+                    return coluna
     
     return None
 
@@ -229,7 +251,7 @@ def detectar_coluna_data(df):
     colunas_data = [
         'Data', 'DataPagto', 'Data_Pagto', 'DtLote', 'DATA',
         'DATA PGTO', 'DT_LOTE', 'DATALOTE', 'DataPagamento',
-        'Data Pagto', 'Data_Pagamento'
+        'Data Pagto', 'Data_Pagamento', 'Data Pagamento'
     ]
     
     datas_encontradas = []
@@ -271,15 +293,16 @@ def detectar_coluna_cpf(df):
     return None
 
 # ============================================
-# PROCESSAMENTO DE DADOS COM TRATAMENTO DE ERROS
+# PROCESSAMENTO DE VALORES MONETÁRIOS
 # ============================================
 
-def processar_valor_seguro(valor):
-    """Processa valores monetários com tratamento de erros"""
+def converter_para_numerico_seguro(valor):
+    """Converte qualquer valor para numérico de forma segura"""
     if pd.isna(valor):
         return 0.0
     
     try:
+        # Se já é numérico
         if isinstance(valor, (int, float, np.integer, np.floating)):
             return float(valor)
         
@@ -288,48 +311,69 @@ def processar_valor_seguro(valor):
         if valor_str == '':
             return 0.0
         
-        # Remover símbolos de moeda e espaços
-        valor_str = re.sub(r'[R\$\s€£¥]', '', valor_str)
+        # Remover caracteres não numéricos exceto ponto, vírgula e sinal negativo
+        valor_limpo = re.sub(r'[^\d,\-\.]', '', valor_str)
         
-        # Verificar se tem formato brasileiro (1.234,56)
-        if ',' in valor_str and '.' in valor_str:
-            # Formato 1.234,56 -> remover pontos de milhar
-            valor_str = valor_str.replace('.', '').replace(',', '.')
-        elif ',' in valor_str:
-            # Formato 1234,56
-            valor_str = valor_str.replace(',', '.')
-        
-        # Remover caracteres não numéricos exceto ponto e sinal negativo
-        valor_str = re.sub(r'[^\d\.\-]', '', valor_str)
-        
-        # Se a string ficou vazia, retornar 0
-        if not valor_str:
+        if not valor_limpo:
             return 0.0
         
-        return float(valor_str)
+        # Verificar formato brasileiro (1.234,56)
+        if ',' in valor_limpo and valor_limpo.count('.') > 0:
+            # Formato 1.234,56 -> remover pontos de milhar e trocar vírgula por ponto
+            valor_limpo = valor_limpo.replace('.', '').replace(',', '.')
+        elif ',' in valor_limpo:
+            # Formato 1234,56
+            valor_limpo = valor_limpo.replace(',', '.')
+        
+        # Garantir que só temos números, ponto decimal e sinal negativo
+        valor_limpo = re.sub(r'[^\d\.\-]', '', valor_limpo)
+        
+        # Se depois da limpeza ficou vazio
+        if not valor_limpo or valor_limpo == '-' or valor_limpo == '.':
+            return 0.0
+        
+        return float(valor_limpo)
     except Exception as e:
         return 0.0
 
-def converter_coluna_valor(df, coluna_valor):
-    """Converte coluna de valor para numérico de forma segura"""
-    if coluna_valor and coluna_valor in df.columns:
-        try:
-            # Criar cópia para não modificar o original
-            df_copy = df.copy()
-            
-            # Tentar converter para numérico
-            df_copy[coluna_valor] = pd.to_numeric(df_copy[coluna_valor], errors='coerce')
-            
-            # Preencher valores NaN com 0
-            df_copy[coluna_valor] = df_copy[coluna_valor].fillna(0)
-            
-            return df_copy
-        except:
-            return df
-    return df
+def processar_coluna_valor(df, nome_coluna):
+    """Processa uma coluna de valor específica"""
+    if df.empty or nome_coluna not in df.columns:
+        return df, 0.0
+    
+    try:
+        df_processado = df.copy()
+        
+        # Converter todos os valores da coluna para numérico
+        df_processado[f'{nome_coluna}_Numerico'] = df_processado[nome_coluna].apply(
+            converter_para_numerico_seguro
+        )
+        
+        # Calcular soma total
+        soma_total = df_processado[f'{nome_coluna}_Numerico'].sum()
+        
+        return df_processado, soma_total
+    except Exception as e:
+        return df, 0.0
+
+def detectar_e_processar_valores(df):
+    """Detecta e processa todas as colunas de valor"""
+    if df.empty:
+        return df, 0.0, None
+    
+    # Detectar coluna de valor
+    coluna_valor = detectar_coluna_valor(df)
+    
+    if not coluna_valor:
+        return df, 0.0, None
+    
+    # Processar a coluna de valor
+    df_processado, soma_total = processar_coluna_valor(df, coluna_valor)
+    
+    return df_processado, soma_total, coluna_valor
 
 # ============================================
-# CARREGAMENTO DE PLANILHAS COM TRATAMENTO DE ARQUIVOS VAZIOS
+# CARREGAMENTO DE PLANILHAS
 # ============================================
 
 def carregar_planilha(arquivo):
@@ -340,27 +384,43 @@ def carregar_planilha(arquivo):
         if nome_arquivo.endswith('.csv') or nome_arquivo.endswith('.txt'):
             encoding = detectar_encoding(arquivo)
             
-            # Tentar ler o arquivo
             try:
+                # Tentar com delimitador ponto-e-vírgula (padrão brasileiro)
                 arquivo.seek(0)
                 df = pd.read_csv(arquivo, delimiter=';', encoding=encoding, 
                                 low_memory=False, on_bad_lines='skip')
                 
-                # Verificar se o arquivo está vazio ou só tem cabeçalho
+                # Se tiver muitas colunas com nomes estranhos, pode ser vírgula
+                if len(df.columns) == 1 and ';' in str(df.iloc[0, 0]):
+                    # Tentar dividir por ponto-e-vírgula manualmente
+                    arquivo.seek(0)
+                    linhas = arquivo.read().decode(encoding).split('\n')
+                    if linhas:
+                        cabecalho = linhas[0].strip().split(';')
+                        dados = []
+                        for linha in linhas[1:]:
+                            if linha.strip():
+                                valores = linha.strip().split(';')
+                                if len(valores) == len(cabecalho):
+                                    dados.append(valores)
+                        df = pd.DataFrame(dados, columns=cabecalho)
+                
+                # Verificar se o arquivo tem dados válidos
                 if len(df) == 0:
-                    st.warning(f"Arquivo {nome_arquivo} está vazio (sem dados)")
+                    st.warning(f"⚠️ Arquivo {nome_arquivo} está vazio")
                     return pd.DataFrame()
                 
-                # Verificar se todas as linhas estão vazias
-                linhas_validas = df.apply(lambda row: row.astype(str).str.strip().ne('').any(), axis=1).sum()
-                if linhas_validas == 0:
-                    st.warning(f"Arquivo {nome_arquivo} contém apenas linhas vazias")
+                # Remover linhas completamente vazias
+                df = df.dropna(how='all')
+                
+                if len(df) == 0:
+                    st.warning(f"⚠️ Arquivo {nome_arquivo} contém apenas linhas vazias")
                     return pd.DataFrame()
                 
                 return df
                 
             except Exception as e:
-                # Tentar com delimitador diferente
+                # Tentar com delimitador vírgula
                 try:
                     arquivo.seek(0)
                     df = pd.read_csv(arquivo, delimiter=',', encoding=encoding,
@@ -371,14 +431,14 @@ def carregar_planilha(arquivo):
                 except:
                     pass
                 
-                # Última tentativa com engine python
+                # Última tentativa
                 try:
                     arquivo.seek(0)
                     df = pd.read_csv(arquivo, sep=None, engine='python', encoding=encoding,
                                     low_memory=False, on_bad_lines='skip')
                     return df
                 except:
-                    st.error(f"Erro ao ler arquivo {nome_arquivo}: Formato não suportado")
+                    st.error(f"❌ Erro ao ler arquivo {nome_arquivo}")
                     return pd.DataFrame()
         
         # Para arquivos Excel
@@ -386,24 +446,24 @@ def carregar_planilha(arquivo):
             try:
                 df = pd.read_excel(arquivo)
                 if len(df) == 0:
-                    st.warning(f"Arquivo {nome_arquivo} está vazio (sem dados)")
+                    st.warning(f"⚠️ Arquivo {nome_arquivo} está vazio")
                 return df
             except Exception as e:
-                st.error(f"Erro ao ler arquivo Excel {nome_arquivo}: {str(e)}")
+                st.error(f"❌ Erro ao ler arquivo Excel {nome_arquivo}: {str(e)}")
                 return pd.DataFrame()
         
         return pd.DataFrame()
         
     except Exception as e:
-        st.error(f"Erro ao processar {arquivo.name}: {str(e)}")
+        st.error(f"❌ Erro ao processar {arquivo.name}: {str(e)}")
         return pd.DataFrame()
 
 # ============================================
-# ANÁLISE DE PROBLEMAS CRÍTICOS (CORRIGIDA)
+# ANÁLISE DE PROBLEMAS CRÍTICOS
 # ============================================
 
 def analisar_problemas_criticos(df, tipo):
-    """Analisa problemas críticos nos dados com tratamento de erros"""
+    """Analisa problemas críticos nos dados"""
     problemas = []
     
     if df.empty:
@@ -418,41 +478,37 @@ def analisar_problemas_criticos(df, tipo):
         # 1. Contas sem número
         if coluna_conta and coluna_conta in df.columns:
             try:
-                # Converter para string e limpar
-                df[coluna_conta] = df[coluna_conta].astype(str).str.strip()
-                contas_vazias = df[coluna_conta].isin(['', 'nan', 'NaN', 'None', 'null']).sum()
+                contas_vazias = df[coluna_conta].isna().sum() + df[df[coluna_conta].astype(str).str.strip().isin(['', 'nan', 'NaN', 'None', 'null'])].shape[0]
                 if contas_vazias > 0:
                     problemas.append(f"{contas_vazias} registros sem número de conta")
             except:
-                problemas.append("Erro ao analisar coluna de conta")
+                pass
         
-        # 2. Valores zerados ou negativos (COM TRATAMENTO DE ERROS)
+        # 2. Valores problemáticos
         if coluna_valor and coluna_valor in df.columns:
             try:
-                # Primeiro converter para numérico
-                df_valor = converter_coluna_valor(df, coluna_valor)
+                # Processar valores para análise
+                df_processado, soma_total, _ = detectar_e_processar_valores(df)
                 
-                if not df_valor.empty and coluna_valor in df_valor.columns:
-                    # Agora podemos fazer comparações numéricas
-                    valores_zerados = df_valor[df_valor[coluna_valor] == 0].shape[0]
-                    valores_negativos = df_valor[df_valor[coluna_valor] < 0].shape[0]
+                if f'{coluna_valor}_Numerico' in df_processado.columns:
+                    valores_zerados = (df_processado[f'{coluna_valor}_Numerico'] == 0).sum()
+                    valores_negativos = (df_processado[f'{coluna_valor}_Numerico'] < 0).sum()
                     
                     if valores_zerados > 0:
                         problemas.append(f"{valores_zerados} pagamentos com valor zerado")
                     if valores_negativos > 0:
                         problemas.append(f"{valores_negativos} pagamentos com valor negativo")
-            except Exception as e:
-                problemas.append(f"Erro ao analisar valores: {str(e)}")
+            except:
+                pass
         
         # 3. Nomes em branco
         if coluna_nome and coluna_nome in df.columns:
             try:
-                df[coluna_nome] = df[coluna_nome].astype(str).str.strip()
-                nomes_vazios = df[coluna_nome].isin(['', 'nan', 'NaN', 'None', 'null']).sum()
+                nomes_vazios = df[coluna_nome].isna().sum() + df[df[coluna_nome].astype(str).str.strip().isin(['', 'nan', 'NaN', 'None', 'null'])].shape[0]
                 if nomes_vazios > 0:
                     problemas.append(f"{nomes_vazios} registros sem nome do beneficiário")
             except:
-                problemas.append("Erro ao analisar coluna de nome")
+                pass
     
     elif tipo == 'contas':
         coluna_conta = detectar_coluna_conta(df)
@@ -462,39 +518,209 @@ def analisar_problemas_criticos(df, tipo):
         # 1. Contas duplicadas
         if coluna_conta and coluna_conta in df.columns:
             try:
-                # Limpar dados antes de verificar duplicatas
-                df[coluna_conta] = df[coluna_conta].astype(str).str.strip()
-                df_sem_vazios = df[~df[coluna_conta].isin(['', 'nan', 'NaN', 'None', 'null'])]
+                df_limpo = df.copy()
+                df_limpo[coluna_conta] = df_limpo[coluna_conta].astype(str).str.strip()
+                df_sem_vazios = df_limpo[~df_limpo[coluna_conta].isin(['', 'nan', 'NaN', 'None', 'null'])]
                 
                 if not df_sem_vazios.empty:
                     duplicados = df_sem_vazios[df_sem_vazios.duplicated(subset=[coluna_conta], keep=False)]
                     if not duplicados.empty:
                         problemas.append(f"{duplicados[coluna_conta].nunique()} contas duplicadas")
             except:
-                problemas.append("Erro ao verificar contas duplicadas")
+                pass
         
         # 2. Nomes em branco
         if coluna_nome and coluna_nome in df.columns:
             try:
-                df[coluna_nome] = df[coluna_nome].astype(str).str.strip()
-                nomes_vazios = df[coluna_nome].isin(['', 'nan', 'NaN', 'None', 'null']).sum()
+                nomes_vazios = df[coluna_nome].isna().sum() + df[df[coluna_nome].astype(str).str.strip().isin(['', 'nan', 'NaN', 'None', 'null'])].shape[0]
                 if nomes_vazios > 0:
                     problemas.append(f"{nomes_vazios} registros sem nome")
             except:
-                problemas.append("Erro ao analisar coluna de nome")
+                pass
         
         # 3. CPFs inválidos
         if coluna_cpf and coluna_cpf in df.columns:
             try:
-                # Limpar CPFs
-                df['CPF_Limpo'] = df[coluna_cpf].astype(str).apply(lambda x: re.sub(r'[^\d]', '', str(x)))
-                cpf_invalidos = df[~df['CPF_Limpo'].str.match(r'^\d{11}$')].shape[0]
+                df_limpo = df.copy()
+                df_limpo['CPF_Limpo'] = df_limpo[coluna_cpf].astype(str).apply(lambda x: re.sub(r'[^\d]', '', str(x)))
+                cpf_invalidos = df_limpo[~df_limpo['CPF_Limpo'].str.match(r'^\d{11}$')].shape[0]
                 if cpf_invalidos > 0:
                     problemas.append(f"{cpf_invalidos} CPFs com formato inválido")
             except:
                 pass
     
     return problemas
+
+# ============================================
+# ANÁLISE DE PAGAMENTOS (COMPLETA)
+# ============================================
+
+def analisar_pagamentos_completos(df):
+    """Análise completa dos pagamentos incluindo valores totais"""
+    resultados = {
+        'total_registros': 0,
+        'registros_validos': 0,
+        'valor_total': 0.0,
+        'pagamentos_duplicados': 0,
+        'valor_duplicados': 0.0,
+        'projetos_ativos': 0,
+        'beneficiarios_unicos': 0,
+        'coluna_valor_detectada': None,
+        'coluna_conta_detectada': None
+    }
+    
+    if df.empty:
+        return resultados
+    
+    resultados['total_registros'] = len(df)
+    
+    # Detectar colunas importantes
+    coluna_conta = detectar_coluna_conta(df)
+    coluna_nome = detectar_coluna_nome(df)
+    coluna_projeto = detectar_coluna_projeto(df)
+    
+    resultados['coluna_conta_detectada'] = coluna_conta
+    
+    # Detectar e processar valores
+    df_processado, valor_total, coluna_valor = detectar_e_processar_valores(df)
+    
+    resultados['coluna_valor_detectada'] = coluna_valor
+    resultados['valor_total'] = valor_total
+    
+    # Contas válidas
+    if coluna_conta and coluna_conta in df.columns:
+        try:
+            df[coluna_conta] = df[coluna_conta].astype(str).str.strip()
+            validos = ~df[coluna_conta].isin(['', 'nan', 'NaN', 'None', 'null'])
+            resultados['registros_validos'] = validos.sum()
+            
+            # Duplicidades
+            df_validos = df[validos]
+            if not df_validos.empty:
+                duplicados = df_validos[df_validos.duplicated(subset=[coluna_conta], keep=False)]
+                resultados['pagamentos_duplicados'] = duplicados[coluna_conta].nunique() if not duplicados.empty else 0
+                
+                # Calcular valor dos duplicados
+                if coluna_valor and not duplicados.empty:
+                    try:
+                        duplicados_processados, valor_dup, _ = detectar_e_processar_valores(duplicados)
+                        resultados['valor_duplicados'] = valor_dup
+                    except:
+                        pass
+        except:
+            pass
+    
+    # Beneficiários únicos
+    if coluna_nome and coluna_nome in df.columns:
+        try:
+            df[coluna_nome] = df[coluna_nome].astype(str).str.strip()
+            df_validos_nome = df[~df[coluna_nome].isin(['', 'nan', 'NaN', 'None', 'null'])]
+            resultados['beneficiarios_unicos'] = df_validos_nome[coluna_nome].nunique()
+        except:
+            pass
+    
+    # Projetos ativos
+    if coluna_projeto and coluna_projeto in df.columns:
+        try:
+            df[coluna_projeto] = df[coluna_projeto].astype(str).str.strip()
+            df_validos_proj = df[~df[coluna_projeto].isin(['', 'nan', 'NaN', 'None', 'null'])]
+            resultados['projetos_ativos'] = df_validos_proj[coluna_projeto].nunique()
+        except:
+            pass
+    
+    return resultados
+
+# ============================================
+# ANÁLISE DE CONTAS
+# ============================================
+
+def analisar_contas_completas(df):
+    """Análise completa das contas"""
+    resultados = {
+        'total_contas': 0,
+        'contas_unicas': 0,
+        'beneficiarios_unicos': 0,
+        'projetos_ativos': 0
+    }
+    
+    if df.empty:
+        return resultados
+    
+    resultados['total_contas'] = len(df)
+    
+    # Detectar colunas
+    coluna_conta = detectar_coluna_conta(df)
+    coluna_nome = detectar_coluna_nome(df)
+    coluna_projeto = detectar_coluna_projeto(df)
+    
+    # Contas únicas
+    if coluna_conta and coluna_conta in df.columns:
+        try:
+            df[coluna_conta] = df[coluna_conta].astype(str).str.strip()
+            df_validos = df[~df[coluna_conta].isin(['', 'nan', 'NaN', 'None', 'null'])]
+            resultados['contas_unicas'] = df_validos[coluna_conta].nunique()
+        except:
+            pass
+    
+    # Beneficiários únicos
+    if coluna_nome and coluna_nome in df.columns:
+        try:
+            df[coluna_nome] = df[coluna_nome].astype(str).str.strip()
+            df_validos = df[~df[coluna_nome].isin(['', 'nan', 'NaN', 'None', 'null'])]
+            resultados['beneficiarios_unicos'] = df_validos[coluna_nome].nunique()
+        except:
+            pass
+    
+    # Projetos ativos
+    if coluna_projeto and coluna_projeto in df.columns:
+        try:
+            df[coluna_projeto] = df[coluna_projeto].astype(str).str.strip()
+            df_validos = df[~df[coluna_projeto].isin(['', 'nan', 'NaN', 'None', 'null'])]
+            resultados['projetos_ativos'] = df_validos[coluna_projeto].nunique()
+        except:
+            pass
+    
+    return resultados
+
+# ============================================
+# COMPARAÇÃO ENTRE PAGAMENTOS E CONTAS
+# ============================================
+
+def comparar_pagamentos_contas(df_pagamentos, df_contas):
+    """Compara pagamentos com abertura de contas"""
+    comparacao = {
+        'total_contas_abertas': 0,
+        'total_contas_com_pagamento': 0,
+        'total_contas_sem_pagamento': 0,
+        'contas_sem_pagamento': []
+    }
+    
+    if df_pagamentos.empty or df_contas.empty:
+        return comparacao
+    
+    coluna_conta_pag = detectar_coluna_conta(df_pagamentos)
+    coluna_conta_cont = detectar_coluna_conta(df_contas)
+    
+    if not coluna_conta_pag or not coluna_conta_cont:
+        return comparacao
+    
+    try:
+        # Limpar e extrair contas
+        df_pagamentos[coluna_conta_pag] = df_pagamentos[coluna_conta_pag].astype(str).str.strip()
+        df_contas[coluna_conta_cont] = df_contas[coluna_conta_cont].astype(str).str.strip()
+        
+        contas_pag = set(df_pagamentos[~df_pagamentos[coluna_conta_pag].isin(['', 'nan', 'NaN', 'None', 'null'])][coluna_conta_pag])
+        contas_cont = set(df_contas[~df_contas[coluna_conta_cont].isin(['', 'nan', 'NaN', 'None', 'null'])][coluna_conta_cont])
+        
+        comparacao['total_contas_abertas'] = len(contas_cont)
+        comparacao['total_contas_com_pagamento'] = len(contas_pag)
+        comparacao['total_contas_sem_pagamento'] = len(contas_cont - contas_pag)
+        comparacao['contas_sem_pagamento'] = list(contas_cont - contas_pag)
+        
+    except Exception as e:
+        pass
+    
+    return comparacao
 
 # ============================================
 # GERAR RELATÓRIO PDF
@@ -525,18 +751,34 @@ def gerar_relatorio_pdf(mes, ano, metrics_pagamentos, metrics_contas, comparacao
     pdf.cell(0, 10, 'Principais Metricas:', 0, 1)
     pdf.ln(3)
     
+    # Métricas de pagamentos
     if metrics_pagamentos:
-        pdf.add_metric('Total de Pagamentos:', formatar_brasileiro(metrics_pagamentos.get('total_registros', 0)))
-        pdf.add_metric('Valor Total Pago:', formatar_brasileiro(metrics_pagamentos.get('valor_total', 0), 'monetario'))
-        pdf.add_metric('Pagamentos Validos:', formatar_brasileiro(metrics_pagamentos.get('registros_validos', 0)))
-        pdf.add_metric('Pagamentos Duplicados:', formatar_brasileiro(metrics_pagamentos.get('pagamentos_duplicados', 0)), 
+        pdf.add_metric('Total de Pagamentos:', 
+                      formatar_brasileiro(metrics_pagamentos.get('total_registros', 0)))
+        pdf.add_metric('Valor Total Pago:', 
+                      formatar_brasileiro(metrics_pagamentos.get('valor_total', 0), 'monetario'))
+        pdf.add_metric('Pagamentos Validos:', 
+                      formatar_brasileiro(metrics_pagamentos.get('registros_validos', 0)))
+        
+        if metrics_pagamentos.get('valor_total', 0) > 0:
+            pdf.add_metric('Valor Medio por Pagamento:', 
+                          formatar_brasileiro(metrics_pagamentos.get('valor_total', 0) / 
+                                             max(metrics_pagamentos.get('registros_validos', 1), 1), 
+                                             'monetario'))
+        
+        pdf.add_metric('Pagamentos Duplicados:', 
+                      formatar_brasileiro(metrics_pagamentos.get('pagamentos_duplicados', 0)), 
                       alert=metrics_pagamentos.get('pagamentos_duplicados', 0) > 0)
     
+    # Métricas de contas
     if metrics_contas:
-        pdf.add_metric('Contas Abertas:', formatar_brasileiro(metrics_contas.get('total_contas', 0)))
+        pdf.add_metric('Contas Abertas:', 
+                      formatar_brasileiro(metrics_contas.get('total_contas', 0)))
     
+    # Comparação
     if comparacao:
-        pdf.add_metric('Contas sem Pagamento:', formatar_brasileiro(comparacao.get('total_contas_sem_pagamento', 0)),
+        pdf.add_metric('Contas sem Pagamento:', 
+                      formatar_brasileiro(comparacao.get('total_contas_sem_pagamento', 0)),
                       alert=comparacao.get('total_contas_sem_pagamento', 0) > 0)
     
     # Problemas Críticos
@@ -562,7 +804,7 @@ def gerar_relatorio_pdf(mes, ano, metrics_pagamentos, metrics_contas, comparacao
                 pdf.multi_cell(0, 7, f"- {problema_limpo}")
     
     # Análise Detalhada de Pagamentos
-    if not df_pagamentos.empty:
+    if not df_pagamentos.empty and 'valor_total' in metrics_pagamentos and metrics_pagamentos['valor_total'] > 0:
         pdf.add_page()
         pdf.chapter_title('ANALISE DETALHADA DE PAGAMENTOS', 16)
         
@@ -571,20 +813,22 @@ def gerar_relatorio_pdf(mes, ano, metrics_pagamentos, metrics_contas, comparacao
         pdf.cell(0, 10, 'Estatisticas:', 0, 1)
         pdf.ln(3)
         
-        coluna_valor = detectar_coluna_valor(df_pagamentos)
-        if coluna_valor and coluna_valor in df_pagamentos.columns:
+        coluna_valor = metrics_pagamentos.get('coluna_valor_detectada')
+        if coluna_valor:
             try:
-                # Converter para numérico primeiro
-                df_temp = converter_coluna_valor(df_pagamentos, coluna_valor)
-                estatisticas = df_temp[coluna_valor].describe()
-                
-                pdf.set_font('Arial', '', 11)
-                pdf.add_metric('Media:', formatar_brasileiro(estatisticas.get('mean', 0), 'monetario'))
-                pdf.add_metric('Mediana:', formatar_brasileiro(estatisticas.get('50%', 0), 'monetario'))
-                pdf.add_metric('Minimo:', formatar_brasileiro(estatisticas.get('min', 0), 'monetario'))
-                pdf.add_metric('Maximo:', formatar_brasileiro(estatisticas.get('max', 0), 'monetario'))
-                if 'std' in estatisticas:
-                    pdf.add_metric('Desvio Padrao:', formatar_brasileiro(estatisticas['std'], 'monetario'))
+                df_processado, valor_total, _ = detectar_e_processar_valores(df_pagamentos)
+                if f'{coluna_valor}_Numerico' in df_processado.columns:
+                    valores = df_processado[f'{coluna_valor}_Numerico']
+                    
+                    pdf.set_font('Arial', '', 11)
+                    pdf.add_metric('Valor Minimo:', 
+                                  formatar_brasileiro(valores.min(), 'monetario'))
+                    pdf.add_metric('Valor Maximo:', 
+                                  formatar_brasileiro(valores.max(), 'monetario'))
+                    pdf.add_metric('Valor Medio:', 
+                                  formatar_brasileiro(valores.mean(), 'monetario'))
+                    pdf.add_metric('Valor Mediano:', 
+                                  formatar_brasileiro(valores.median(), 'monetario'))
             except:
                 pass
     
@@ -603,18 +847,14 @@ def gerar_relatorio_pdf(mes, ano, metrics_pagamentos, metrics_contas, comparacao
             
             if coluna_conta and coluna_nome:
                 try:
-                    contas_sem_pagamento = df_contas[
+                    contas_sem_pag = df_contas[
                         df_contas[coluna_conta].astype(str).isin(
                             [str(c) for c in comparacao.get('contas_sem_pagamento', [])]
                         )
                     ][[coluna_conta, coluna_nome]].head(20)
                     
-                    if not contas_sem_pagamento.empty:
-                        # Limpar texto
-                        for col in [coluna_conta, coluna_nome]:
-                            contas_sem_pagamento[col] = contas_sem_pagamento[col].apply(limpar_texto_para_pdf)
-                        
-                        pdf.add_table(contas_sem_pagamento)
+                    if not contas_sem_pag.empty:
+                        pdf.add_table(contas_sem_pag)
                 except:
                     pass
     
@@ -625,17 +865,17 @@ def gerar_relatorio_pdf(mes, ano, metrics_pagamentos, metrics_contas, comparacao
     recomendacoes = []
     
     if problemas_pagamentos:
-        if any("zerado" in p for p in problemas_pagamentos):
+        if any("zerado" in p.lower() for p in problemas_pagamentos):
             recomendacoes.append("Regularizar pagamentos com valores zerados")
-        if any("negativo" in p for p in problemas_pagamentos):
+        if any("negativo" in p.lower() for p in problemas_pagamentos):
             recomendacoes.append("Verificar pagamentos com valores negativos")
-        if any("sem nome" in p for p in problemas_pagamentos):
+        if any("sem nome" in p.lower() for p in problemas_pagamentos):
             recomendacoes.append("Completar informacoes de beneficiarios sem nome")
     
     if problemas_contas:
-        if any("duplicadas" in p for p in problemas_contas):
+        if any("duplicadas" in p.lower() for p in problemas_contas):
             recomendacoes.append("Verificar e corrigir contas duplicadas")
-        if any("CPFs" in p for p in problemas_contas):
+        if any("cpf" in p.lower() for p in problemas_contas):
             recomendacoes.append("Validar CPFs com formato invalido")
     
     if comparacao and comparacao.get('total_contas_sem_pagamento', 0) > 0:
@@ -649,7 +889,7 @@ def gerar_relatorio_pdf(mes, ano, metrics_pagamentos, metrics_contas, comparacao
         rec_limpa = limpar_texto_para_pdf(rec)
         pdf.multi_cell(0, 7, f"{i}. {rec_limpa}")
     
-    # Gerar PDF em bytes
+    # Gerar PDF
     try:
         pdf_output = pdf.output(dest='S')
         return pdf_output.encode('latin-1', 'replace')
@@ -657,7 +897,7 @@ def gerar_relatorio_pdf(mes, ano, metrics_pagamentos, metrics_contas, comparacao
         try:
             pdf_output = pdf.output(dest='S')
             return pdf_output.encode('utf-8')
-        except Exception as e:
+        except:
             return b'PDF generation error'
 
 # ============================================
@@ -672,7 +912,6 @@ def main():
     # Sidebar
     st.sidebar.header("📤 Upload de Arquivos")
     
-    # Upload múltiplo
     uploaded_files = st.sidebar.file_uploader(
         "Carregue suas planilhas (CSV, TXT, Excel)",
         type=['csv', 'txt', 'xlsx', 'xls'],
@@ -680,7 +919,7 @@ def main():
         help="Arraste ou selecione arquivos"
     )
     
-    # Classificação automática de arquivos
+    # Classificação automática
     arquivos_pagamentos = []
     arquivos_contas = []
     
@@ -689,18 +928,18 @@ def main():
             for arquivo in uploaded_files:
                 nome = arquivo.name.upper()
                 
-                # Classificar por nome do arquivo
-                if any(palavra in nome for palavra in ['PGTO', 'PAGTO', 'PAGAMENTO', 'PAGTO', 'VALOR', 'PGTO.', 'PAGTO.']):
+                # Classificar por nome
+                if any(palavra in nome for palavra in ['PGTO', 'PAGTO', 'PAGAMENTO', 'PAGTO.', 'PGTO.']):
                     arquivos_pagamentos.append(arquivo)
                     st.sidebar.success(f"📊 {arquivo.name} (Pagamentos)")
-                elif any(palavra in nome for palavra in ['CADASTRO', 'CONTA', 'ABERTURA', 'REL.CADASTRO', 'CADASTRO.']):
+                elif any(palavra in nome for palavra in ['CADASTRO', 'CONTA', 'ABERTURA', 'REL.CADASTRO']):
                     arquivos_contas.append(arquivo)
                     st.sidebar.success(f"📋 {arquivo.name} (Contas)")
                 else:
                     # Tentar classificar pelo conteúdo
                     try:
                         df_temp = carregar_planilha(arquivo)
-                        if not df_temp.empty and len(df_temp) > 0:
+                        if not df_temp.empty:
                             coluna_valor = detectar_coluna_valor(df_temp)
                             if coluna_valor:
                                 arquivos_pagamentos.append(arquivo)
@@ -711,9 +950,8 @@ def main():
                                     arquivos_contas.append(arquivo)
                                     st.sidebar.info(f"📋 {arquivo.name} (Contas - detectado)")
                     except:
-                        # Se não conseguir classificar, colocar como pagamentos por padrão
                         arquivos_pagamentos.append(arquivo)
-                        st.sidebar.warning(f"⚠️ {arquivo.name} (Não classificado - tratado como Pagamentos)")
+                        st.sidebar.warning(f"⚠️ {arquivo.name} (Não classificado)")
     
     # Processar arquivos
     dfs_pagamentos = []
@@ -723,38 +961,30 @@ def main():
         with st.spinner("Processando arquivos de pagamentos..."):
             for arquivo in arquivos_pagamentos:
                 df = carregar_planilha(arquivo)
-                if not df.empty and len(df) > 0:
+                if not df.empty:
                     dfs_pagamentos.append({
                         'nome': arquivo.name,
                         'dataframe': df
                     })
-                    st.sidebar.info(f"✓ {arquivo.name}: {len(df)} registros")
-                else:
-                    st.sidebar.warning(f"✗ {arquivo.name}: Arquivo vazio ou inválido")
     
     if arquivos_contas:
         with st.spinner("Processando arquivos de contas..."):
             for arquivo in arquivos_contas:
                 df = carregar_planilha(arquivo)
-                if not df.empty and len(df) > 0:
+                if not df.empty:
                     dfs_contas.append({
                         'nome': arquivo.name,
                         'dataframe': df
                     })
-                    st.sidebar.info(f"✓ {arquivo.name}: {len(df)} registros")
-                else:
-                    st.sidebar.warning(f"✗ {arquivo.name}: Arquivo vazio ou inválido")
     
     # Combinar dados
     df_pagamentos = pd.DataFrame()
     if dfs_pagamentos:
         df_pagamentos = pd.concat([d['dataframe'] for d in dfs_pagamentos], ignore_index=True)
-        st.info(f"📊 Total de registros de pagamentos: {len(df_pagamentos)}")
     
     df_contas = pd.DataFrame()
     if dfs_contas:
         df_contas = pd.concat([d['dataframe'] for d in dfs_contas], ignore_index=True)
-        st.info(f"📋 Total de registros de contas: {len(df_contas)}")
     
     # Configuração do período
     st.sidebar.markdown("---")
@@ -765,7 +995,7 @@ def main():
     
     col1, col2 = st.sidebar.columns(2)
     with col1:
-        mes = st.selectbox("Mês", meses, index=8)  # Setembro como padrão
+        mes = st.selectbox("Mês", meses, index=8)
     with col2:
         ano_atual = datetime.now().year
         ano = st.selectbox("Ano", list(range(ano_atual, ano_atual - 3, -1)))
@@ -774,63 +1004,25 @@ def main():
     if st.sidebar.button("🚀 Realizar Análise Completa", type="primary", use_container_width=True):
         if not df_pagamentos.empty or not df_contas.empty:
             with st.spinner("Realizando análise completa..."):
-                # Análises básicas
-                metrics_pagamentos = {}
-                metrics_contas = {}
-                comparacao = {}
-                
+                # Análise de pagamentos (INCLUINDO VALORES)
                 if not df_pagamentos.empty:
-                    # Métricas de pagamentos
-                    coluna_conta = detectar_coluna_conta(df_pagamentos)
-                    coluna_valor = detectar_coluna_valor(df_pagamentos)
-                    
-                    metrics_pagamentos['total_registros'] = len(df_pagamentos)
-                    
-                    if coluna_conta and coluna_conta in df_pagamentos.columns:
-                        # Converter para string e limpar
-                        df_pagamentos[coluna_conta] = df_pagamentos[coluna_conta].astype(str).str.strip()
-                        validos = ~df_pagamentos[coluna_conta].isin(['', 'nan', 'NaN', 'None', 'null'])
-                        metrics_pagamentos['registros_validos'] = validos.sum()
-                        
-                        # Duplicados (apenas entre registros válidos)
-                        df_validos = df_pagamentos[validos]
-                        if not df_validos.empty:
-                            duplicados = df_validos[df_validos.duplicated(subset=[coluna_conta], keep=False)]
-                            metrics_pagamentos['pagamentos_duplicados'] = duplicados[coluna_conta].nunique() if not duplicados.empty else 0
-                    
-                    if coluna_valor and coluna_valor in df_pagamentos.columns:
-                        # Converter coluna de valor para numérico
-                        df_pagamentos_num = converter_coluna_valor(df_pagamentos, coluna_valor)
-                        metrics_pagamentos['valor_total'] = df_pagamentos_num[coluna_valor].sum()
+                    metrics_pagamentos = analisar_pagamentos_completos(df_pagamentos)
+                else:
+                    metrics_pagamentos = {}
                 
+                # Análise de contas
                 if not df_contas.empty:
-                    metrics_contas['total_contas'] = len(df_contas)
-                    coluna_conta_cont = detectar_coluna_conta(df_contas)
-                    if coluna_conta_cont and coluna_conta_cont in df_contas.columns:
-                        df_contas[coluna_conta_cont] = df_contas[coluna_conta_cont].astype(str).str.strip()
-                        validos = ~df_contas[coluna_conta_cont].isin(['', 'nan', 'NaN', 'None', 'null'])
-                        df_validos = df_contas[validos]
-                        metrics_contas['contas_unicas'] = df_validos[coluna_conta_cont].nunique()
+                    metrics_contas = analisar_contas_completas(df_contas)
+                else:
+                    metrics_contas = {}
                 
-                # Comparação entre pagamentos e contas
+                # Comparação
                 if not df_pagamentos.empty and not df_contas.empty:
-                    coluna_conta_pag = detectar_coluna_conta(df_pagamentos)
-                    coluna_conta_cont = detectar_coluna_conta(df_contas)
-                    
-                    if coluna_conta_pag and coluna_conta_cont:
-                        # Limpar e extrair contas válidas
-                        contas_pag = set(df_pagamentos[coluna_conta_pag].dropna().astype(str).str.strip())
-                        contas_pag = {c for c in contas_pag if c and c not in ['', 'nan', 'NaN', 'None', 'null']}
-                        
-                        contas_cont = set(df_contas[coluna_conta_cont].dropna().astype(str).str.strip())
-                        contas_cont = {c for c in contas_cont if c and c not in ['', 'nan', 'NaN', 'None', 'null']}
-                        
-                        comparacao['total_contas_abertas'] = len(contas_cont)
-                        comparacao['total_contas_com_pagamento'] = len(contas_pag)
-                        comparacao['total_contas_sem_pagamento'] = len(contas_cont - contas_pag)
-                        comparacao['contas_sem_pagamento'] = list(contas_cont - contas_pag)
+                    comparacao = comparar_pagamentos_contas(df_pagamentos, df_contas)
+                else:
+                    comparacao = {}
                 
-                # Análise de problemas críticos
+                # Problemas críticos
                 problemas_pagamentos = analisar_problemas_criticos(df_pagamentos, 'pagamentos')
                 problemas_contas = analisar_problemas_criticos(df_contas, 'contas')
                 
@@ -843,33 +1035,64 @@ def main():
                 col1, col2, col3, col4 = st.columns(4)
                 
                 with col1:
-                    if 'total_registros' in metrics_pagamentos:
-                        st.metric("Total de Pagamentos", 
-                                 formatar_brasileiro(metrics_pagamentos['total_registros']))
-                    else:
-                        st.metric("Total de Pagamentos", "0")
+                    st.metric("Total de Pagamentos", 
+                             formatar_brasileiro(metrics_pagamentos.get('total_registros', 0)))
                 
                 with col2:
-                    if 'valor_total' in metrics_pagamentos:
-                        st.metric("Valor Total", 
-                                 formatar_brasileiro(metrics_pagamentos['valor_total'], 'monetario'))
-                    else:
-                        st.metric("Valor Total", "R$ 0,00")
+                    valor_total = metrics_pagamentos.get('valor_total', 0)
+                    st.metric("Valor Total Pago", 
+                             formatar_brasileiro(valor_total, 'monetario'))
                 
                 with col3:
-                    if 'total_contas' in metrics_contas:
-                        st.metric("Contas Abertas", 
-                                 formatar_brasileiro(metrics_contas['total_contas']))
+                    if metrics_pagamentos.get('valor_total', 0) > 0 and metrics_pagamentos.get('registros_validos', 0) > 0:
+                        valor_medio = valor_total / metrics_pagamentos['registros_validos']
+                        st.metric("Valor Médio", 
+                                 formatar_brasileiro(valor_medio, 'monetario'))
                     else:
-                        st.metric("Contas Abertas", "0")
+                        st.metric("Valor Médio", "R$ 0,00")
                 
                 with col4:
-                    if 'total_contas_sem_pagamento' in comparacao:
-                        st.metric("Contas sem Pagamento", 
-                                 formatar_brasileiro(comparacao['total_contas_sem_pagamento']),
-                                 delta_color="inverse")
+                    st.metric("Contas Abertas", 
+                             formatar_brasileiro(metrics_contas.get('total_contas', 0)))
+                
+                # Segunda linha de métricas
+                col5, col6, col7, col8 = st.columns(4)
+                
+                with col5:
+                    st.metric("Pagamentos Válidos", 
+                             formatar_brasileiro(metrics_pagamentos.get('registros_validos', 0)))
+                
+                with col6:
+                    st.metric("Pagamentos Duplicados", 
+                             formatar_brasileiro(metrics_pagamentos.get('pagamentos_duplicados', 0)),
+                             delta_color="inverse" if metrics_pagamentos.get('pagamentos_duplicados', 0) > 0 else "off")
+                
+                with col7:
+                    st.metric("Beneficiários Únicos", 
+                             formatar_brasileiro(metrics_pagamentos.get('beneficiarios_unicos', 
+                                                                       metrics_contas.get('beneficiarios_unicos', 0))))
+                
+                with col8:
+                    st.metric("Contas sem Pagamento", 
+                             formatar_brasileiro(comparacao.get('total_contas_sem_pagamento', 0)),
+                             delta_color="inverse" if comparacao.get('total_contas_sem_pagamento', 0) > 0 else "off")
+                
+                # Detalhes da detecção
+                st.subheader("🔍 Detecção Automática")
+                
+                col_det1, col_det2 = st.columns(2)
+                
+                with col_det1:
+                    if metrics_pagamentos.get('coluna_valor_detectada'):
+                        st.info(f"**Coluna de valor detectada:** {metrics_pagamentos['coluna_valor_detectada']}")
                     else:
-                        st.metric("Contas sem Pagamento", "0")
+                        st.warning("❌ Coluna de valor não detectada")
+                
+                with col_det2:
+                    if metrics_pagamentos.get('coluna_conta_detectada'):
+                        st.info(f"**Coluna de conta detectada:** {metrics_pagamentos['coluna_conta_detectada']}")
+                    else:
+                        st.warning("❌ Coluna de conta não detectada")
                 
                 # Problemas Críticos
                 if problemas_pagamentos or problemas_contas:
@@ -904,13 +1127,14 @@ def main():
                     
                     if not df_pagamentos.empty:
                         st.write(f"**Pagamentos:** {len(df_pagamentos)} registros")
-                        coluna_conta = detectar_coluna_conta(df_pagamentos)
-                        coluna_valor = detectar_coluna_valor(df_pagamentos)
                         
-                        if coluna_conta:
-                            st.write(f"Coluna de conta detectada: **{coluna_conta}**")
+                        coluna_valor = metrics_pagamentos.get('coluna_valor_detectada')
+                        coluna_conta = metrics_pagamentos.get('coluna_conta_detectada')
+                        
                         if coluna_valor:
-                            st.write(f"Coluna de valor detectada: **{coluna_valor}**")
+                            st.write(f"Coluna de valor: **{coluna_valor}**")
+                        if coluna_conta:
+                            st.write(f"Coluna de conta: **{coluna_conta}**")
                         
                         with st.expander("Ver primeiros registros"):
                             st.dataframe(df_pagamentos.head(10))
@@ -924,10 +1148,9 @@ def main():
                     st.subheader("Análise de Duplicidades")
                     
                     if not df_pagamentos.empty:
-                        coluna_conta = detectar_coluna_conta(df_pagamentos)
+                        coluna_conta = metrics_pagamentos.get('coluna_conta_detectada')
                         
                         if coluna_conta and coluna_conta in df_pagamentos.columns:
-                            # Limpar dados
                             df_pagamentos[coluna_conta] = df_pagamentos[coluna_conta].astype(str).str.strip()
                             df_validos = df_pagamentos[~df_pagamentos[coluna_conta].isin(['', 'nan', 'NaN', 'None', 'null'])]
                             
@@ -940,11 +1163,15 @@ def main():
                                     colunas_mostrar = [coluna_conta]
                                     if coluna_nome and coluna_nome in duplicados.columns:
                                         colunas_mostrar.append(coluna_nome)
+                                    
+                                    # Adicionar valor se disponível
+                                    coluna_valor = metrics_pagamentos.get('coluna_valor_detectada')
+                                    if coluna_valor and coluna_valor in duplicados.columns:
+                                        colunas_mostrar.append(coluna_valor)
+                                    
                                     st.dataframe(duplicados[colunas_mostrar].head(20))
                                 else:
                                     st.success("✅ Nenhuma duplicidade encontrada")
-                            else:
-                                st.info("ℹ️ Nenhum número de conta válido encontrado para análise de duplicidades")
                 
                 with tab3:
                     st.subheader("Inconsistências para Correção")
@@ -967,44 +1194,47 @@ def main():
                                     if not contas_sem_pag.empty:
                                         st.dataframe(contas_sem_pag.head(50))
                                 except:
-                                    st.warning("Não foi possível filtrar as contas sem pagamento")
+                                    pass
                     else:
                         st.success("✅ Nenhuma inconsistência grave encontrada")
                 
                 with tab4:
                     st.subheader("Estatísticas Detalhadas")
                     
-                    if not df_pagamentos.empty:
-                        coluna_valor = detectar_coluna_valor(df_pagamentos)
+                    if not df_pagamentos.empty and metrics_pagamentos.get('valor_total', 0) > 0:
+                        coluna_valor = metrics_pagamentos.get('coluna_valor_detectada')
                         
-                        if coluna_valor and coluna_valor in df_pagamentos.columns:
-                            # Converter para numérico
-                            df_pagamentos_num = converter_coluna_valor(df_pagamentos, coluna_valor)
-                            
-                            # Gráfico de distribuição
+                        if coluna_valor:
                             try:
-                                valores_validos = df_pagamentos_num[coluna_valor].dropna()
-                                if len(valores_validos) > 0:
-                                    fig = px.histogram(valores_validos, 
+                                df_processado, valor_total, _ = detectar_e_processar_valores(df_pagamentos)
+                                
+                                if f'{coluna_valor}_Numerico' in df_processado.columns:
+                                    valores = df_processado[f'{coluna_valor}_Numerico']
+                                    
+                                    # Gráfico de distribuição
+                                    fig = px.histogram(valores, 
                                                      title='Distribuição dos Valores de Pagamento',
                                                      nbins=20,
                                                      labels={'value': 'Valor (R$)', 'count': 'Quantidade'})
                                     st.plotly_chart(fig, use_container_width=True)
+                                    
+                                    # Estatísticas
+                                    st.write("**Estatísticas Descritivas:**")
+                                    estat_df = pd.DataFrame({
+                                        'Estatística': ['Mínimo', 'Máximo', 'Média', 'Mediana', 'Soma Total'],
+                                        'Valor': [
+                                            formatar_brasileiro(valores.min(), 'monetario'),
+                                            formatar_brasileiro(valores.max(), 'monetario'),
+                                            formatar_brasileiro(valores.mean(), 'monetario'),
+                                            formatar_brasileiro(valores.median(), 'monetario'),
+                                            formatar_brasileiro(valores.sum(), 'monetario')
+                                        ]
+                                    })
+                                    st.dataframe(estat_df)
                             except:
-                                st.info("Não foi possível gerar o gráfico de distribuição")
-                            
-                            # Estatísticas
-                            try:
-                                estat = df_pagamentos_num[coluna_valor].describe()
-                                st.write("**Estatísticas Descritivas:**")
-                                st.dataframe(pd.DataFrame({
-                                    'Estatística': estat.index,
-                                    'Valor': estat.values
-                                }))
-                            except:
-                                st.info("Não foi possível calcular estatísticas descritivas")
+                                st.info("Não foi possível gerar estatísticas detalhadas")
                 
-                # Gerar e oferecer download do PDF
+                # Gerar PDF
                 st.subheader("📄 Relatório Completo em PDF")
                 
                 try:
@@ -1020,8 +1250,6 @@ def main():
                             use_container_width=True
                         )
                         st.success("✅ Relatório PDF gerado com sucesso!")
-                    else:
-                        st.warning("⚠️ Não foi possível gerar o relatório PDF")
                 except Exception as e:
                     st.error(f"Erro ao gerar PDF: {str(e)}")
                 
@@ -1056,35 +1284,6 @@ def main():
     else:
         # Tela inicial
         st.info("👈 Carregue seus arquivos e clique em 'Realizar Análise Completa'")
-        
-        with st.expander("📚 Instruções de uso"):
-            st.markdown("""
-            1. **Faça upload dos arquivos** na sidebar
-            2. **Classificação automática**: O sistema identifica se são arquivos de pagamentos ou contas
-            3. **Configure o período**: Selecione o mês e ano de referência
-            4. **Clique em "Realizar Análise Completa"**
-            5. **Revise os resultados**: Métricas, problemas críticos e inconsistências
-            6. **Exporte os resultados**: PDF e CSV
-            """)
-        
-        with st.expander("⚠️ Problemas comuns e soluções"):
-            st.markdown("""
-            ### Arquivo vazio ou só com cabeçalho
-            - O sistema detecta arquivos vazios e os ignora
-            - Verifique se o arquivo realmente contém dados
-            
-            ### Erro de encoding
-            - O sistema tenta diferentes encodings automaticamente
-            - Use UTF-8 ou Latin-1 sempre que possível
-            
-            ### Colunas não detectadas
-            - Use nomes padrão como "Num Cartao", "Valor", "Nome"
-            - O sistema reconhece variações comuns
-            
-            ### Valores não numéricos
-            - O sistema converte valores automaticamente
-            - Use formato brasileiro: 1.234,56 ou 1234,56
-            """)
 
 if __name__ == "__main__":
     main()
