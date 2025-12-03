@@ -1,15 +1,16 @@
-# app.py - SISTEMA POT - 
+# app.py - SISTEMA POT - VERSÃO SEM CHARDET
+# Usa apenas bibliotecas padrão do Python e Streamlit
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
-import plotly.graph_objects as go
 from io import StringIO, BytesIO
 import warnings
-from datetime import datetime, timedelta
+from datetime import datetime
 import re
 import csv
-import chardet
+import codecs
 
 # Desativar warnings
 warnings.filterwarnings('ignore')
@@ -27,31 +28,51 @@ st.title("📊 SISTEMA DE MONITORAMENTO DE PAGAMENTOS - POT")
 st.markdown("---")
 
 # ============================================================================
-# FUNÇÕES DE PROCESSAMENTO CORRIGIDAS
+# FUNÇÕES DE PROCESSAMENTO - SEM CHARDET
 # ============================================================================
 
-def detectar_codificacao(bytes_data):
-    """Detecta automaticamente a codificação do arquivo"""
+def detectar_encoding_sem_chardet(bytes_data):
+    """Detecta encoding usando métodos nativos do Python"""
+    # Lista de encodings comuns no Brasil
+    encodings = ['utf-8-sig', 'latin-1', 'cp1252', 'iso-8859-1', 'utf-8']
+    
+    for encoding in encodings:
+        try:
+            # Tentar decodificar
+            bytes_data.decode(encoding)
+            return encoding
+        except UnicodeDecodeError:
+            continue
+    
+    # Se nenhum funcionar, usar latin-1 (sempre decodifica, mesmo que com erros)
+    return 'latin-1'
+
+def tentar_decodificar(bytes_data):
+    """Tenta várias estratégias de decodificação"""
     try:
-        resultado = chardet.detect(bytes_data)
-        encoding = resultado['encoding']
-        confianca = resultado['confidence']
+        # Primeira tentativa: UTF-8 com BOM
+        try:
+            return bytes_data.decode('utf-8-sig')
+        except:
+            pass
         
-        # Se a confiança for baixa ou encoding None, usar fallbacks
-        if not encoding or confianca < 0.7:
-            # Lista de encodings comuns no Brasil
-            encodings_comuns = ['latin-1', 'cp1252', 'iso-8859-1', 'utf-8-sig']
-            for enc in encodings_comuns:
-                try:
-                    # Tentar decodificar com cada encoding
-                    bytes_data.decode(enc)
-                    return enc
-                except:
-                    continue
+        # Segunda tentativa: Latin-1 (sempre funciona)
+        try:
+            return bytes_data.decode('latin-1')
+        except:
+            pass
         
-        return encoding if encoding else 'latin-1'
+        # Terceira tentativa: CP1252 (Windows)
+        try:
+            return bytes_data.decode('cp1252')
+        except:
+            pass
+        
+        # Último recurso: UTF-8 com tratamento de erros
+        return bytes_data.decode('utf-8', errors='replace')
     except:
-        return 'latin-1'
+        # Se tudo falhar, força latin-1 ignorando erros
+        return bytes_data.decode('latin-1', errors='ignore')
 
 def limpar_valor_monetario(valor):
     """Converte valores monetários brasileiros para float"""
@@ -70,12 +91,6 @@ def limpar_valor_monetario(valor):
         if texto == '':
             return np.nan
         
-        # Verificar se já é número
-        try:
-            return float(texto)
-        except:
-            pass
-        
         # Formato brasileiro: 1.027,18 ou 272.486,06
         if ',' in texto:
             if '.' in texto:
@@ -93,21 +108,14 @@ def limpar_valor_monetario(valor):
     except:
         return np.nan
 
-def processar_csv_correto(arquivo):
-    """Processa arquivo CSV com tratamento correto de encoding"""
+def processar_csv_robusto(arquivo):
+    """Processa arquivo CSV de forma robusta"""
     try:
         # Obter bytes do arquivo
         bytes_data = arquivo.getvalue()
         
-        # Detectar encoding
-        encoding = detectar_codificacao(bytes_data)
-        
-        # Decodificar usando o encoding detectado
-        try:
-            conteudo = bytes_data.decode(encoding, errors='replace')
-        except:
-            # Fallback para latin-1 (sempre funciona)
-            conteudo = bytes_data.decode('latin-1', errors='replace')
+        # Decodificar usando método robusto
+        conteudo = tentar_decodificar(bytes_data)
         
         # Remover BOM se existir
         conteudo = conteudo.lstrip('\ufeff')
@@ -115,29 +123,48 @@ def processar_csv_correto(arquivo):
         # Substituir caracteres problemáticos
         conteudo = conteudo.replace('\x00', '').replace('\r\n', '\n').replace('\r', '\n')
         
+        # Remover linhas que são apenas totais (muitos ;;;)
+        linhas = conteudo.split('\n')
+        linhas_validas = []
+        
+        for linha in linhas:
+            linha = linha.strip()
+            if linha:
+                # Pular linhas que são apenas totais ou resumos
+                if linha.count(';') > 8 and any(x in linha for x in ['R$', ';;;', ';;;;']):
+                    continue
+                linhas_validas.append(linha)
+        
+        if len(linhas_validas) < 2:
+            return None, "Arquivo vazio ou sem dados válidos"
+        
         # Detectar delimitador
-        linhas = conteudo.split('\n', 10)
-        delimitador = ';' if any(';' in linha for linha in linhas) else ','
+        primeira_linha = linhas_validas[0]
+        if ';' in primeira_linha:
+            sep = ';'
+        else:
+            sep = ','
         
         # Ler CSV
         try:
             df = pd.read_csv(
-                StringIO(conteudo),
-                delimiter=delimitador,
+                StringIO('\n'.join(linhas_validas)),
+                sep=sep,
                 dtype=str,
                 on_bad_lines='skip',
                 engine='python'
             )
         except Exception as e:
-            # Se falhar, tentar método manual
-            st.warning(f"Usando método alternativo para {arquivo.name}")
-            reader = csv.reader(StringIO(conteudo), delimiter=delimitador)
-            linhas_csv = list(reader)
+            # Método manual
+            st.warning(f"Usando método manual para {arquivo.name}")
+            dados = []
+            for linha in linhas_validas:
+                dados.append(linha.split(sep))
             
-            if len(linhas_csv) < 2:
-                return None, "Arquivo vazio ou sem dados"
+            if len(dados) < 2:
+                return None, "Não foi possível ler o CSV"
             
-            df = pd.DataFrame(linhas_csv[1:], columns=linhas_csv[0])
+            df = pd.DataFrame(dados[1:], columns=dados[0])
         
         # Padronizar nomes das colunas
         df.columns = [str(col).strip().lower() for col in df.columns]
@@ -226,9 +253,9 @@ def processar_csv_correto(arquivo):
         return df, f"✅ Processado: {len(df)} registros ({mes_referencia})"
     
     except Exception as e:
-        return None, f"❌ Erro ao processar CSV: {str(e)}"
+        return None, f"❌ Erro ao processar: {str(e)[:100]}"
 
-def processar_excel_correto(arquivo):
+def processar_excel_robusto(arquivo):
     """Processa arquivo Excel"""
     try:
         # Ler Excel
@@ -304,29 +331,35 @@ def gerar_consolidado_mensal(df):
     if 'mes_referencia' not in df.columns or 'valor_pagto' not in df.columns:
         return pd.DataFrame()
     
-    consolidado = df.groupby('mes_referencia').agg(
-        quantidade_pagamentos=('valor_pagto', 'count'),
-        valor_total=('valor_pagto', 'sum'),
-        valor_medio=('valor_pagto', 'mean'),
-        quantidade_projetos=('projeto', 'nunique') if 'projeto' in df.columns else pd.Series([0]),
-        quantidade_agencias=('agencia', 'nunique') if 'agencia' in df.columns else pd.Series([0])
-    ).round(2)
-    
-    return consolidado.sort_index()
+    try:
+        consolidado = df.groupby('mes_referencia').agg(
+            quantidade_pagamentos=('valor_pagto', 'count'),
+            valor_total=('valor_pagto', 'sum'),
+            valor_medio=('valor_pagto', 'mean'),
+            quantidade_projetos=('projeto', 'nunique') if 'projeto' in df.columns else pd.Series([0]),
+            quantidade_agencias=('agencia', 'nunique') if 'agencia' in df.columns else pd.Series([0])
+        ).round(2)
+        
+        return consolidado
+    except:
+        return pd.DataFrame()
 
 def gerar_consolidado_projetos(df):
     """Gera consolidação por projeto"""
     if 'projeto' not in df.columns or 'valor_pagto' not in df.columns:
         return pd.DataFrame()
     
-    consolidado = df.groupby('projeto').agg(
-        quantidade_pagamentos=('valor_pagto', 'count'),
-        valor_total=('valor_pagto', 'sum'),
-        valor_medio=('valor_pagto', 'mean'),
-        quantidade_meses=('mes_referencia', 'nunique') if 'mes_referencia' in df.columns else pd.Series([0])
-    ).round(2)
-    
-    return consolidado.sort_values('valor_total', ascending=False)
+    try:
+        consolidado = df.groupby('projeto').agg(
+            quantidade_pagamentos=('valor_pagto', 'count'),
+            valor_total=('valor_pagto', 'sum'),
+            valor_medio=('valor_pagto', 'mean'),
+            quantidade_meses=('mes_referencia', 'nunique') if 'mes_referencia' in df.columns else pd.Series([0])
+        ).round(2)
+        
+        return consolidado.sort_values('valor_total', ascending=False)
+    except:
+        return pd.DataFrame()
 
 # ============================================================================
 # INTERFACE PRINCIPAL
@@ -356,17 +389,22 @@ def main():
             ["Substituir dados", "Acumular dados"]
         )
         
+        mostrar_graficos = st.checkbox("Mostrar gráficos", value=True)
+        
         st.markdown("---")
         st.header("📊 STATUS")
         
         if not st.session_state.dados_consolidados.empty:
             metricas = calcular_metricas(st.session_state.dados_consolidados)
             st.success("Dados carregados:")
-            st.metric("Registros", metricas['total_registros'])
+            st.metric("Registros", f"{metricas['total_registros']:,}")
             st.metric("Valor Total", f"R$ {metricas.get('valor_total', 0):,.2f}")
-            st.metric("Arquivos", metricas['arquivos_unicos'])
         else:
-            st.info("Nenhum dado carregado")
+            st.info("⏳ Aguardando arquivos...")
+        
+        if st.button("🧹 Limpar Dados", use_container_width=True):
+            st.session_state.dados_consolidados = pd.DataFrame()
+            st.rerun()
     
     # Área principal
     if not arquivos:
@@ -376,83 +414,116 @@ def main():
         
         with col1:
             st.markdown("""
-            ### 📋 Funcionalidades:
+            ### 🚀 **VERSÃO ROBUSTA - SEM DEPENDÊNCIAS EXTERNAS**
             
-            1. **Processamento robusto de arquivos**
-               - Detecta encoding automaticamente
-               - Suporta CSV, TXT, Excel
-               - Formato brasileiro (R$ 1.027,18)
+            **✅ CARACTERÍSTICAS:**
             
-            2. **Consolidação inteligente**
-               - Agrupamento por mês
+            1. **Processamento Ultra Robusto**
+               - Qualquer encoding (UTF-8, Latin-1, CP1252)
+               - Ignora linhas corrompidas
+               - Remove automaticamente totais
+            
+            2. **Análise Completa**
+               - Consolidação por mês
                - Análise por projeto
-               - Histórico temporal
-            
-            3. **Análise completa**
                - Métricas detalhadas
-               - Gráficos interativos
-               - Exportação em múltiplos formatos
             
-            4. **Detecção de problemas**
-               - Valores inconsistentes
-               - Dados faltantes
-               - Duplicidades
+            3. **Exportação Total**
+               - CSV formatado
+               - Excel com múltiplas abas
+               - Relatórios completos
+            
+            4. **Interface Amigável**
+               - Filtros interativos
+               - Gráficos Plotly
+               - Armazenamento em sessão
+            
+            **🔧 TECNOLOGIAS:**
+            - Python puro (sem chardet)
+            - Pandas para processamento
+            - Plotly para visualização
+            - Streamlit para interface
             """)
         
         with col2:
             st.markdown("""
-            ### 🚀 Como usar:
+            ### 📋 **COMO USAR:**
             
-            1. **Carregue os arquivos** na barra lateral
-            2. **Configure o processamento**
+            1. **Arraste os arquivos** para a barra lateral
+               - CSV, TXT ou Excel
+               - Múltiplos arquivos de uma vez
+            
+            2. **Configure as opções**
+               - Substituir ou acumular dados
+               - Ativar/desativar gráficos
+            
             3. **Analise os resultados**
+               - Métricas principais
+               - Consolidação mensal
+               - Análise por projeto
+            
             4. **Exporte relatórios**
+               - Dados completos
+               - Consolidações
+               - Relatório Excel
             
-            ### 📊 Saídas:
+            ### ⚠️ **PROBLEMAS COMUNS:**
             
-            - Consolidação mensal
-            - Análise por projeto
-            - Gráficos interativos
-            - Relatórios Excel/CSV
+            **Arquivo não processa?**
+            - O sistema ignora encoding errado
+            - Remove linhas problemáticas
+            - Processa o máximo possível
+            
+            **Valores incorretos?**
+            - Converte R$ 1.027,18 para 1027.18
+            - Detecta formato brasileiro
+            - Ignora erros de conversão
             """)
         
         return
     
     # Processar arquivos
-    st.header("🔄 Processamento")
+    st.header("🔄 PROCESSAMENTO DE ARQUIVOS")
     
     dataframes = []
     mensagens = []
     
     with st.spinner(f"Processando {len(arquivos)} arquivo(s)..."):
-        for arquivo in arquivos:
+        progress_bar = st.progress(0)
+        
+        for i, arquivo in enumerate(arquivos):
+            progresso = (i + 1) / len(arquivos)
+            progress_bar.progress(progresso)
+            
             try:
                 if arquivo.name.lower().endswith(('.csv', '.txt')):
-                    df, msg = processar_csv_correto(arquivo)
+                    df, msg = processar_csv_robusto(arquivo)
                 elif arquivo.name.lower().endswith(('.xlsx', '.xls')):
-                    df, msg = processar_excel_correto(arquivo)
+                    df, msg = processar_excel_robusto(arquivo)
                 else:
-                    msg = f"Formato não suportado: {arquivo.name}"
+                    msg = f"❌ Formato não suportado: {arquivo.name}"
                     df = None
                 
                 if df is not None:
                     dataframes.append(df)
-                    mensagens.append(msg)
-                    st.success(msg)
+                    st.success(f"✅ {arquivo.name}: {msg}")
                 else:
-                    mensagens.append(msg)
-                    st.error(msg)
+                    st.error(f"❌ {arquivo.name}: {msg}")
+                
+                mensagens.append(msg)
             except Exception as e:
-                erro_msg = f"Erro crítico em {arquivo.name}: {str(e)}"
-                mensagens.append(erro_msg)
-                st.error(erro_msg)
+                erro = f"❌ Erro crítico em {arquivo.name}: {str(e)[:100]}"
+                st.error(erro)
+                mensagens.append(erro)
+        
+        progress_bar.empty()
     
     if not dataframes:
-        st.error("❌ Nenhum arquivo processado com sucesso")
+        st.error("❌ Nenhum arquivo foi processado com sucesso")
         return
     
     # Consolidar dados
-    novo_df = pd.concat(dataframes, ignore_index=True)
+    novo_df = pd.concat(dataframes, ignore_index=True, sort=False)
     
     # Atualizar dados da sessão
     if modo == "Substituir dados" or st.session_state.dados_consolidados.empty:
@@ -461,9 +532,10 @@ def main():
     else:
         st.session_state.dados_consolidados = pd.concat(
             [st.session_state.dados_consolidados, novo_df], 
-            ignore_index=True
+            ignore_index=True,
+            sort=False
         )
-        st.success(f"✅ {len(novo_df)} novos registros adicionados")
+        st.success(f"✅ {len(novo_df)} novos registros adicionados. Total: {len(st.session_state.dados_consolidados)}")
     
     df_final = st.session_state.dados_consolidados
     
@@ -471,7 +543,7 @@ def main():
     metricas = calcular_metricas(df_final)
     
     # Métricas principais
-    st.header("📈 Métricas Principais")
+    st.header("📈 MÉTRICAS PRINCIPAIS")
     
     col1, col2, col3, col4 = st.columns(4)
     
@@ -487,14 +559,31 @@ def main():
     with col4:
         st.metric("Arquivos", metricas['arquivos_unicos'])
     
+    # Segunda linha de métricas
+    col5, col6, col7, col8 = st.columns(4)
+    
+    with col5:
+        st.metric("Projetos", metricas.get('projetos_unicos', 0))
+    
+    with col6:
+        st.metric("Meses", metricas.get('meses_unicos', 0))
+    
+    with col7:
+        st.metric("Agências", metricas.get('agencias_unicas', 0))
+    
+    with col8:
+        if 'valor_pagto' in df_final.columns:
+            valores_validos = df_final['valor_pagto'].dropna().count()
+            st.metric("Valores Válidos", f"{valores_validos:,}")
+    
     # Tabs de análise
-    tab1, tab2, tab3, tab4 = st.tabs(["📋 Dados", "📅 Mensal", "🏢 Projetos", "📊 Gráficos"])
+    tab1, tab2, tab3, tab4 = st.tabs(["📋 Dados", "📅 Mensal", "🏢 Projetos", "💾 Exportar"])
     
     with tab1:
-        st.subheader("Dados Processados")
+        st.subheader("📋 Dados Processados")
         
         # Filtros
-        col_f1, col_f2 = st.columns(2)
+        col_f1, col_f2, col_f3 = st.columns(3)
         
         with col_f1:
             if 'mes_referencia' in df_final.columns:
@@ -505,10 +594,17 @@ def main():
         
         with col_f2:
             if 'projeto' in df_final.columns:
-                projetos = ['Todos'] + sorted(df_final['projeto'].dropna().unique().tolist())
+                projetos = ['Todos'] + sorted(df_final['projeto'].dropna().unique().tolist()[:50])
                 projeto_filtro = st.selectbox("Filtrar por projeto:", projetos)
             else:
                 projeto_filtro = 'Todos'
+        
+        with col_f3:
+            if 'gerenciadora' in df_final.columns:
+                gerenciadoras = ['Todas'] + sorted(df_final['gerenciadora'].dropna().unique().tolist())
+                gerenciadora_filtro = st.selectbox("Filtrar por gerenciadora:", gerenciadoras)
+            else:
+                gerenciadora_filtro = 'Todas'
         
         # Aplicar filtros
         df_filtrado = df_final.copy()
@@ -519,6 +615,9 @@ def main():
         if projeto_filtro != 'Todos' and 'projeto' in df_filtrado.columns:
             df_filtrado = df_filtrado[df_filtrado['projeto'] == projeto_filtro]
         
+        if gerenciadora_filtro != 'Todas' and 'gerenciadora' in df_filtrado.columns:
+            df_filtrado = df_filtrado[df_filtrado['gerenciadora'] == gerenciadora_filtro]
+        
         # Mostrar dados
         st.dataframe(
             df_filtrado,
@@ -528,12 +627,21 @@ def main():
                 "valor_pagto": st.column_config.NumberColumn(
                     "Valor Pago",
                     format="R$ %.2f"
+                ),
+                "valor_total": st.column_config.NumberColumn(
+                    "Valor Total",
+                    format="R$ %.2f"
                 )
             }
         )
+        
+        # Estatísticas do filtro
+        if len(df_filtrado) > 0:
+            valor_filtrado = df_filtrado['valor_pagto'].sum() if 'valor_pagto' in df_filtrado.columns else 0
+            st.info(f"**Filtro aplicado:** {len(df_filtrado):,} registros | Valor total: R$ {valor_filtrado:,.2f}")
     
     with tab2:
-        st.subheader("Consolidação Mensal")
+        st.subheader("📅 Consolidação Mensal")
         
         consolidado_mensal = gerar_consolidado_mensal(df_final)
         
@@ -552,148 +660,166 @@ def main():
                     )
                 }
             )
+            
+            # Gráfico
+            if mostrar_graficos:
+                fig = px.bar(
+                    consolidado_mensal.reset_index(),
+                    x='mes_referencia',
+                    y='valor_total',
+                    title='Valor Total por Mês',
+                    labels={'valor_total': 'Valor Total (R$)'},
+                    text=[f'R$ {x:,.0f}' for x in consolidado_mensal['valor_total']]
+                )
+                fig.update_traces(textposition='outside')
+                st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("Não há dados para consolidação mensal")
     
     with tab3:
-        st.subheader("Consolidação por Projeto")
+        st.subheader("🏢 Consolidação por Projeto")
         
         consolidado_projetos = gerar_consolidado_projetos(df_final)
         
         if not consolidado_projetos.empty:
             st.dataframe(
-                consolidado_projetos,
+                consolidado_projetos.head(50),
                 use_container_width=True,
-                height=500
+                height=500,
+                column_config={
+                    "valor_total": st.column_config.NumberColumn(
+                        "Valor Total",
+                        format="R$ %.2f"
+                    ),
+                    "valor_medio": st.column_config.NumberColumn(
+                        "Valor Médio",
+                        format="R$ %.2f"
+                    )
+                }
             )
+            
+            # Gráfico top 10
+            if mostrar_graficos and len(consolidado_projetos) > 0:
+                top_10 = consolidado_projetos.head(10)
+                fig = px.bar(
+                    top_10.reset_index(),
+                    x='projeto',
+                    y='valor_total',
+                    title='Top 10 Projetos por Valor',
+                    labels={'valor_total': 'Valor Total (R$)'},
+                    text=[f'R$ {x:,.0f}' for x in top_10['valor_total']]
+                )
+                fig.update_layout(xaxis_tickangle=-45)
+                fig.update_traces(textposition='outside')
+                st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("Não há dados de projetos para análise")
     
     with tab4:
-        st.subheader("Visualizações")
+        st.subheader("💾 Exportação de Dados")
         
-        if 'valor_pagto' in df_final.columns and 'mes_referencia' in df_final.columns:
-            # Gráfico de evolução mensal
+        st.markdown("### 📥 Baixar Relatórios")
+        
+        col_exp1, col_exp2, col_exp3 = st.columns(3)
+        
+        with col_exp1:
+            # Dados completos CSV
+            csv_completo = df_final.to_csv(index=False, sep=';', decimal=',')
+            st.download_button(
+                label="📄 Dados Completos (CSV)",
+                data=csv_completo,
+                file_name=f"pot_completo_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+        
+        with col_exp2:
+            # Consolidação mensal CSV
             if not consolidado_mensal.empty:
-                fig1 = px.bar(
-                    consolidado_mensal.reset_index(),
-                    x='mes_referencia',
-                    y='valor_total',
-                    title='Valor Total por Mês',
-                    labels={'valor_total': 'Valor Total (R$)'}
+                csv_mensal = consolidado_mensal.to_csv(sep=';', decimal=',')
+                st.download_button(
+                    label="📅 Consolidação Mensal (CSV)",
+                    data=csv_mensal,
+                    file_name=f"pot_mensal_{datetime.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv",
+                    use_container_width=True
                 )
-                st.plotly_chart(fig1, use_container_width=True)
         
-        if not consolidado_projetos.empty:
-            # Gráfico de top projetos
-            top_10 = consolidado_projetos.head(10)
-            fig2 = px.bar(
-                top_10.reset_index(),
-                x='projeto',
-                y='valor_total',
-                title='Top 10 Projetos por Valor',
-                labels={'valor_total': 'Valor Total (R$)'}
-            )
-            fig2.update_layout(xaxis_tickangle=-45)
-            st.plotly_chart(fig2, use_container_width=True)
-    
-    # Exportação
-    st.header("💾 Exportação")
-    
-    col_exp1, col_exp2, col_exp3 = st.columns(3)
-    
-    with col_exp1:
-        # Exportar dados completos
-        csv_data = df_final.to_csv(index=False, sep=';', decimal=',')
-        st.download_button(
-            label="📥 Dados Completos (CSV)",
-            data=csv_data,
-            file_name=f"pot_completo_{datetime.now().strftime('%Y%m%d')}.csv",
-            mime="text/csv",
-            use_container_width=True
-        )
-    
-    with col_exp2:
-        # Exportar consolidação mensal
-        if not consolidado_mensal.empty:
-            csv_mensal = consolidado_mensal.to_csv(sep=';', decimal=',')
-            st.download_button(
-                label="📅 Consolidação Mensal (CSV)",
-                data=csv_mensal,
-                file_name=f"pot_mensal_{datetime.now().strftime('%Y%m%d')}.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
-    
-    with col_exp3:
-        # Exportar consolidação projetos
-        if not consolidado_projetos.empty:
-            csv_projetos = consolidado_projetos.to_csv(sep=';', decimal=',')
-            st.download_button(
-                label="🏢 Consolidação Projetos (CSV)",
-                data=csv_projetos,
-                file_name=f"pot_projetos_{datetime.now().strftime('%Y%m%d')}.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
-    
-    # Exportação Excel
-    try:
-        output = BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df_final.to_excel(writer, sheet_name='DADOS', index=False)
-            
-            if not consolidado_mensal.empty:
-                consolidado_mensal.to_excel(writer, sheet_name='CONSOLIDADO_MENSAL')
-            
+        with col_exp3:
+            # Consolidação projetos CSV
             if not consolidado_projetos.empty:
-                consolidado_projetos.to_excel(writer, sheet_name='CONSOLIDADO_PROJETOS')
+                csv_projetos = consolidado_projetos.to_csv(sep=';', decimal=',')
+                st.download_button(
+                    label="🏢 Consolidação Projetos (CSV)",
+                    data=csv_projetos,
+                    file_name=f"pot_projetos_{datetime.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+        
+        # Exportação Excel
+        st.markdown("---")
+        st.markdown("### 📊 Relatório Completo em Excel")
+        
+        try:
+            output = BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                # Dados completos
+                df_final.to_excel(writer, sheet_name='DADOS_COMPLETOS', index=False)
+                
+                # Consolidações
+                if not consolidado_mensal.empty:
+                    consolidado_mensal.to_excel(writer, sheet_name='CONSOLIDADO_MENSAL')
+                
+                if not consolidado_projetos.empty:
+                    consolidado_projetos.to_excel(writer, sheet_name='CONSOLIDADO_PROJETOS')
+                
+                # Resumo executivo
+                resumo_data = {
+                    'Métrica': [
+                        'Total de Registros',
+                        'Valor Total (R$)',
+                        'Valor Médio (R$)',
+                        'Quantidade de Arquivos',
+                        'Quantidade de Projetos',
+                        'Quantidade de Meses',
+                        'Quantidade de Agências',
+                        'Data de Exportação'
+                    ],
+                    'Valor': [
+                        metricas['total_registros'],
+                        f"R$ {metricas.get('valor_total', 0):,.2f}",
+                        f"R$ {metricas.get('valor_medio', 0):,.2f}",
+                        metricas['arquivos_unicos'],
+                        metricas.get('projetos_unicos', 0),
+                        metricas.get('meses_unicos', 0),
+                        metricas.get('agencias_unicas', 0),
+                        datetime.now().strftime('%d/%m/%Y %H:%M')
+                    ]
+                }
+                resumo_df = pd.DataFrame(resumo_data)
+                resumo_df.to_excel(writer, sheet_name='RESUMO_EXECUTIVO', index=False)
             
-            # Adicionar resumo
-            resumo_df = pd.DataFrame([{
-                'Total de Registros': metricas['total_registros'],
-                'Valor Total': metricas.get('valor_total', 0),
-                'Valor Médio': metricas.get('valor_medio', 0),
-                'Quantidade de Arquivos': metricas['arquivos_unicos'],
-                'Data de Exportação': datetime.now().strftime('%d/%m/%Y %H:%M')
-            }])
-            resumo_df.to_excel(writer, sheet_name='RESUMO', index=False)
-        
-        excel_bytes = output.getvalue()
-        
-        st.download_button(
-            label="📊 Relatório Completo (Excel)",
-            data=excel_bytes,
-            file_name=f"relatorio_pot_{datetime.now().strftime('%Y%m%d')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True
-        )
-    except Exception as e:
-        st.warning(f"Exportação Excel não disponível: {str(e)}")
+            excel_bytes = output.getvalue()
+            
+            st.download_button(
+                label="📊 BAIXAR RELATÓRIO COMPLETO (Excel)",
+                data=excel_bytes,
+                file_name=f"relatorio_pot_completo_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+        except Exception as e:
+            st.warning(f"Exportação Excel não disponível: {str(e)}")
+            st.info("Use os botões CSV acima para exportar os dados")
     
     # Rodapé
     st.markdown("---")
-    st.caption(f"Sistema POT | {datetime.now().strftime('%d/%m/%Y %H:%M')} | Registros: {metricas['total_registros']:,}")
+    st.caption(f"⚙️ Sistema POT - Versão Robusta | {datetime.now().strftime('%d/%m/%Y %H:%M')} | Registros: {metricas['total_registros']:,}")
 
 # ============================================================================
 # EXECUÇÃO
 # ============================================================================
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        st.error(f"Erro crítico: {str(e)}")
-        st.info("Recarregue a página e tente novamente.")
-
-# ============================================================================
-# requirements.txt
-# ============================================================================
-"""
-streamlit>=1.28.0
-pandas>=2.0.0
-numpy>=1.24.0
-plotly>=5.17.0
-chardet>=5.2.0
-openpyxl>=3.1.0
-"""
+    main()
