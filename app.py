@@ -1,4 +1,4 @@
-# app.py - SISTEMA POT SMDET - VERSÃO CORRIGIDA COM CÁLCULOS PRECISOS
+# app.py - SISTEMA POT SMDET - VERSÃO CORRIGIDA COM INDENTAÇÃO CORRETA
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -359,10 +359,6 @@ def converter_valor_monetario(valor):
             else:
                 # Provavelmente separador de milhar (1,234)
                 valor_str = valor_str.replace(',', '')
-        
-        elif not tem_virgula and tem_ponto:
-            # Formato 1234.56 ou 1.234
-            # Deixar como está, o float() vai entender
         
         # Remover qualquer caractere não numérico exceto ponto e sinal negativo
         valor_str = re.sub(r'[^\d\.\-]', '', valor_str)
