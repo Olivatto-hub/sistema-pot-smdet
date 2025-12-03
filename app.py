@@ -1,5 +1,5 @@
 # app.py - Sistema de Monitoramento de Pagamentos do POT
-# Versão 1.0 - Corrigido e Testado
+# Versão 2.0 - Corrigida e Aprimorada
 
 import streamlit as st
 import pandas as pd
@@ -8,8 +8,9 @@ import plotly.express as px
 import plotly.graph_objects as go
 from io import StringIO, BytesIO
 import warnings
-from datetime import datetime, timedelta
+from datetime import datetime
 import sys
+import json
 
 # Configurar warnings
 warnings.filterwarnings('ignore')
@@ -28,7 +29,7 @@ st.subheader("Programa Operacional de Trabalho (POT)")
 st.markdown("---")
 
 # ============================================================================
-# FUNÇÕES DE PROCESSAMENTO DE DADOS
+# FUNÇÕES DE PROCESSAMENTO DE DADOS - CORRIGIDAS
 # ============================================================================
 
 def processar_arquivo(uploaded_file):
@@ -40,123 +41,119 @@ def processar_arquivo(uploaded_file):
         if uploaded_file.name.lower().endswith('.csv'):
             # Tentar diferentes encodings
             try:
-                content = uploaded_file.getvalue().decode('utf-8')
+                content = uploaded_file.getvalue().decode('utf-8-sig')
             except UnicodeDecodeError:
-                content = uploaded_file.getvalue().decode('latin-1')
+                try:
+                    content = uploaded_file.getvalue().decode('latin-1')
+                except:
+                    content = uploaded_file.getvalue().decode('cp1252')
             
-            # Ler CSV
-            df = pd.read_csv(
-                StringIO(content), 
-                sep=';', 
-                decimal=',', 
-                dtype=str
-            )
+            # Ler CSV com diferentes delimitadores
+            try:
+                df = pd.read_csv(StringIO(content), sep=';', decimal=',', thousands='.', dtype=str)
+            except:
+                df = pd.read_csv(StringIO(content), sep=',', decimal='.', dtype=str)
         
         elif uploaded_file.name.lower().endswith(('.xlsx', '.xls')):
             # Processar Excel
             df = pd.read_excel(uploaded_file, dtype=str)
-        
         else:
             return None, "❌ Formato não suportado. Use CSV ou Excel."
         
-        # Renomear colunas para padrão
-        nome_columns = {
-            'Ordem': 'ordem', 'PROJETO': 'projeto', 'Nº Cartão': 'cartao',
-            'Nome': 'nome', 'DISTRITO': 'distrito', 'AGÊNCIA': 'agencia',
-            'RG': 'rg', 'VALOR TOTAL': 'valor_total', 'VALOR DESCONTO': 'valor_desconto',
-            'VALOR PAGTO': 'valor_pagto', 'DATA PAGTO': 'data_pagto',
-            'VALOR DIA': 'valor_dia', 'DIAS A APAGAR': 'dias_apagar',
-            'CPF': 'cpf', 'GERENCIADORA': 'gerenciadora'
+        # Renomear colunas para minúsculo e remover espaços
+        df.columns = [str(col).strip().lower().replace(' ', '_').replace('.', '') for col in df.columns]
+        
+        # Mapeamento de colunas
+        mapeamento_colunas = {
+            'ordem': 'ordem',
+            'projeto': 'projeto',
+            'n°_cartão': 'cartao',
+            'nº_cartão': 'cartao',
+            'cartão': 'cartao',
+            'cartao': 'cartao',
+            'nome': 'nome',
+            'distrito': 'distrito',
+            'agência': 'agencia',
+            'agencia': 'agencia',
+            'rg': 'rg',
+            'valor_total': 'valor_total',
+            'valor_desconto': 'valor_desconto',
+            'valor_pagto': 'valor_pagto',
+            'data_pagto': 'data_pagto',
+            'valor_dia': 'valor_dia',
+            'dias_a_apagar': 'dias_apagar',
+            'dias_apagar': 'dias_apagar',
+            'cpf': 'cpf',
+            'gerenciadora': 'gerenciadora'
         }
         
-        # Converter nomes para minúsculo e padronizar
-        df.columns = [str(col).strip().lower() for col in df.columns]
-        
-        # Renomear colunas conhecidas
-        rename_map = {}
+        # Renomear colunas
+        rename_dict = {}
         for col in df.columns:
-            col_lower = str(col).lower()
-            
-            if 'ordem' in col_lower:
-                rename_map[col] = 'ordem'
-            elif 'projeto' in col_lower:
-                rename_map[col] = 'projeto'
-            elif any(x in col_lower for x in ['cartão', 'cartao', 'card']):
-                rename_map[col] = 'cartao'
-            elif 'nome' in col_lower:
-                rename_map[col] = 'nome'
-            elif 'distrito' in col_lower:
-                rename_map[col] = 'distrito'
-            elif 'agencia' in col_lower or 'agência' in col_lower:
-                rename_map[col] = 'agencia'
-            elif 'rg' in col_lower:
-                rename_map[col] = 'rg'
-            elif 'valor' in col_lower and 'total' in col_lower:
-                rename_map[col] = 'valor_total'
-            elif 'valor' in col_lower and 'desconto' in col_lower:
-                rename_map[col] = 'valor_desconto'
-            elif 'valor' in col_lower and 'pagto' in col_lower:
-                rename_map[col] = 'valor_pagto'
-            elif 'data' in col_lower and 'pagto' in col_lower:
-                rename_map[col] = 'data_pagto'
-            elif 'valor' in col_lower and 'dia' in col_lower:
-                rename_map[col] = 'valor_dia'
-            elif any(x in col_lower for x in ['dias', 'apagar']):
-                rename_map[col] = 'dias_apagar'
-            elif 'cpf' in col_lower:
-                rename_map[col] = 'cpf'
-            elif any(x in col_lower for x in ['gerenciadora', 'gestora']):
-                rename_map[col] = 'gerenciadora'
+            for key, value in mapeamento_colunas.items():
+                if key in col:
+                    rename_dict[col] = value
+                    break
+            if col not in rename_dict:
+                rename_dict[col] = col
         
-        df = df.rename(columns=rename_map)
+        df = df.rename(columns=rename_dict)
         
         # ====================================================================
-        # CORRIGIR VALORES MONETÁRIOS (EVITAR DUPLICAÇÃO)
+        # CORREÇÃO CRÍTICA: PROCESSAMENTO DE VALORES MONETÁRIOS
         # ====================================================================
+        
         colunas_monetarias = ['valor_total', 'valor_desconto', 'valor_pagto', 'valor_dia']
         
         for coluna in colunas_monetarias:
             if coluna in df.columns:
+                # Garantir que é string
                 df[coluna] = df[coluna].astype(str)
                 
-                # Limpar valores
-                df[coluna] = df[coluna].str.replace('R\$', '', regex=False)
+                # Remover caracteres especiais
+                df[coluna] = df[coluna].str.replace('R\$', '', regex=True)
                 df[coluna] = df[coluna].str.replace('$', '', regex=False)
                 df[coluna] = df[coluna].str.replace(' ', '', regex=False)
                 df[coluna] = df[coluna].str.replace('"', '', regex=False)
                 df[coluna] = df[coluna].str.replace("'", '', regex=False)
+                df[coluna] = df[coluna].str.replace('USD', '', regex=False)
+                df[coluna] = df[coluna].str.replace('US\$', '', regex=True)
                 
-                # CORREÇÃO CRÍTICA: Detectar valores duplicados
-                def corrigir_valor(valor):
-                    if pd.isna(valor) or valor == '':
-                        return valor
+                # Função para corrigir valores
+                def corrigir_valor_monetario(valor):
+                    if pd.isna(valor) or valor == '' or valor == 'nan':
+                        return np.nan
                     
                     str_val = str(valor).strip()
                     
-                    # Detectar padrões como "1.593,901.593,90"
-                    if str_val.count(',') > 1:
-                        # Encontrar onde está a duplicação
-                        parts = str_val.split(',')
-                        if len(parts) == 3:  # Padrão de duplicação
-                            # Pegar apenas a primeira parte
-                            return f"{parts[0]},{parts[1]}"
+                    # Se já for número com ponto decimal, converter
+                    if str_val.replace('.', '', 1).isdigit() and str_val.count('.') == 1:
+                        return float(str_val)
                     
-                    # Detectar se tem ponto no meio (indicando possível duplicação)
-                    if str_val.count('.') > 1:
-                        # Remover todos os pontos, depois adicionar vírgula como decimal
+                    # Remover pontos de milhar
+                    if '.' in str_val and ',' in str_val:
+                        # Formato brasileiro: 1.593,90
                         str_val = str_val.replace('.', '')
-                        if len(str_val) > 6:
-                            # Assume que os últimos 2 dígitos são centavos
-                            return f"{str_val[:-2]},{str_val[-2:]}"
+                        str_val = str_val.replace(',', '.')
+                        return float(str_val) if str_val.replace('.', '', 1).isdigit() else np.nan
                     
-                    return str_val
+                    # Formato americano: 1593.90
+                    if ',' in str_val and '.' not in str_val:
+                        str_val = str_val.replace(',', '.')
+                        return float(str_val) if str_val.replace('.', '', 1).isdigit() else np.nan
+                    
+                    # Tentar converter diretamente
+                    try:
+                        return float(str_val)
+                    except:
+                        return np.nan
                 
-                df[coluna] = df[coluna].apply(corrigir_valor)
+                # Aplicar correção
+                df[coluna] = df[coluna].apply(corrigir_valor_monetario)
                 
-                # Converter para numérico
-                df[coluna] = df[coluna].str.replace('.', '', regex=False)
-                df[coluna] = df[coluna].str.replace(',', '.', regex=False)
-                df[coluna] = pd.to_numeric(df[coluna], errors='coerce')
+                # Verificar se há valores
+                if df[coluna].isna().all():
+                    st.warning(f"⚠️ Coluna '{coluna}' está vazia ou com valores inválidos")
         
         # Converter outras colunas numéricas
         if 'dias_apagar' in df.columns:
@@ -171,23 +168,36 @@ def processar_arquivo(uploaded_file):
         # Converter datas
         if 'data_pagto' in df.columns:
             try:
-                df['data_pagto'] = pd.to_datetime(df['data_pagto'], format='%d/%m/%Y', errors='coerce')
+                df['data_pagto'] = pd.to_datetime(df['data_pagto'], dayfirst=True, errors='coerce')
             except:
                 try:
                     df['data_pagto'] = pd.to_datetime(df['data_pagto'], errors='coerce')
                 except:
                     df['data_pagto'] = pd.NaT
         
-        # Limpar texto
+        # Limpar e padronizar texto
         colunas_texto = ['nome', 'projeto', 'gerenciadora', 'agencia', 'rg', 'cpf']
         for col in colunas_texto:
             if col in df.columns:
                 df[col] = df[col].astype(str).str.strip()
-                df[col] = df[col].replace({'nan': '', 'None': '', 'NaT': ''})
+                df[col] = df[col].replace({
+                    'nan': '', 
+                    'None': '', 
+                    'NaT': '',
+                    'NULL': '',
+                    'null': ''
+                })
         
         # Padronizar agência
         if 'agencia' in df.columns:
-            df['agencia'] = df['agencia'].astype(str).str.strip().str.zfill(4)
+            df['agencia'] = df['agencia'].astype(str).str.strip()
+            # Remover zeros à esquerda se for numérico
+            def formatar_agencia(x):
+                try:
+                    return str(int(float(x)))
+                except:
+                    return str(x).strip()
+            df['agencia'] = df['agencia'].apply(formatar_agencia)
         
         # Padronizar gerenciadora
         if 'gerenciadora' in df.columns:
@@ -195,122 +205,271 @@ def processar_arquivo(uploaded_file):
             df['gerenciadora'] = df['gerenciadora'].replace({
                 'REDE CIDAD�': 'REDE CIDADÃO',
                 'REDE CIDADAO': 'REDE CIDADÃO',
-                'VISTA': 'VISTA'
+                'REDE': 'REDE CIDADÃO',
+                'VISTA': 'VISTA',
+                '': 'NÃO INFORMADO'
             })
+        
+        # Verificar se temos dados monetários
+        if 'valor_pagto' in df.columns:
+            valores_validos = df['valor_pagto'].notna().sum()
+            if valores_validos == 0:
+                st.error("❌ Nenhum valor monetário válido encontrado na coluna 'valor_pagto'")
         
         return df, "✅ Arquivo processado com sucesso!"
     
     except Exception as e:
-        error_msg = f"❌ Erro: {str(e)}"
+        error_msg = f"❌ Erro ao processar: {str(e)}"
         return None, error_msg
 
 # ============================================================================
-# FUNÇÕES DE ANÁLISE E DETECÇÃO
+# FUNÇÕES DE ANÁLISE E DETECÇÃO - CORRIGIDAS
 # ============================================================================
 
 def calcular_metricas(df):
-    """Calcula métricas principais."""
+    """Calcula métricas principais com tratamento de NaN."""
     metricas = {}
     
     try:
         metricas['total_registros'] = len(df)
         
         if 'valor_pagto' in df.columns:
-            # Verificação de valores duplicados
-            valor_total = df['valor_pagto'].sum()
-            valor_medio = df['valor_pagto'].mean()
-            
-            # Verificar se valores estão realistas
-            if valor_medio > 10000:  # Média acima de 10k é suspeita
-                st.warning("⚠️ Valor médio muito alto! Verifique possível duplicação.")
-            
-            metricas['valor_total'] = valor_total
-            metricas['valor_medio'] = valor_medio
-            metricas['valor_min'] = df['valor_pagto'].min()
-            metricas['valor_max'] = df['valor_pagto'].max()
+            # Remover NaN antes de calcular
+            valores_validos = df['valor_pagto'].dropna()
+            if len(valores_validos) > 0:
+                metricas['valor_total'] = valores_validos.sum()
+                metricas['valor_medio'] = valores_validos.mean()
+                metricas['valor_min'] = valores_validos.min()
+                metricas['valor_max'] = valores_validos.max()
+                metricas['valor_std'] = valores_validos.std()
+                metricas['total_valido'] = len(valores_validos)
+            else:
+                metricas['valor_total'] = 0
+                metricas['valor_medio'] = 0
+                metricas['valor_min'] = 0
+                metricas['valor_max'] = 0
+                metricas['valor_std'] = 0
+                metricas['total_valido'] = 0
         
         if 'agencia' in df.columns:
-            metricas['total_agencias'] = df['agencia'].nunique()
+            agencias_validas = df['agencia'].dropna()
+            if len(agencias_validas) > 0:
+                metricas['total_agencias'] = agencias_validas.nunique()
+            else:
+                metricas['total_agencias'] = 0
         
         if 'gerenciadora' in df.columns:
-            metricas['total_gerenciadoras'] = df['gerenciadora'].nunique()
-            metricas['total_vista'] = (df['gerenciadora'] == 'VISTA').sum()
-            metricas['total_rede'] = (df['gerenciadora'] == 'REDE CIDADÃO').sum()
+            gerenciadoras_validas = df['gerenciadora'].dropna()
+            if len(gerenciadoras_validas) > 0:
+                metricas['total_gerenciadoras'] = gerenciadoras_validas.nunique()
+                distrib = gerenciadoras_validas.value_counts()
+                metricas['total_vista'] = distrib.get('VISTA', 0)
+                metricas['total_rede'] = distrib.get('REDE CIDADÃO', 0)
+            else:
+                metricas['total_gerenciadoras'] = 0
+                metricas['total_vista'] = 0
+                metricas['total_rede'] = 0
         
         if 'dias_apagar' in df.columns:
-            metricas['dias_medio'] = df['dias_apagar'].mean()
+            dias_validos = df['dias_apagar'].dropna()
+            if len(dias_validos) > 0:
+                metricas['dias_medio'] = dias_validos.mean()
+                metricas['dias_total'] = dias_validos.sum()
+            else:
+                metricas['dias_medio'] = 0
+                metricas['dias_total'] = 0
         
         if 'valor_dia' in df.columns:
-            metricas['valor_dia_medio'] = df['valor_dia'].mean()
+            valor_dia_valido = df['valor_dia'].dropna()
+            if len(valor_dia_valido) > 0:
+                metricas['valor_dia_medio'] = valor_dia_valido.mean()
+            else:
+                metricas['valor_dia_medio'] = 0
         
         if 'projeto' in df.columns:
-            projetos = df['projeto'].value_counts()
-            if len(projetos) > 0:
-                metricas['projeto_principal'] = projetos.index[0]
-                metricas['total_projetos'] = len(projetos)
+            projetos_validos = df['projeto'].dropna()
+            if len(projetos_validos) > 0:
+                mode_result = projetos_validos.mode()
+                if not mode_result.empty:
+                    metricas['projeto_principal'] = mode_result.iloc[0]
+                else:
+                    metricas['projeto_principal'] = 'N/A'
+            else:
+                metricas['projeto_principal'] = 'N/A'
         
+        return metricas
+    
     except Exception as e:
         st.error(f"Erro nas métricas: {e}")
-    
-    return metricas
+        return {}
 
-def detectar_problemas(df):
-    """Detecta problemas e inconsistências nos dados."""
+def detectar_problemas_completos(df):
+    """Detecta problemas e inconsistências com relatório detalhado."""
     problemas = {
         'dados_faltantes': [],
         'valores_estranhos': [],
         'duplicidades': [],
-        'inconsistencias': [],
-        'alertas': []
+        'inconsistencias_criticas': [],
+        'alertas_gerais': []
     }
     
-    # Dados faltantes
-    if 'nome' in df.columns:
-        nomes_vazios = df['nome'].isna().sum() + (df['nome'] == '').sum()
-        if nomes_vazios > 0:
-            problemas['dados_faltantes'].append(f"Nomes em branco: {nomes_vazios}")
-    
-    if 'cpf' in df.columns:
-        cpfs_invalidos = df['cpf'].apply(lambda x: len(str(x)) < 11 if pd.notna(x) and str(x).strip() != '' else False).sum()
-        if cpfs_invalidos > 0:
-            problemas['dados_faltantes'].append(f"CPFs inválidos: {cpfs_invalidos}")
-    
-    # Valores estranhos
-    if 'valor_pagto' in df.columns:
-        valores_zerados = (df['valor_pagto'] == 0).sum()
-        if valores_zerados > 0:
-            problemas['valores_estranhos'].append(f"Valores zerados: {valores_zerados}")
+    try:
+        # 1. DADOS FALTANTES CRÍTICOS
+        if 'nome' in df.columns:
+            nomes_vazios = df['nome'].isna().sum() + ((df['nome'] == '') | (df['nome'] == 'nan')).sum()
+            if nomes_vazios > 0:
+                problemas['dados_faltantes'].append({
+                    'tipo': 'Nome em branco',
+                    'quantidade': nomes_vazios,
+                    'gravidade': 'Alta',
+                    'exemplos': df[df['nome'].isna() | (df['nome'] == '')].head(3)[['ordem', 'agencia']].to_dict('records') if 'ordem' in df.columns else []
+                })
         
-        # Verificar valores muito altos
-        q3 = df['valor_pagto'].quantile(0.75)
-        iqr = df['valor_pagto'].quantile(0.75) - df['valor_pagto'].quantile(0.25)
-        limite = q3 + (1.5 * iqr)
-        valores_altos = (df['valor_pagto'] > limite).sum()
+        if 'cpf' in df.columns:
+            cpfs_invalidos = df['cpf'].apply(lambda x: len(str(x)) < 11 if pd.notna(x) and str(x).strip() not in ['', 'nan'] else pd.isna(x)).sum()
+            if cpfs_invalidos > 0:
+                problemas['dados_faltantes'].append({
+                    'tipo': 'CPF inválido/faltante',
+                    'quantidade': cpfs_invalidos,
+                    'gravidade': 'Alta',
+                    'exemplos': df[df['cpf'].isna() | (df['cpf'] == '') | (df['cpf'].astype(str).str.len() < 11)].head(3)[['nome', 'ordem']].to_dict('records') if 'nome' in df.columns else []
+                })
         
-        if valores_altos > 0:
-            problemas['valores_estranhos'].append(f"Valores muito altos (> R$ {limite:,.2f}): {valores_altos}")
-    
-    # Duplicidades
-    if 'cpf' in df.columns:
-        cpf_duplicados = df[df['cpf'] != '']['cpf'].duplicated().sum()
-        if cpf_duplicados > 0:
-            problemas['duplicidades'].append(f"CPFs duplicados: {cpf_duplicados}")
-    
-    # Inconsistências
-    if all(col in df.columns for col in ['valor_total', 'valor_desconto', 'valor_pagto']):
-        diferenca = (df['valor_total'].fillna(0) - (df['valor_desconto'].fillna(0) + df['valor_pagto'].fillna(0))).abs()
-        inconsistentes = (diferenca > 0.01).sum()
+        if 'valor_pagto' in df.columns:
+            valores_nulos = df['valor_pagto'].isna().sum()
+            if valores_nulos > 0:
+                problemas['dados_faltantes'].append({
+                    'tipo': 'Valor de pagamento nulo',
+                    'quantidade': valores_nulos,
+                    'gravidade': 'Crítica',
+                    'exemplos': df[df['valor_pagto'].isna()].head(3)[['nome', 'ordem']].to_dict('records') if 'nome' in df.columns else []
+                })
         
-        if inconsistentes > 0:
-            problemas['inconsistencias'].append(f"Inconsistência nos valores: {inconsistentes}")
+        # 2. VALORES ESTRANHOS/SUSPEITOS
+        if 'valor_pagto' in df.columns:
+            valores_validos = df['valor_pagto'].dropna()
+            if len(valores_validos) > 0:
+                # Valores zerados ou negativos
+                valores_zerados = (valores_validos <= 0).sum()
+                if valores_zerados > 0:
+                    problemas['valores_estranhos'].append({
+                        'tipo': 'Valores zerados ou negativos',
+                        'quantidade': valores_zerados,
+                        'gravidade': 'Média',
+                        'exemplos': df[df['valor_pagto'] <= 0].head(3)[['nome', 'valor_pagto']].to_dict('records') if 'nome' in df.columns else []
+                    })
+                
+                # Valores extremamente altos
+                if len(valores_validos) > 10:
+                    q1 = valores_validos.quantile(0.25)
+                    q3 = valores_validos.quantile(0.75)
+                    iqr = q3 - q1
+                    limite_superior = q3 + (3 * iqr)
+                    
+                    valores_extremos = (valores_validos > limite_superior).sum()
+                    if valores_extremos > 0:
+                        problemas['valores_estranhos'].append({
+                            'tipo': f'Valores extremamente altos (> R$ {limite_superior:,.2f})',
+                            'quantidade': valores_extremos,
+                            'gravidade': 'Alta',
+                            'exemplos': df[df['valor_pagto'] > limite_superior].head(3)[['nome', 'valor_pagto']].to_dict('records') if 'nome' in df.columns else []
+                        })
+        
+        # 3. DUPLICIDADES
+        if 'cpf' in df.columns:
+            cpf_nao_vazio = df[df['cpf'].notna() & (df['cpf'] != '')]
+            if len(cpf_nao_vazio) > 0:
+                cpf_duplicados = cpf_nao_vazio['cpf'].duplicated().sum()
+                if cpf_duplicados > 0:
+                    problemas['duplicidades'].append({
+                        'tipo': 'CPFs duplicados',
+                        'quantidade': cpf_duplicados,
+                        'gravidade': 'Alta',
+                        'exemplos': df[df['cpf'].duplicated(keep=False) & df['cpf'].notna()].head(3)[['cpf', 'nome']].to_dict('records') if 'nome' in df.columns else []
+                    })
+        
+        # 4. INCONSISTÊNCIAS CRÍTICAS
+        if all(col in df.columns for col in ['valor_total', 'valor_desconto', 'valor_pagto']):
+            # Verificar se Valor Total = Desconto + Pagto
+            mask = df['valor_total'].notna() & df['valor_desconto'].notna() & df['valor_pagto'].notna()
+            if mask.any():
+                diferenca = (df.loc[mask, 'valor_total'] - (df.loc[mask, 'valor_desconto'] + df.loc[mask, 'valor_pagto'])).abs()
+                inconsistentes = (diferenca > 1).sum()  # Tolerância de R$ 1
+                
+                if inconsistentes > 0:
+                    problemas['inconsistencias_criticas'].append({
+                        'tipo': 'Inconsistência nos valores (Total ≠ Desconto + Pagto)',
+                        'quantidade': inconsistentes,
+                        'gravidade': 'Crítica',
+                        'exemplos': df[mask & (diferenca > 1)].head(3)[['nome', 'valor_total', 'valor_desconto', 'valor_pagto']].to_dict('records') if 'nome' in df.columns else []
+                    })
+        
+        if all(col in df.columns for col in ['valor_pagto', 'dias_apagar', 'valor_dia']):
+            # Verificar se Valor Pagto ≈ Dias × Valor Dia
+            mask = df['valor_pagto'].notna() & df['dias_apagar'].notna() & df['valor_dia'].notna()
+            if mask.any():
+                calc_esperado = df.loc[mask, 'dias_apagar'] * df.loc[mask, 'valor_dia']
+                diferenca = (df.loc[mask, 'valor_pagto'] - calc_esperado).abs()
+                inconsistentes = (diferenca > 10).sum()  # Tolerância de R$ 10
+                
+                if inconsistentes > 0:
+                    problemas['inconsistencias_criticas'].append({
+                        'tipo': 'Inconsistência no cálculo (Pagto ≠ Dias × Valor Dia)',
+                        'quantidade': inconsistentes,
+                        'gravidade': 'Crítica',
+                        'exemplos': df[mask & (diferenca > 10)].head(3)[['nome', 'valor_pagto', 'dias_apagar', 'valor_dia']].to_dict('records') if 'nome' in df.columns else []
+                    })
+        
+        # 5. ALERTAS GERAIS
+        if 'data_pagto' in df.columns:
+            datas_futuras = (df['data_pagto'] > pd.Timestamp.now()).sum()
+            if datas_futuras > 0:
+                problemas['alertas_gerais'].append({
+                    'tipo': 'Datas de pagamento futuras',
+                    'quantidade': datas_futuras,
+                    'gravidade': 'Média',
+                    'exemplos': df[df['data_pagto'] > pd.Timestamp.now()].head(3)[['nome', 'data_pagto']].to_dict('records') if 'nome' in df.columns else []
+                })
+        
+        if 'valor_dia' in df.columns:
+            valor_dia_valido = df['valor_dia'].dropna()
+            if len(valor_dia_valido) > 0:
+                abaixo_minimo = (valor_dia_valido < 30).sum()  # Mínimo R$ 30 por dia
+                if abaixo_minimo > 0:
+                    problemas['alertas_gerais'].append({
+                        'tipo': 'Valor por dia abaixo de R$ 30,00',
+                        'quantidade': abaixo_minimo,
+                        'gravidade': 'Baixa',
+                        'exemplos': df[df['valor_dia'] < 30].head(3)[['nome', 'valor_dia']].to_dict('records') if 'nome' in df.columns else []
+                    })
+        
+        return problemas
     
-    # Alertas
-    if 'data_pagto' in df.columns:
-        datas_futuras = (df['data_pagto'] > pd.Timestamp.now()).sum()
-        if datas_futuras > 0:
-            problemas['alertas'].append(f"Datas futuras: {datas_futuras}")
+    except Exception as e:
+        st.error(f"Erro na detecção de problemas: {e}")
+        return problemas
+
+def gerar_tabela_problemas(problemas):
+    """Converte problemas em DataFrame para exibição."""
+    dados = []
     
-    return problemas
+    for categoria, itens in problemas.items():
+        for item in itens:
+            dados.append({
+                'Categoria': categoria.replace('_', ' ').title(),
+                'Tipo de Problema': item['tipo'],
+                'Quantidade': item['quantidade'],
+                'Gravidade': item['gravidade']
+            })
+    
+    if dados:
+        return pd.DataFrame(dados)
+    else:
+        return pd.DataFrame(columns=['Categoria', 'Tipo de Problema', 'Quantidade', 'Gravidade'])
+
+# ============================================================================
+# FUNÇÕES DE RELATÓRIOS
+# ============================================================================
 
 def gerar_relatorio_agencia(df):
     """Gera relatório por agência."""
@@ -318,7 +477,13 @@ def gerar_relatorio_agencia(df):
         return pd.DataFrame()
     
     try:
-        relatorio = df.groupby('agencia').agg({
+        # Filtrar apenas valores válidos
+        df_valido = df[df['valor_pagto'].notna() & df['agencia'].notna()]
+        
+        if len(df_valido) == 0:
+            return pd.DataFrame()
+        
+        relatorio = df_valido.groupby('agencia').agg({
             'nome': 'count',
             'valor_pagto': ['sum', 'mean', 'min', 'max']
         }).round(2)
@@ -326,10 +491,14 @@ def gerar_relatorio_agencia(df):
         # Renomear colunas
         relatorio.columns = ['Qtd Beneficiários', 'Valor Total', 'Valor Médio', 'Valor Mínimo', 'Valor Máximo']
         
-        # Adicionar dias médios se disponível
+        # Adicionar colunas extras se disponíveis
         if 'dias_apagar' in df.columns:
-            dias_medio = df.groupby('agencia')['dias_apagar'].mean().round(2)
+            dias_medio = df_valido.groupby('agencia')['dias_apagar'].mean().round(2)
             relatorio['Dias Médios'] = dias_medio
+        
+        if 'valor_dia' in df.columns:
+            valor_dia_medio = df_valido.groupby('agencia')['valor_dia'].mean().round(2)
+            relatorio['Valor Dia Médio'] = valor_dia_medio
         
         return relatorio.sort_values('Valor Total', ascending=False)
     
@@ -343,7 +512,13 @@ def gerar_relatorio_gerenciadora(df):
         return pd.DataFrame()
     
     try:
-        relatorio = df.groupby('gerenciadora').agg({
+        # Filtrar apenas valores válidos
+        df_valido = df[df['valor_pagto'].notna() & df['gerenciadora'].notna()]
+        
+        if len(df_valido) == 0:
+            return pd.DataFrame()
+        
+        relatorio = df_valido.groupby('gerenciadora').agg({
             'nome': 'count',
             'valor_pagto': ['sum', 'mean'],
             'agencia': 'nunique'
@@ -352,7 +527,7 @@ def gerar_relatorio_gerenciadora(df):
         relatorio.columns = ['Qtd Beneficiários', 'Valor Total', 'Valor Médio', 'Qtd Agências']
         
         if 'dias_apagar' in df.columns:
-            dias_medio = df.groupby('gerenciadora')['dias_apagar'].mean().round(2)
+            dias_medio = df_valido.groupby('gerenciadora')['dias_apagar'].mean().round(2)
             relatorio['Dias Médios'] = dias_medio
         
         return relatorio.sort_values('Valor Total', ascending=False)
@@ -371,7 +546,11 @@ def criar_grafico_barras_agencia(df, top_n=10):
         return None
     
     try:
-        agencias_topo = df.groupby('agencia')['valor_pagto'].sum().nlargest(top_n)
+        df_valido = df[df['valor_pagto'].notna() & df['agencia'].notna()]
+        if len(df_valido) == 0:
+            return None
+        
+        agencias_topo = df_valido.groupby('agencia')['valor_pagto'].sum().nlargest(top_n)
         
         fig = go.Figure(data=[
             go.Bar(
@@ -393,7 +572,6 @@ def criar_grafico_barras_agencia(df, top_n=10):
         return fig
     
     except Exception as e:
-        st.error(f"Erro no gráfico: {e}")
         return None
 
 def criar_grafico_distribuicao(df):
@@ -402,6 +580,10 @@ def criar_grafico_distribuicao(df):
         return None
     
     try:
+        valores_validos = df['valor_pagto'].dropna()
+        if len(valores_validos) == 0:
+            return None
+        
         fig = px.histogram(
             df, 
             x='valor_pagto',
@@ -419,71 +601,67 @@ def criar_grafico_distribuicao(df):
         
         return fig
     
-    except Exception as e:
-        st.error(f"Erro no gráfico: {e}")
-        return None
-
-def criar_grafico_pizza_gerenciadora(df):
-    """Cria gráfico de pizza por gerenciadora."""
-    if 'gerenciadora' not in df.columns:
-        return None
-    
-    try:
-        contagem = df['gerenciadora'].value_counts()
-        
-        fig = go.Figure(data=[
-            go.Pie(
-                labels=contagem.index,
-                values=contagem.values,
-                hole=0.4,
-                textinfo='percent+label',
-                marker_colors=['#F18F01', '#2E86AB', '#A23B72', '#73AB84']
-            )
-        ])
-        
-        fig.update_layout(title='Distribuição por Gerenciadora')
-        
-        return fig
-    
-    except Exception as e:
-        st.error(f"Erro no gráfico: {e}")
+    except Exception:
         return None
 
 # ============================================================================
 # FUNÇÕES DE EXPORTAÇÃO
 # ============================================================================
 
-def exportar_excel(df, rel_agencia, rel_gerenciadora, problemas):
+def exportar_excel_completo(df, rel_agencia, rel_gerenciadora, problemas, metricas):
     """Exporta para Excel com múltiplas abas."""
     output = BytesIO()
     
     try:
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            # Dados completos
-            df.to_excel(writer, sheet_name='Dados Completos', index=False)
+            # Aba 1: Dados completos
+            df.to_excel(writer, sheet_name='DADOS COMPLETOS', index=False)
             
-            # Relatórios
+            # Aba 2: Relatório por agência
             if not rel_agencia.empty:
-                rel_agencia.to_excel(writer, sheet_name='Por Agência')
+                rel_agencia.to_excel(writer, sheet_name='POR AGÊNCIA')
             
+            # Aba 3: Relatório por gerenciadora
             if not rel_gerenciadora.empty:
-                rel_gerenciadora.to_excel(writer, sheet_name='Por Gerenciadora')
+                rel_gerenciadora.to_excel(writer, sheet_name='POR GERENCIADORA')
             
-            # Problemas detectados
-            problemas_df = pd.DataFrame([
-                ['Dados Faltantes', len(problemas['dados_faltantes']), '; '.join(problemas['dados_faltantes'])],
-                ['Valores Estranhos', len(problemas['valores_estranhos']), '; '.join(problemas['valores_estranhos'])],
-                ['Duplicidades', len(problemas['duplicidades']), '; '.join(problemas['duplicidades'])],
-                ['Inconsistências', len(problemas['inconsistencias']), '; '.join(problemas['inconsistencias'])],
-                ['Alertas', len(problemas['alertas']), '; '.join(problemas['alertas'])]
-            ], columns=['Categoria', 'Quantidade', 'Detalhes'])
+            # Aba 4: Problemas detectados
+            problemas_df = gerar_tabela_problemas(problemas)
+            if not problemas_df.empty:
+                problemas_df.to_excel(writer, sheet_name='PROBLEMAS DETECTADOS', index=False)
+                
+                # Detalhes dos problemas
+                detalhes_data = []
+                for categoria, itens in problemas.items():
+                    for item in itens:
+                        detalhes_data.append({
+                            'Categoria': categoria.replace('_', ' ').title(),
+                            'Tipo': item['tipo'],
+                            'Quantidade': item['quantidade'],
+                            'Gravidade': item['gravidade'],
+                            'Exemplos': str(item.get('exemplos', []))[:500]  # Limitar tamanho
+                        })
+                
+                if detalhes_data:
+                    detalhes_df = pd.DataFrame(detalhes_data)
+                    detalhes_df.to_excel(writer, sheet_name='DETALHES PROBLEMAS', index=False)
             
-            problemas_df.to_excel(writer, sheet_name='Problemas Detectados', index=False)
+            # Aba 5: Métricas principais
+            metricas_df = pd.DataFrame([metricas])
+            metricas_df.to_excel(writer, sheet_name='MÉTRICAS', index=False)
             
-            # Top beneficiários
+            # Aba 6: Top beneficiários
             if 'nome' in df.columns and 'valor_pagto' in df.columns:
-                top_benef = df.nlargest(20, 'valor_pagto')[['nome', 'valor_pagto', 'agencia', 'gerenciadora']]
-                top_benef.to_excel(writer, sheet_name='Top Beneficiários', index=False)
+                top_benef = df[df['valor_pagto'].notna()].nlargest(20, 'valor_pagto')
+                if not top_benef.empty:
+                    top_benef[['nome', 'valor_pagto', 'agencia', 'gerenciadora']].to_excel(
+                        writer, sheet_name='TOP BENEFICIÁRIOS', index=False
+                    )
+            
+            # Aba 7: Estatísticas
+            if 'valor_pagto' in df.columns:
+                stats = df['valor_pagto'].describe().to_frame().T
+                stats.to_excel(writer, sheet_name='ESTATÍSTICAS', index=False)
         
         return output.getvalue()
     
@@ -512,6 +690,7 @@ def main():
         
         st.header("⚙️ CONFIGURAÇÕES")
         mostrar_dados = st.checkbox("Mostrar dados brutos", False)
+        mostrar_problemas = st.checkbox("Mostrar problemas detalhados", True)
         mostrar_graficos = st.checkbox("Mostrar gráficos", True)
         top_n = st.slider("Top N agências", 5, 20, 10)
         
@@ -521,7 +700,7 @@ def main():
         st.info(
             "**Sistema de Monitoramento**\n"
             "Programa Operacional de Trabalho (POT)\n\n"
-            "Versão: 1.0\n"
+            "Versão: 2.0 Corrigida\n"
             f"Data: {datetime.now().strftime('%d/%m/%Y')}"
         )
     
@@ -541,7 +720,7 @@ def main():
             
             1. **Carregue o arquivo** na barra lateral
             2. **Formatos suportados:**
-               - CSV (separado por ;)
+               - CSV (separado por ; ou ,)
                - Excel (.xlsx, .xls)
             
             3. **Colunas esperadas:**
@@ -551,45 +730,31 @@ def main():
                - Dias a apagar, CPF
                - Gerenciadora
             
-            4. **Correção automática:**
-               - Detecta valores duplicados
-               - Identifica inconsistências
-               - Gera alertas críticos
+            4. **Funcionalidades:**
+               - Detecção automática de problemas
+               - Correção de valores monetários
+               - Relatórios detalhados
+               - Exportação completa
             """)
         
         with col2:
             st.markdown("""
-            ### 🚀 Funcionalidades:
+            ### 🚀 Novidades desta versão:
             
-            ✅ **Processamento inteligente**
-            ✅ **Detecção de problemas**
-            ✅ **Análise por agência**
-            ✅ **Análise por gerenciadora**
-            ✅ **Gráficos interativos**
-            ✅ **Exportação completa**
-            ✅ **Validação de dados**
-            ✅ **Relatórios detalhados**
+            ✅ **Correção de valores monetários**
+            ✅ **Tratamento de dados faltantes**
+            ✅ **Detecção de inconsistências**
+            ✅ **Métricas corretas (sem NaN)**
+            ✅ **Tabelas de problemas detalhadas**
+            ✅ **Relatórios completos em Excel**
             """)
-        
-        # Exemplo de dados
-        with st.expander("📝 Exemplo de formato de dados"):
-            exemplo = pd.DataFrame({
-                'Ordem': [1, 2, 3],
-                'Projeto': ['ABAE', 'ABAE', 'OUTRO PROJETO'],
-                'Nome': ['MARIA SILVA', 'JOSÉ SANTOS', 'ANA OLIVEIRA'],
-                'AGÊNCIA': ['0012', '0345', '0789'],
-                'VALOR PAGTO': ['R$ 1.593,90', 'R$ 1.200,00', 'R$ 890,50'],
-                'DATA PAGTO': ['15/10/2024', '16/10/2024', '17/10/2024'],
-                'GERENCIADORA': ['VISTA', 'REDE CIDADÃO', 'VISTA']
-            })
-            st.dataframe(exemplo, use_container_width=True)
         
         return
     
     # ========================================================================
     # PROCESSAR ARQUIVO
     # ========================================================================
-    with st.spinner('Processando...'):
+    with st.spinner('Processando arquivo...'):
         df, mensagem = processar_arquivo(uploaded_file)
     
     if df is None:
@@ -598,100 +763,142 @@ def main():
     
     st.success(f"✅ {mensagem}")
     st.markdown(f"**Arquivo:** `{uploaded_file.name}` | **Registros:** {len(df):,} | **Colunas:** {len(df.columns)}")
-    st.markdown("---")
     
-    # ========================================================================
-    # DETECTAR PROBLEMAS
-    # ========================================================================
-    st.header("🔍 DETECÇÃO DE PROBLEMAS E INCONSISTÊNCIAS")
-    
-    problemas = detectar_problemas(df)
-    
-    # Mostrar problemas em colunas
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        total_faltantes = len(problemas['dados_faltantes'])
-        st.metric("Dados Faltantes", total_faltantes)
-        if total_faltantes > 0:
-            with st.expander("Ver detalhes"):
-                for item in problemas['dados_faltantes']:
-                    st.error(f"❌ {item}")
-    
-    with col2:
-        total_estranhos = len(problemas['valores_estranhos'])
-        st.metric("Valores Estranhos", total_estranhos)
-        if total_estranhos > 0:
-            with st.expander("Ver detalhes"):
-                for item in problemas['valores_estranhos']:
-                    st.warning(f"⚠️ {item}")
-    
-    with col3:
-        total_duplicados = len(problemas['duplicidades'])
-        st.metric("Duplicidades", total_duplicados)
-        if total_duplicados > 0:
-            with st.expander("Ver detalhes"):
-                for item in problemas['duplicidades']:
-                    st.info(f"🔍 {item}")
-    
-    with col4:
-        total_inconsistentes = len(problemas['inconsistencias'])
-        st.metric("Inconsistências", total_inconsistentes)
-        if total_inconsistentes > 0:
-            with st.expander("Ver detalhes"):
-                for item in problemas['inconsistencias']:
-                    st.error(f"❌ {item}")
-    
-    # Alertas gerais
-    if problemas['alertas']:
-        st.warning("### ⚠️ Alertas Gerais")
-        for alerta in problemas['alertas']:
-            st.warning(f"• {alerta}")
+    # Mostrar preview dos dados
+    with st.expander("🔍 Visualizar primeiros registros"):
+        st.dataframe(df.head(10), use_container_width=True)
     
     st.markdown("---")
     
     # ========================================================================
-    # MÉTRICAS PRINCIPAIS
+    # MÉTRICAS PRINCIPAIS - CORRIGIDAS
     # ========================================================================
     st.header("📈 MÉTRICAS PRINCIPAIS")
     
     metricas = calcular_metricas(df)
     
-    # Primeira linha
+    # Verificar se temos dados válidos
+    if metricas.get('total_valido', 0) == 0 and 'valor_pagto' in df.columns:
+        st.warning("⚠️ Nenhum valor monetário válido encontrado. Verifique o formato dos dados.")
+    
+    # Primeira linha de métricas
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        st.metric("Total de Registros", f"{metricas.get('total_registros', 0):,}")
+        total = metricas.get('total_registros', 0)
+        st.metric("Total de Registros", f"{total:,}")
     
     with col2:
         valor_total = metricas.get('valor_total', 0)
-        st.metric("Valor Total Pago", f"R$ {valor_total:,.2f}")
-        
-        # Verificação de valor total
-        if valor_total > 10000000:
-            st.caption("⚠️ Verifique possível duplicação")
+        # Formatar corretamente, evitando NaN
+        if pd.isna(valor_total) or valor_total == 0:
+            display_valor = "R$ 0,00"
+        else:
+            display_valor = f"R$ {valor_total:,.2f}"
+        st.metric("Valor Total Pago", display_valor)
     
     with col3:
         valor_medio = metricas.get('valor_medio', 0)
-        st.metric("Valor Médio", f"R$ {valor_medio:,.2f}")
+        if pd.isna(valor_medio) or valor_medio == 0:
+            display_medio = "R$ 0,00"
+        else:
+            display_medio = f"R$ {valor_medio:,.2f}"
+        st.metric("Valor Médio", display_medio)
     
     with col4:
-        st.metric("Agências Únicas", metricas.get('total_agencias', 0))
+        agencias = metricas.get('total_agencias', 0)
+        st.metric("Agências Únicas", f"{agencias}")
     
-    # Segunda linha
+    # Segunda linha de métricas
     col5, col6, col7, col8 = st.columns(4)
     
     with col5:
-        st.metric("Dias Médios", f"{metricas.get('dias_medio', 0):.1f}")
+        dias_medio = metricas.get('dias_medio', 0)
+        if pd.isna(dias_medio):
+            display_dias = "0,0"
+        else:
+            display_dias = f"{dias_medio:.1f}"
+        st.metric("Dias Médios", display_dias)
     
     with col6:
-        st.metric("Valor/Dia Médio", f"R$ {metricas.get('valor_dia_medio', 0):.2f}")
+        valor_dia_medio = metricas.get('valor_dia_medio', 0)
+        if pd.isna(valor_dia_medio) or valor_dia_medio == 0:
+            display_dia = "R$ 0,00"
+        else:
+            display_dia = f"R$ {valor_dia_medio:.2f}"
+        st.metric("Valor/Dia Médio", display_dia)
     
     with col7:
-        st.metric("VISTA", f"{metricas.get('total_vista', 0):,}")
+        vista = metricas.get('total_vista', 0)
+        st.metric("VISTA", f"{vista:,}")
     
     with col8:
-        st.metric("REDE CIDADÃO", f"{metricas.get('total_rede', 0):,}")
+        rede = metricas.get('total_rede', 0)
+        st.metric("REDE CIDADÃO", f"{rede:,}")
+    
+    st.markdown("---")
+    
+    # ========================================================================
+    # DETECÇÃO DE PROBLEMAS - COM TABELAS DETALHADAS
+    # ========================================================================
+    st.header("🔍 DETECÇÃO DE PROBLEMAS E INCONSISTÊNCIAS")
+    
+    with st.spinner("Analisando dados em busca de problemas..."):
+        problemas = detectar_problemas_completos(df)
+    
+    # Resumo em cards
+    total_problemas = sum(len(itens) for itens in problemas.values())
+    
+    if total_problemas > 0:
+        st.warning(f"⚠️ Foram detectados {total_problemas} tipos de problemas nos dados")
+        
+        # Tabela resumo dos problemas
+        st.subheader("📋 Resumo dos Problemas Detectados")
+        problemas_df = gerar_tabela_problemas(problemas)
+        
+        if not problemas_df.empty:
+            # Colorir por gravidade
+            def color_gravidade(val):
+                if val == 'Crítica':
+                    return 'background-color: #ff4444; color: white'
+                elif val == 'Alta':
+                    return 'background-color: #ff9444; color: white'
+                elif val == 'Média':
+                    return 'background-color: #ffd544; color: black'
+                else:
+                    return 'background-color: #44ff44; color: black'
+            
+            styled_df = problemas_df.style.applymap(color_gravidade, subset=['Gravidade'])
+            st.dataframe(styled_df, use_container_width=True)
+            
+            # Detalhes por categoria
+            if mostrar_problemas:
+                st.subheader("📊 Detalhamento por Categoria")
+                
+                tabs = st.tabs([cat.replace('_', ' ').title() for cat in problemas.keys() if problemas[cat]])
+                
+                tab_index = 0
+                for categoria, itens in problemas.items():
+                    if itens:
+                        with tabs[tab_index]:
+                            for item in itens:
+                                with st.expander(f"❌ {item['tipo']} ({item['quantidade']} registros)"):
+                                    col_det1, col_det2 = st.columns([1, 2])
+                                    
+                                    with col_det1:
+                                        st.metric("Quantidade", item['quantidade'])
+                                        st.metric("Gravidade", item['gravidade'])
+                                    
+                                    with col_det2:
+                                        if item.get('exemplos'):
+                                            st.write("**Exemplos:**")
+                                            for exemplo in item['exemplos']:
+                                                st.write(f"- {exemplo}")
+                                        else:
+                                            st.write("Sem exemplos específicos.")
+                        tab_index += 1
+    else:
+        st.success("✅ Nenhum problema crítico detectado nos dados!")
     
     st.markdown("---")
     
@@ -711,21 +918,40 @@ def main():
             st.dataframe(df, use_container_width=True, height=400)
         
         # Estatísticas
-        st.subheader("📊 Estatísticas")
+        st.subheader("📊 Estatísticas Descritivas")
         
         col_stat1, col_stat2 = st.columns(2)
         
         with col_stat1:
             if 'valor_pagto' in df.columns:
                 st.write("**Valores Pagos**")
-                stats = df['valor_pagto'].describe().to_frame().round(2)
-                st.dataframe(stats, use_container_width=True)
+                valores_validos = df['valor_pagto'].dropna()
+                if len(valores_validos) > 0:
+                    stats = valores_validos.describe().to_frame().round(2)
+                    st.dataframe(stats, use_container_width=True)
+                else:
+                    st.write("Nenhum valor válido encontrado.")
         
         with col_stat2:
             if 'dias_apagar' in df.columns:
                 st.write("**Dias a Pagar**")
-                dias_stats = df['dias_apagar'].describe().to_frame().round(2)
-                st.dataframe(dias_stats, use_container_width=True)
+                dias_validos = df['dias_apagar'].dropna()
+                if len(dias_validos) > 0:
+                    dias_stats = dias_validos.describe().to_frame().round(2)
+                    st.dataframe(dias_stats, use_container_width=True)
+                else:
+                    st.write("Nenhum dado válido encontrado.")
+        
+        # Informações do dataset
+        with st.expander("🔍 Informações do Dataset"):
+            st.write(f"**Total de registros:** {len(df)}")
+            st.write(f"**Total de colunas:** {len(df.columns)}")
+            st.write(f"**Memória aproximada:** {sys.getsizeof(df) / 1024 / 1024:.2f} MB")
+            
+            if 'data_pagto' in df.columns:
+                datas_validas = df['data_pagto'].dropna()
+                if len(datas_validas) > 0:
+                    st.write(f"**Período:** {datas_validas.min().strftime('%d/%m/%Y')} a {datas_validas.max().strftime('%d/%m/%Y')}")
     
     with tab2:
         st.subheader("🏢 Análise por Agência")
@@ -746,7 +972,7 @@ def main():
                 if fig:
                     st.plotly_chart(fig, use_container_width=True)
         else:
-            st.warning("Não foi possível gerar análise por agência.")
+            st.warning("Não foi possível gerar análise por agência. Verifique se há dados válidos.")
     
     with tab3:
         st.subheader("🏦 Análise por Gerenciadora")
@@ -756,82 +982,52 @@ def main():
         if not rel_gerenciadora.empty:
             st.dataframe(rel_gerenciadora, use_container_width=True)
             
-            # Comparativo
-            if 'VISTA' in rel_gerenciadora.index or 'REDE CIDADÃO' in rel_gerenciadora.index:
-                st.subheader("📊 Comparativo")
-                
-                comparativo = []
-                if 'VISTA' in rel_gerenciadora.index:
-                    vista = rel_gerenciadora.loc['VISTA']
-                    comparativo.append({
-                        'Gerenciadora': 'VISTA',
-                        'Beneficiários': vista['Qtd Beneficiários'],
-                        'Valor Total': vista['Valor Total'],
-                        'Valor Médio': vista['Valor Médio']
-                    })
-                
-                if 'REDE CIDADÃO' in rel_gerenciadora.index:
-                    rede = rel_gerenciadora.loc['REDE CIDADÃO']
-                    comparativo.append({
-                        'Gerenciadora': 'REDE CIDADÃO',
-                        'Beneficiários': rede['Qtd Beneficiários'],
-                        'Valor Total': rede['Valor Total'],
-                        'Valor Médio': rede['Valor Médio']
-                    })
-                
-                if comparativo:
-                    st.dataframe(pd.DataFrame(comparativo), use_container_width=True)
-            
-            # Gráficos
+            # Gráfico de distribuição
             if mostrar_graficos:
-                col_g1, col_g2 = st.columns(2)
-                
-                with col_g1:
-                    fig1 = criar_grafico_pizza_gerenciadora(df)
-                    if fig1:
-                        st.plotly_chart(fig1, use_container_width=True)
-                
-                with col_g2:
-                    fig2 = criar_grafico_distribuicao(df)
-                    if fig2:
-                        st.plotly_chart(fig2, use_container_width=True)
+                fig = criar_grafico_distribuicao(df)
+                if fig:
+                    st.plotly_chart(fig, use_container_width=True)
         else:
-            st.warning("Não foi possível gerar análise por gerenciadora.")
+            st.warning("Não foi possível gerar análise por gerenciadora. Verifique se há dados válidos.")
     
     with tab4:
         st.subheader("💾 Exportação de Dados")
         
+        # Gerar relatórios
+        rel_agencia = gerar_relatorio_agencia(df)
+        rel_gerenciadora = gerar_relatorio_gerenciadora(df)
+        
         col_exp1, col_exp2, col_exp3 = st.columns(3)
         
         with col_exp1:
-            # CSV
-            csv = df.to_csv(index=False, sep=';', decimal=',')
+            # CSV dos dados processados
+            csv_data = df.to_csv(index=False, sep=';', decimal=',')
             st.download_button(
                 label="📥 Baixar CSV",
-                data=csv,
-                file_name="dados_pot.csv",
+                data=csv_data,
+                file_name="dados_pot_processados.csv",
                 mime="text/csv",
                 use_container_width=True
             )
         
         with col_exp2:
             # Excel completo
-            excel_data = exportar_excel(df, rel_agencia, rel_gerenciadora, problemas)
+            excel_data = exportar_excel_completo(df, rel_agencia, rel_gerenciadora, problemas, metricas)
             if excel_data:
                 st.download_button(
                     label="📥 Baixar Excel Completo",
                     data=excel_data,
-                    file_name="relatorio_pot.xlsx",
+                    file_name="relatorio_pot_completo.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True
                 )
         
         with col_exp3:
-            # JSON
-            json = df.to_json(orient='records', indent=2)
+            # JSON para integração
+            json_data = df.to_json(orient='records', indent=2, force_ascii=False)
             st.download_button(
                 label="📥 Baixar JSON",
-                data=json,
+                data=json_data,
                 file_name="dados_pot.json",
                 mime="application/json",
                 use_container_width=True
@@ -841,7 +1037,7 @@ def main():
         st.markdown("---")
         st.subheader("📊 Relatórios Individuais")
         
-        col_rel1, col_rel2 = st.columns(2)
+        col_rel1, col_rel2, col_rel3 = st.columns(3)
         
         with col_rel1:
             if not rel_agencia.empty:
@@ -864,6 +1060,18 @@ def main():
                     mime="text/csv",
                     use_container_width=True
                 )
+        
+        with col_rel3:
+            # Relatório de problemas
+            if total_problemas > 0:
+                problemas_csv = problemas_df.to_csv(index=False, sep=';')
+                st.download_button(
+                    label="🔍 Relatório de Problemas",
+                    data=problemas_csv,
+                    file_name="problemas_detectados.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
     
     # ========================================================================
     # RODAPÉ
@@ -871,9 +1079,10 @@ def main():
     st.markdown("---")
     st.markdown(
         f"""
-        <div style='text-align: center; color: gray;'>
-        Sistema de Monitoramento de Pagamentos - POT | 
-        Processado em: {datetime.now().strftime('%d/%m/%Y %H:%M')}
+        <div style='text-align: center; color: gray; font-size: 0.9em;'>
+        Sistema de Monitoramento de Pagamentos - Programa Operacional de Trabalho (POT) | 
+        Processado em: {datetime.now().strftime('%d/%m/%Y %H:%M')} | 
+        Problemas detectados: {total_problemas}
         </div>
         """,
         unsafe_allow_html=True
