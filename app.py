@@ -21,79 +21,100 @@ st.set_page_config(
 )
 
 # ============================================
-# CLASSE PDF PERSONALIZADA
+# CLASSE PDF PERSONALIZADA COM SUPORTE A UTF-8
 # ============================================
 
 class RelatorioPDF(FPDF):
+    def __init__(self):
+        super().__init__()
+        # Adicionar fontes compatíveis com UTF-8
+        self.add_font('DejaVu', '', 'DejaVuSans.ttf', uni=True)
+        self.add_font('DejaVu', 'B', 'DejaVuSans-Bold.ttf', uni=True)
+        self.add_font('DejaVu', 'I', 'DejaVuSans-Oblique.ttf', uni=True)
+    
     def header(self):
-        self.set_font('Arial', 'B', 16)
+        self.set_font('DejaVu', 'B', 16)
         self.cell(0, 10, 'SISTEMA POT - SMDET', 0, 1, 'C')
-        self.set_font('Arial', 'I', 12)
+        self.set_font('DejaVu', 'I', 12)
         self.cell(0, 10, 'Relatório de Análise de Pagamentos e Contas', 0, 1, 'C')
         self.ln(5)
     
     def footer(self):
         self.set_y(-15)
-        self.set_font('Arial', 'I', 8)
+        self.set_font('DejaVu', 'I', 8)
         self.cell(0, 10, f'Página {self.page_no()} - Gerado em {datetime.now().strftime("%d/%m/%Y %H:%M")}', 0, 0, 'C')
     
     def chapter_title(self, title, size=14):
-        self.set_font('Arial', 'B', size)
+        self.set_font('DejaVu', 'B', size)
         self.set_fill_color(240, 240, 240)
         self.cell(0, 10, title, 0, 1, 'L', True)
         self.ln(3)
     
     def add_metric(self, label, value, alert=False):
-        self.set_font('Arial', 'B', 11)
+        self.set_font('DejaVu', 'B', 11)
         self.cell(70, 8, label, 0, 0)
-        self.set_font('Arial', '', 11)
+        self.set_font('DejaVu', '', 11)
         if alert:
             self.set_text_color(255, 0, 0)
         self.cell(0, 8, str(value), 0, 1)
         self.set_text_color(0, 0, 0)
     
     def add_table(self, df, max_rows=50):
-        self.set_font('Arial', '', 9)
+        self.set_font('DejaVu', '', 9)
         
         # Calcular larguras das colunas
         col_widths = []
         for col in df.columns:
-            max_len = max(df[col].astype(str).apply(len).max(), len(col)) * 2
+            max_len = max(df[col].astype(str).apply(lambda x: len(str(x))).max(), len(col)) * 1.5
             col_widths.append(min(max_len, 40))
         
         # Cabeçalho
         self.set_fill_color(200, 200, 200)
-        self.set_font('Arial', 'B', 9)
+        self.set_font('DejaVu', 'B', 9)
         for i, col in enumerate(df.columns):
-            self.cell(col_widths[i], 8, str(col)[:30], 1, 0, 'C', True)
+            cell_text = str(col)[:30]
+            self.cell(col_widths[i], 8, cell_text, 1, 0, 'C', True)
         self.ln()
         
         # Dados
-        self.set_font('Arial', '', 9)
+        self.set_font('DejaVu', '', 9)
         for idx, row in df.head(max_rows).iterrows():
             for i, col in enumerate(df.columns):
-                self.cell(col_widths[i], 8, str(row[col])[:30], 1, 0, 'C')
+                cell_text = str(row[col])[:30]
+                self.cell(col_widths[i], 8, cell_text, 1, 0, 'C')
             self.ln()
         
         if len(df) > max_rows:
             self.ln(5)
-            self.set_font('Arial', 'I', 9)
+            self.set_font('DejaVu', 'I', 9)
             self.cell(0, 8, f'... e mais {len(df) - max_rows} registros', 0, 1)
     
     def add_problem_list(self, problems):
-        self.set_font('Arial', 'B', 11)
+        self.set_font('DejaVu', 'B', 11)
         self.cell(0, 8, "Problemas Críticos Encontrados:", 0, 1)
         self.ln(2)
         
-        self.set_font('Arial', '', 10)
+        self.set_font('DejaVu', '', 10)
         for i, problem in enumerate(problems[:20], 1):
-            self.multi_cell(0, 6, f"{i}. {problem}")
+            # Substituir caracteres problemáticos
+            problem_safe = problem.replace('•', '-')
+            self.multi_cell(0, 6, f"{i}. {problem_safe}")
             self.ln(1)
         
         if len(problems) > 20:
             self.ln(2)
-            self.set_font('Arial', 'I', 9)
+            self.set_font('DejaVu', 'I', 9)
             self.cell(0, 8, f'... e mais {len(problems) - 20} problemas', 0, 1)
+    
+    # Método para adicionar texto seguro
+    def safe_cell(self, w, h, txt, border=0, ln=0, align='L'):
+        txt = str(txt)
+        # Substituir caracteres problemáticos
+        txt = txt.replace('•', '-').replace('–', '-').replace('—', '-')
+        txt = txt.replace('"', "'").replace('"', "'")
+        txt = txt.replace('\u2022', '-')  # Substituir bullet point
+        txt = txt.encode('latin-1', 'replace').decode('latin-1')
+        self.cell(w, h, txt, border, ln, align)
 
 # ============================================
 # FUNÇÕES AUXILIARES
@@ -135,6 +156,27 @@ def formatar_brasileiro(valor, tipo='numero'):
             return str(valor)
     except:
         return str(valor)
+
+def limpar_texto_para_pdf(texto):
+    """Limpa texto para ser seguro no PDF"""
+    if pd.isna(texto):
+        return ""
+    
+    texto = str(texto)
+    # Substituir caracteres problemáticos
+    caracteres_problematicos = {
+        '•': '-', '–': '-', '—': '-', '"': "'", "'": "'",
+        '\u2022': '-', '\u2013': '-', '\u2014': '-',
+        '\u2018': "'", '\u2019': "'", '\u201c': '"', '\u201d': '"'
+    }
+    
+    for char_errado, char_certo in caracteres_problematicos.items():
+        texto = texto.replace(char_errado, char_certo)
+    
+    # Remover outros caracteres não latinos
+    texto = re.sub(r'[^\x00-\xFF]', '', texto)
+    
+    return texto
 
 # ============================================
 # DETECÇÃO AUTOMÁTICA DE COLUNAS (APRIMORADA)
@@ -390,7 +432,7 @@ def analisar_problemas_criticos(df, tipo):
     return problemas
 
 # ============================================
-# GERAR RELATÓRIO PDF
+# GERAR RELATÓRIO PDF (CORRIGIDO)
 # ============================================
 
 def gerar_relatorio_pdf(mes, ano, metrics_pagamentos, metrics_contas, comparacao, 
@@ -399,29 +441,29 @@ def gerar_relatorio_pdf(mes, ano, metrics_pagamentos, metrics_contas, comparacao
     pdf = RelatorioPDF()
     pdf.add_page()
     
-    # Capa
-    pdf.set_font('Arial', 'B', 20)
-    pdf.cell(0, 20, 'RELATÓRIO DE ANÁLISE', 0, 1, 'C')
-    pdf.set_font('Arial', 'B', 16)
-    pdf.cell(0, 15, f'SISTEMA POT - SMDET', 0, 1, 'C')
-    pdf.set_font('Arial', 'I', 14)
-    pdf.cell(0, 10, f'Período: {mes} de {ano}', 0, 1, 'C')
+    # Capa com texto seguro
+    pdf.set_font('DejaVu', 'B', 20)
+    pdf.cell(0, 20, 'RELATORIO DE ANALISE', 0, 1, 'C')
+    pdf.set_font('DejaVu', 'B', 16)
+    pdf.cell(0, 15, 'SISTEMA POT - SMDET', 0, 1, 'C')
+    pdf.set_font('DejaVu', 'I', 14)
+    pdf.safe_cell(0, 10, f'Periodo: {mes} de {ano}', 0, 1, 'C')
     pdf.ln(20)
-    pdf.set_font('Arial', '', 12)
-    pdf.cell(0, 10, f'Data de geração: {data_hora_atual_brasilia()}', 0, 1, 'C')
+    pdf.set_font('DejaVu', '', 12)
+    pdf.safe_cell(0, 10, f'Data de geracao: {data_hora_atual_brasilia()}', 0, 1, 'C')
     
     # Resumo Executivo
     pdf.add_page()
     pdf.chapter_title('RESUMO EXECUTIVO', 16)
     
-    pdf.set_font('Arial', 'B', 12)
-    pdf.cell(0, 10, 'Principais Métricas:', 0, 1)
+    pdf.set_font('DejaVu', 'B', 12)
+    pdf.cell(0, 10, 'Principais Metricas:', 0, 1)
     pdf.ln(3)
     
     if metrics_pagamentos:
         pdf.add_metric('Total de Pagamentos:', formatar_brasileiro(metrics_pagamentos.get('total_registros', 0)))
         pdf.add_metric('Valor Total Pago:', formatar_brasileiro(metrics_pagamentos.get('valor_total', 0), 'monetario'))
-        pdf.add_metric('Pagamentos Válidos:', formatar_brasileiro(metrics_pagamentos.get('registros_validos', 0)))
+        pdf.add_metric('Pagamentos Validos:', formatar_brasileiro(metrics_pagamentos.get('registros_validos', 0)))
         pdf.add_metric('Pagamentos Duplicados:', formatar_brasileiro(metrics_pagamentos.get('pagamentos_duplicados', 0)), 
                       alert=metrics_pagamentos.get('pagamentos_duplicados', 0) > 0)
     
@@ -434,43 +476,46 @@ def gerar_relatorio_pdf(mes, ano, metrics_pagamentos, metrics_contas, comparacao
     
     # Problemas Críticos
     pdf.ln(10)
-    pdf.chapter_title('PROBLEMAS CRÍTICOS IDENTIFICADOS', 14)
+    pdf.chapter_title('PROBLEMAS CRITICOS IDENTIFICADOS', 14)
     
     if problemas_pagamentos:
-        pdf.set_font('Arial', 'B', 12)
+        pdf.set_font('DejaVu', 'B', 12)
         pdf.cell(0, 10, 'Nos Pagamentos:', 0, 1)
-        pdf.set_font('Arial', '', 11)
+        pdf.set_font('DejaVu', '', 11)
         for problema in problemas_pagamentos[:10]:
-            pdf.cell(0, 7, f"• {problema}", 0, 1)
+            # Limpar texto antes de adicionar
+            problema_limpo = limpar_texto_para_pdf(problema)
+            pdf.multi_cell(0, 7, f"- {problema_limpo}")
         pdf.ln(5)
     
     if problemas_contas:
-        pdf.set_font('Arial', 'B', 12)
+        pdf.set_font('DejaVu', 'B', 12)
         pdf.cell(0, 10, 'Nas Contas:', 0, 1)
-        pdf.set_font('Arial', '', 11)
+        pdf.set_font('DejaVu', '', 11)
         for problema in problemas_contas[:10]:
-            pdf.cell(0, 7, f"• {problema}", 0, 1)
+            problema_limpo = limpar_texto_para_pdf(problema)
+            pdf.multi_cell(0, 7, f"- {problema_limpo}")
     
     # Análise Detalhada de Pagamentos
     if not df_pagamentos.empty:
         pdf.add_page()
-        pdf.chapter_title('ANÁLISE DETALHADA DE PAGAMENTOS', 16)
+        pdf.chapter_title('ANALISE DETALHADA DE PAGAMENTOS', 16)
         
         # Estatísticas
-        pdf.set_font('Arial', 'B', 12)
-        pdf.cell(0, 10, 'Estatísticas:', 0, 1)
+        pdf.set_font('DejaVu', 'B', 12)
+        pdf.cell(0, 10, 'Estatisticas:', 0, 1)
         pdf.ln(3)
         
         coluna_valor = detectar_coluna_valor(df_pagamentos)
         if coluna_valor and coluna_valor in df_pagamentos.columns:
             try:
                 estatisticas = df_pagamentos[coluna_valor].describe()
-                pdf.set_font('Arial', '', 11)
-                pdf.add_metric('Média:', formatar_brasileiro(estatisticas['mean'], 'monetario'))
+                pdf.set_font('DejaVu', '', 11)
+                pdf.add_metric('Media:', formatar_brasileiro(estatisticas['mean'], 'monetario'))
                 pdf.add_metric('Mediana:', formatar_brasileiro(estatisticas['50%'], 'monetario'))
-                pdf.add_metric('Mínimo:', formatar_brasileiro(estatisticas['min'], 'monetario'))
-                pdf.add_metric('Máximo:', formatar_brasileiro(estatisticas['max'], 'monetario'))
-                pdf.add_metric('Desvio Padrão:', formatar_brasileiro(estatisticas['std'], 'monetario'))
+                pdf.add_metric('Minimo:', formatar_brasileiro(estatisticas['min'], 'monetario'))
+                pdf.add_metric('Maximo:', formatar_brasileiro(estatisticas['max'], 'monetario'))
+                pdf.add_metric('Desvio Padrao:', formatar_brasileiro(estatisticas['std'], 'monetario'))
             except:
                 pass
         
@@ -488,15 +533,19 @@ def gerar_relatorio_pdf(mes, ano, metrics_pagamentos, metrics_contas, comparacao
                 top_pagamentos[coluna_valor] = top_pagamentos[coluna_valor].apply(
                     lambda x: formatar_brasileiro(x, 'monetario')
                 )
+                # Limpar texto das colunas
+                for col in [coluna_conta, coluna_nome]:
+                    if col in top_pagamentos.columns:
+                        top_pagamentos[col] = top_pagamentos[col].apply(limpar_texto_para_pdf)
                 pdf.add_table(top_pagamentos)
     
     # Análise de Inconsistências
     pdf.add_page()
-    pdf.chapter_title('INCONSISTÊNCIAS PARA CORREÇÃO', 16)
+    pdf.chapter_title('INCONSISTENCIAS PARA CORRECAO', 16)
     
     if comparacao and comparacao.get('total_contas_sem_pagamento', 0) > 0:
-        pdf.set_font('Arial', 'B', 12)
-        pdf.cell(0, 10, f'Contas Abertas sem Pagamento ({comparacao["total_contas_sem_pagamento"]}):', 0, 1)
+        pdf.set_font('DejaVu', 'B', 12)
+        pdf.safe_cell(0, 10, f'Contas Abertas sem Pagamento ({comparacao["total_contas_sem_pagamento"]}):', 0, 1)
         pdf.ln(3)
         
         if not df_contas.empty:
@@ -508,31 +557,48 @@ def gerar_relatorio_pdf(mes, ano, metrics_pagamentos, metrics_contas, comparacao
                     df_contas[coluna_conta].astype(str).isin([str(c) for c in comparacao.get('contas_sem_pagamento', [])])
                 ][[coluna_conta, coluna_nome]].head(20)
                 
+                # Limpar texto
+                contas_sem_pagamento[coluna_conta] = contas_sem_pagamento[coluna_conta].apply(limpar_texto_para_pdf)
+                contas_sem_pagamento[coluna_nome] = contas_sem_pagamento[coluna_nome].apply(limpar_texto_para_pdf)
+                
                 if not contas_sem_pagamento.empty:
                     pdf.add_table(contas_sem_pagamento)
     
     # Recomendações
     pdf.ln(15)
-    pdf.chapter_title('RECOMENDAÇÕES', 14)
+    pdf.chapter_title('RECOMENDACOES', 14)
     
     recomendacoes = []
     
     if problemas_pagamentos:
         recomendacoes.append("Regularizar pagamentos com valores zerados ou negativos")
-        recomendacoes.append("Completar informações de beneficiários sem nome")
+        recomendacoes.append("Completar informacoes de beneficiarios sem nome")
     
     if problemas_contas:
         recomendacoes.append("Verificar e corrigir contas duplicadas")
-        recomendacoes.append("Validar CPFs com formato inválido")
+        recomendacoes.append("Validar CPFs com formato invalido")
     
     if comparacao and comparacao.get('total_contas_sem_pagamento', 0) > 0:
         recomendacoes.append(f"Regularizar pagamentos para {comparacao['total_contas_sem_pagamento']} contas sem pagamento")
     
-    pdf.set_font('Arial', '', 11)
+    pdf.set_font('DejaVu', '', 11)
     for i, rec in enumerate(recomendacoes[:10], 1):
-        pdf.cell(0, 7, f"{i}. {rec}", 0, 1)
+        rec_limpa = limpar_texto_para_pdf(rec)
+        pdf.multi_cell(0, 7, f"{i}. {rec_limpa}")
     
-    return pdf
+    # Gerar PDF em bytes
+    try:
+        pdf_bytes = pdf.output(dest='S').encode('latin-1', 'replace')
+    except:
+        # Fallback para UTF-8 se latin-1 falhar
+        try:
+            pdf_output = pdf.output(dest='S')
+            pdf_bytes = pdf_output.encode('utf-8')
+        except Exception as e:
+            # Último fallback
+            pdf_bytes = b'PDF generation error'
+    
+    return pdf_bytes
 
 # ============================================
 # INTERFACE PRINCIPAL
@@ -817,11 +883,8 @@ def main():
                 st.subheader("📄 Relatório Completo em PDF")
                 
                 try:
-                    pdf = gerar_relatorio_pdf(mes, ano, metrics_pagamentos, metrics_contas, comparacao,
-                                            problemas_pagamentos, problemas_contas, df_pagamentos, df_contas)
-                    
-                    # Converter PDF para bytes
-                    pdf_bytes = pdf.output(dest='S').encode('latin-1')
+                    pdf_bytes = gerar_relatorio_pdf(mes, ano, metrics_pagamentos, metrics_contas, comparacao,
+                                                  problemas_pagamentos, problemas_contas, df_pagamentos, df_contas)
                     
                     # Botão de download
                     st.download_button(
@@ -831,8 +894,12 @@ def main():
                         mime="application/pdf",
                         use_container_width=True
                     )
+                    
+                    st.success("✅ Relatório PDF gerado com sucesso!")
                 except Exception as e:
                     st.error(f"Erro ao gerar PDF: {str(e)}")
+                    # Oferecer alternativa
+                    st.info("⚠️ Como alternativa, você pode exportar os dados em CSV:")
                 
                 # Exportar dados
                 st.subheader("📤 Exportar Dados")
