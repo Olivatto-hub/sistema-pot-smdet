@@ -1,45 +1,49 @@
-# app.py - Sistema de Monitoramento de Pagamentos do POT
-# VERSÃO ULTRA ROBUSTA - Processa QUALQUER arquivo, QUALQUER encoding
-
+# app.py - SISTEMA POT - 
 import streamlit as st
 import pandas as pd
 import numpy as np
-import io
+import plotly.express as px
+import plotly.graph_objects as go
+from io import StringIO, BytesIO
+import warnings
+from datetime import datetime, timedelta
 import re
+import csv
 import chardet
-from datetime import datetime
 
-# ============================================================================
-# CONFIGURAÇÃO INICIAL
-# ============================================================================
+# Desativar warnings
+warnings.filterwarnings('ignore')
 
+# Configuração da página
 st.set_page_config(
-    page_title="Sistema POT - Ultra Robusto",
-    page_icon="💰",
+    page_title="Sistema POT - Monitoramento",
+    page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-st.title("💰 SISTEMA DE MONITORAMENTO DE PAGAMENTOS - POT")
-st.markdown("**Versão Ultra Robusta - Processa qualquer arquivo**")
+# Título
+st.title("📊 SISTEMA DE MONITORAMENTO DE PAGAMENTOS - POT")
 st.markdown("---")
 
 # ============================================================================
-# FUNÇÕES DE PROCESSAMENTO ULTRA ROBUSTAS
+# FUNÇÕES DE PROCESSAMENTO CORRIGIDAS
 # ============================================================================
 
-def detectar_encoding(bytes_data):
-    """Detecta o encoding do arquivo de forma inteligente"""
+def detectar_codificacao(bytes_data):
+    """Detecta automaticamente a codificação do arquivo"""
     try:
         resultado = chardet.detect(bytes_data)
         encoding = resultado['encoding']
         confianca = resultado['confidence']
         
-        # Se confiança baixa ou encoding None, usar fallbacks
+        # Se a confiança for baixa ou encoding None, usar fallbacks
         if not encoding or confianca < 0.7:
-            # Tentar encodings comuns brasileiros
-            for enc in ['latin-1', 'cp1252', 'iso-8859-1', 'utf-8']:
+            # Lista de encodings comuns no Brasil
+            encodings_comuns = ['latin-1', 'cp1252', 'iso-8859-1', 'utf-8-sig']
+            for enc in encodings_comuns:
                 try:
+                    # Tentar decodificar com cada encoding
                     bytes_data.decode(enc)
                     return enc
                 except:
@@ -49,155 +53,152 @@ def detectar_encoding(bytes_data):
     except:
         return 'latin-1'
 
-def limpar_valor_absolutamente_simples(valor):
-    """A função MAIS SIMPLES para converter valores brasileiros"""
-    if pd.isna(valor):
+def limpar_valor_monetario(valor):
+    """Converte valores monetários brasileiros para float"""
+    if pd.isna(valor) or str(valor).strip() in ['', 'nan', 'None', 'NaT']:
         return np.nan
     
-    # Converter para string
-    texto = str(valor)
-    
-    # Remover tudo que não é número, ponto ou vírgula
-    texto = re.sub(r'[^\d,\.]', '', texto)
-    
-    if texto == '':
-        return np.nan
-    
-    # Se tem vírgula, é formato brasileiro
-    if ',' in texto:
-        # Se tem ponto e vírgula (ex: 1.027,18)
-        if '.' in texto:
-            # Remover pontos (são milhares)
-            texto = texto.replace('.', '')
-        # Substituir vírgula por ponto
-        texto = texto.replace(',', '.')
-    
-    # Tentar converter
     try:
+        texto = str(valor).strip()
+        
+        # Remover R$ e espaços
+        texto = re.sub(r'[R\$\s\']', '', texto)
+        
+        # Remover aspas
+        texto = texto.replace('"', '').replace("'", "")
+        
+        if texto == '':
+            return np.nan
+        
+        # Verificar se já é número
+        try:
+            return float(texto)
+        except:
+            pass
+        
+        # Formato brasileiro: 1.027,18 ou 272.486,06
+        if ',' in texto:
+            if '.' in texto:
+                # Formato com separador de milhar e decimal
+                # Remover pontos de milhar
+                texto = texto.replace('.', '')
+                # Substituir vírgula decimal por ponto
+                texto = texto.replace(',', '.')
+            else:
+                # Apenas vírgula decimal
+                texto = texto.replace(',', '.')
+        
+        # Tentar converter
         return float(texto)
     except:
         return np.nan
 
-def processar_qualquer_arquivo(arquivo):
-    """Processa QUALQUER tipo de arquivo de forma ultra robusta"""
+def processar_csv_correto(arquivo):
+    """Processa arquivo CSV com tratamento correto de encoding"""
     try:
         # Obter bytes do arquivo
         bytes_data = arquivo.getvalue()
-        nome_arquivo = arquivo.name
         
-        # ETAPA 1: Tentar detectar e decodificar
-        encoding = detectar_encoding(bytes_data)
+        # Detectar encoding
+        encoding = detectar_codificacao(bytes_data)
         
+        # Decodificar usando o encoding detectado
         try:
-            conteudo = bytes_data.decode(encoding, errors='ignore')
+            conteudo = bytes_data.decode(encoding, errors='replace')
         except:
-            # Se falhar, tentar latin-1 (sempre funciona)
-            conteudo = bytes_data.decode('latin-1', errors='ignore')
+            # Fallback para latin-1 (sempre funciona)
+            conteudo = bytes_data.decode('latin-1', errors='replace')
         
-        # ETAPA 2: Limpar conteúdo
+        # Remover BOM se existir
+        conteudo = conteudo.lstrip('\ufeff')
+        
         # Substituir caracteres problemáticos
-        conteudo = conteudo.replace('\r', '\n').replace('\x00', '')
+        conteudo = conteudo.replace('\x00', '').replace('\r\n', '\n').replace('\r', '\n')
         
-        # ETAPA 3: Detectar se é CSV ou TXT
-        linhas = conteudo.split('\n')
+        # Detectar delimitador
+        linhas = conteudo.split('\n', 10)
+        delimitador = ';' if any(';' in linha for linha in linhas) else ','
         
-        # Remover linhas completamente vazias
-        linhas = [linha.strip() for linha in linhas if linha.strip()]
-        
-        if not linhas:
-            return None, "Arquivo vazio"
-        
-        # ETAPA 4: Detectar delimitador
-        primeira_linha = linhas[0]
-        
-        # Contar delimitadores
-        contagem_ponto_virgula = primeira_linha.count(';')
-        contagem_virgula = primeira_linha.count(',')
-        
-        # Se tem mais ponto-e-virgula que vírgulas, usar ponto-e-virgula
-        if contagem_ponto_virgula > contagem_virgula:
-            sep = ';'
-        else:
-            sep = ','
-        
-        # ETAPA 5: Processar como DataFrame
+        # Ler CSV
         try:
-            # Usar engine python para mais robustez
             df = pd.read_csv(
-                io.StringIO('\n'.join(linhas)),
-                sep=sep,
-                engine='python',
+                StringIO(conteudo),
+                delimiter=delimitador,
+                dtype=str,
                 on_bad_lines='skip',
-                dtype=str
+                engine='python'
             )
         except Exception as e:
             # Se falhar, tentar método manual
-            st.warning(f"Tentando método alternativo para {nome_arquivo}")
-            dados = []
-            for linha in linhas:
-                partes = linha.split(sep)
-                dados.append(partes)
+            st.warning(f"Usando método alternativo para {arquivo.name}")
+            reader = csv.reader(StringIO(conteudo), delimiter=delimitador)
+            linhas_csv = list(reader)
             
-            if len(dados) < 2:
-                return None, f"Arquivo inválido: {str(e)}"
+            if len(linhas_csv) < 2:
+                return None, "Arquivo vazio ou sem dados"
             
-            # Criar DataFrame manual
-            df = pd.DataFrame(dados[1:], columns=dados[0])
+            df = pd.DataFrame(linhas_csv[1:], columns=linhas_csv[0])
         
-        # ETAPA 6: Normalizar colunas
-        # Converter nomes para minúsculas e substituir espaços
-        df.columns = [str(col).strip().lower().replace(' ', '_') for col in df.columns]
+        # Padronizar nomes das colunas
+        df.columns = [str(col).strip().lower() for col in df.columns]
         
-        # ETAPA 7: Identificar colunas importantes
-        colunas_encontradas = []
+        # Mapeamento de colunas
+        mapeamento = {
+            'ordem': 'ordem',
+            'projeto': 'projeto',
+            'num cartao': 'cartao',
+            'cartão': 'cartao',
+            'nome': 'nome',
+            'agencia': 'agencia',
+            'agência': 'agencia',
+            'rg': 'rg',
+            'cpf': 'cpf',
+            'valor total': 'valor_total',
+            'valor desconto': 'valor_desconto',
+            'valor pagto': 'valor_pagto',
+            'valor pagamento': 'valor_pagto',
+            'data pagto': 'data_pagto',
+            'data': 'data_pagto',
+            'valor dia': 'valor_dia',
+            'dias validos': 'dias_apagar',
+            'dias a pagar': 'dias_apagar',
+            'gerenciadora': 'gerenciadora',
+            'mes referencia': 'mes_referencia',
+            'mes': 'mes_referencia'
+        }
         
-        # Mapeamento flexível de colunas
-        possiveis_valores = ['valor', 'valorpagto', 'pagamento', 'total']
-        possiveis_nomes = ['nome', 'beneficiario', 'beneficiário']
-        possiveis_projetos = ['projeto', 'programa', 'codigo']
+        # Aplicar mapeamento
+        for col_antiga, col_nova in mapeamento.items():
+            if col_antiga in df.columns:
+                df.rename(columns={col_antiga: col_nova}, inplace=True)
         
-        for col in df.columns:
-            col_lower = col.lower()
-            
-            # Encontrar coluna de valor
-            if any(palavra in col_lower for palavra in possiveis_valores):
-                df['valor_pago'] = df[col]
-                colunas_encontradas.append('valor')
-            
-            # Encontrar coluna de nome
-            if any(palavra in col_lower for palavra in possiveis_nomes):
-                df['nome'] = df[col]
-                colunas_encontradas.append('nome')
-            
-            # Encontrar coluna de projeto
-            if any(palavra in col_lower for palavra in possiveis_projetos):
-                df['projeto'] = df[col]
-                colunas_encontradas.append('projeto')
+        # Processar colunas monetárias
+        colunas_monetarias = ['valor_total', 'valor_desconto', 'valor_pagto', 'valor_dia']
+        for col in colunas_monetarias:
+            if col in df.columns:
+                df[col] = df[col].apply(limpar_valor_monetario)
         
-        # Garantir que temos coluna de valor
-        if 'valor_pago' not in df.columns:
-            # Procurar qualquer coluna que pareça ter valores monetários
-            for col in df.columns:
-                # Pegar primeira linha não nula
-                amostra = df[col].dropna().iloc[0] if not df[col].dropna().empty else ''
-                if isinstance(amostra, str) and any(c in amostra for c in ['R$', '$', ',', '.']):
-                    df['valor_pago'] = df[col]
-                    colunas_encontradas.append('valor_aproximado')
-                    break
-            
-            # Se não encontrou, criar coluna vazia
-            if 'valor_pago' not in df.columns:
-                df['valor_pago'] = '0'
+        # Processar colunas numéricas
+        if 'dias_apagar' in df.columns:
+            df['dias_apagar'] = pd.to_numeric(df['dias_apagar'], errors='coerce')
         
-        # ETAPA 8: Processar valores
-        df['valor_pago'] = df['valor_pago'].apply(limpar_valor_absolutamente_simples)
+        # Processar datas
+        if 'data_pagto' in df.columns:
+            df['data_pagto'] = pd.to_datetime(df['data_pagto'], dayfirst=True, errors='coerce')
         
-        # ETAPA 9: Extrair mês do nome do arquivo
-        nome_upper = nome_arquivo.upper()
+        # Processar gerenciadora
+        if 'gerenciadora' in df.columns:
+            df['gerenciadora'] = df['gerenciadora'].astype(str).str.upper().str.strip()
+        
+        # Adicionar metadados
+        df['arquivo_origem'] = arquivo.name
+        
+        # Extrair mês do nome do arquivo
+        nome_upper = arquivo.name.upper()
         meses = {
             'JANEIRO': 'Janeiro', 'JAN': 'Janeiro',
             'FEVEREIRO': 'Fevereiro', 'FEV': 'Fevereiro',
-            'MARCO': 'Março', 'MARÇO': 'Março', 'MAR': 'Março',
+            'MARÇO': 'Março', 'MARCO': 'Março', 'MAR': 'Março',
             'ABRIL': 'Abril', 'ABR': 'Abril',
             'MAIO': 'Maio', 'MAI': 'Maio',
             'JUNHO': 'Junho', 'JUN': 'Junho',
@@ -215,105 +216,120 @@ def processar_qualquer_arquivo(arquivo):
                 mes_referencia = valor
                 break
         
-        # ETAPA 10: Adicionar metadados
         df['mes_referencia'] = mes_referencia
-        df['arquivo_origem'] = nome_arquivo
-        df['data_processamento'] = datetime.now().strftime('%Y-%m-%d')
+        df['ano'] = datetime.now().year
         
-        # ETAPA 11: Limpeza final
-        # Remover linhas onde valor é NaN
-        df = df[~df['valor_pago'].isna()]
+        # Remover linhas completamente vazias
+        df.replace('', np.nan, inplace=True)
+        df.dropna(how='all', inplace=True)
         
-        # Remover linhas duplicadas
-        df = df.drop_duplicates()
-        
-        return df, f"✅ SUCCESSO: {len(df)} registros ({mes_referencia}) - {len(colunas_encontradas)} colunas identificadas"
-        
+        return df, f"✅ Processado: {len(df)} registros ({mes_referencia})"
+    
     except Exception as e:
-        # EM CASO DE QUALQUER ERRO, criar DataFrame mínimo
-        st.error(f"⚠️ ERRO CRÍTICO em {arquivo.name}, criando registro mínimo: {str(e)}")
+        return None, f"❌ Erro ao processar CSV: {str(e)}"
+
+def processar_excel_correto(arquivo):
+    """Processa arquivo Excel"""
+    try:
+        # Ler Excel
+        df = pd.read_excel(arquivo, dtype=str)
         
-        # Criar DataFrame mínimo com erro registrado
-        df_minimo = pd.DataFrame({
-            'erro_processamento': [f"Arquivo: {arquivo.name}, Erro: {str(e)}"],
-            'valor_pago': [0.0],
-            'mes_referencia': ['ERRO'],
-            'arquivo_origem': [arquivo.name]
-        })
+        # Padronizar colunas
+        df.columns = [str(col).strip().lower() for col in df.columns]
         
-        return df_minimo, f"⚠️ ARQUIVO PROBLEMÁTICO: Processado com limitações"
+        # Mapeamento
+        mapeamento = {
+            'projeto': 'projeto',
+            'nome': 'nome',
+            'valor pagto': 'valor_pagto',
+            'valor pagamento': 'valor_pagto',
+            'data pagto': 'data_pagto',
+            'agencia': 'agencia',
+            'gerenciadora': 'gerenciadora'
+        }
+        
+        for col_antiga, col_nova in mapeamento.items():
+            if col_antiga in df.columns:
+                df.rename(columns={col_antiga: col_nova}, inplace=True)
+        
+        # Processar valores
+        if 'valor_pagto' in df.columns:
+            df['valor_pagto'] = df['valor_pagto'].apply(limpar_valor_monetario)
+        
+        # Adicionar metadados
+        df['arquivo_origem'] = arquivo.name
+        df['mes_referencia'] = 'Excel'
+        df['ano'] = datetime.now().year
+        
+        return df, f"✅ Excel processado: {len(df)} registros"
+    
+    except Exception as e:
+        return None, f"❌ Erro no Excel: {str(e)}"
 
 # ============================================================================
-# FUNÇÕES DE ANÁLISE SIMPLES
+# FUNÇÕES DE ANÁLISE
 # ============================================================================
 
-def calcular_totais(df):
-    """Calcula totais de forma segura"""
-    if df.empty:
-        return {
-            'total_registros': 0,
-            'valor_total': 0.0,
-            'valor_medio': 0.0,
-            'arquivos': 0,
-            'meses': 0
-        }
+def calcular_metricas(df):
+    """Calcula métricas dos dados"""
+    metricas = {
+        'total_registros': len(df),
+        'arquivos_unicos': df['arquivo_origem'].nunique() if 'arquivo_origem' in df.columns else 0
+    }
     
-    try:
-        if 'valor_pago' not in df.columns:
-            df['valor_pago'] = 0.0
-        
-        valores = df['valor_pago'].fillna(0)
-        
-        return {
-            'total_registros': len(df),
-            'valor_total': float(valores.sum()),
-            'valor_medio': float(valores.mean()) if len(valores) > 0 else 0.0,
-            'arquivos': df['arquivo_origem'].nunique() if 'arquivo_origem' in df.columns else 1,
-            'meses': df['mes_referencia'].nunique() if 'mes_referencia' in df.columns else 1
-        }
-    except:
-        return {
-            'total_registros': len(df),
-            'valor_total': 0.0,
-            'valor_medio': 0.0,
-            'arquivos': 1,
-            'meses': 1
-        }
+    if 'valor_pagto' in df.columns:
+        valores = df['valor_pagto'].dropna()
+        if len(valores) > 0:
+            metricas['valor_total'] = float(valores.sum())
+            metricas['valor_medio'] = float(valores.mean())
+            metricas['valor_min'] = float(valores.min())
+            metricas['valor_max'] = float(valores.max())
+        else:
+            metricas['valor_total'] = 0.0
+            metricas['valor_medio'] = 0.0
+    
+    if 'projeto' in df.columns:
+        metricas['projetos_unicos'] = df['projeto'].nunique()
+    
+    if 'mes_referencia' in df.columns:
+        metricas['meses_unicos'] = df['mes_referencia'].nunique()
+    
+    if 'agencia' in df.columns:
+        metricas['agencias_unicas'] = df['agencia'].nunique()
+    
+    return metricas
 
-def criar_relatorio_mensal(df):
-    """Cria relatório mensal simples"""
-    if df.empty or 'mes_referencia' not in df.columns:
+def gerar_consolidado_mensal(df):
+    """Gera consolidação mensal"""
+    if 'mes_referencia' not in df.columns or 'valor_pagto' not in df.columns:
         return pd.DataFrame()
     
-    try:
-        relatorio = df.groupby('mes_referencia').agg(
-            registros=('valor_pago', 'count'),
-            valor_total=('valor_pago', 'sum'),
-            valor_medio=('valor_pago', 'mean')
-        ).round(2)
-        
-        return relatorio
-    except:
-        return pd.DataFrame()
+    consolidado = df.groupby('mes_referencia').agg(
+        quantidade_pagamentos=('valor_pagto', 'count'),
+        valor_total=('valor_pagto', 'sum'),
+        valor_medio=('valor_pagto', 'mean'),
+        quantidade_projetos=('projeto', 'nunique') if 'projeto' in df.columns else pd.Series([0]),
+        quantidade_agencias=('agencia', 'nunique') if 'agencia' in df.columns else pd.Series([0])
+    ).round(2)
+    
+    return consolidado.sort_index()
 
-def criar_relatorio_projeto(df):
-    """Cria relatório por projeto simples"""
-    if df.empty or 'projeto' not in df.columns:
+def gerar_consolidado_projetos(df):
+    """Gera consolidação por projeto"""
+    if 'projeto' not in df.columns or 'valor_pagto' not in df.columns:
         return pd.DataFrame()
     
-    try:
-        relatorio = df.groupby('projeto').agg(
-            registros=('valor_pago', 'count'),
-            valor_total=('valor_pago', 'sum'),
-            valor_medio=('valor_pago', 'mean')
-        ).round(2)
-        
-        return relatorio.sort_values('valor_total', ascending=False).head(20)
-    except:
-        return pd.DataFrame()
+    consolidado = df.groupby('projeto').agg(
+        quantidade_pagamentos=('valor_pagto', 'count'),
+        valor_total=('valor_pagto', 'sum'),
+        valor_medio=('valor_pagto', 'mean'),
+        quantidade_meses=('mes_referencia', 'nunique') if 'mes_referencia' in df.columns else pd.Series([0])
+    ).round(2)
+    
+    return consolidado.sort_values('valor_total', ascending=False)
 
 # ============================================================================
-# INTERFACE PRINCIPAL - SIMPLES E EFETIVA
+# INTERFACE PRINCIPAL
 # ============================================================================
 
 def main():
@@ -321,239 +337,175 @@ def main():
     if 'dados_consolidados' not in st.session_state:
         st.session_state.dados_consolidados = pd.DataFrame()
     
-    if 'historico_processamento' not in st.session_state:
-        st.session_state.historico_processamento = []
-    
-    # ========================================================================
-    # SIDEBAR
-    # ========================================================================
+    # Sidebar
     with st.sidebar:
-        st.title("📁 CARREGAMENTO")
-        
-        st.markdown("**Arraste e solte seus arquivos:**")
-        st.markdown("- CSV, TXT, Excel")
-        st.markdown("- Qualquer encoding")
-        st.markdown("- Qualquer formato")
+        st.header("📁 CARREGAR ARQUIVOS")
         
         arquivos = st.file_uploader(
             "Selecione os arquivos",
             type=['csv', 'txt', 'xlsx', 'xls'],
             accept_multiple_files=True,
-            label_visibility="collapsed"
+            help="Formatos suportados: CSV, TXT, Excel"
         )
         
         st.markdown("---")
-        
-        st.title("⚙️ CONFIGURAÇÃO")
+        st.header("⚙️ CONFIGURAÇÕES")
         
         modo = st.radio(
-            "Modo:",
-            ["Processar novos", "Acumular aos existentes"],
-            index=0
+            "Modo de processamento:",
+            ["Substituir dados", "Acumular dados"]
         )
         
         st.markdown("---")
-        
-        st.title("📊 STATUS")
+        st.header("📊 STATUS")
         
         if not st.session_state.dados_consolidados.empty:
-            totais = calcular_totais(st.session_state.dados_consolidados)
-            
-            st.success("✅ Dados carregados:")
-            st.metric("Registros", f"{totais['total_registros']:,}")
-            st.metric("Valor Total", f"R$ {totais['valor_total']:,.2f}")
-            st.metric("Arquivos", totais['arquivos'])
-            
-            if st.button("🗑️ Limpar Tudo", type="secondary", use_container_width=True):
-                st.session_state.dados_consolidados = pd.DataFrame()
-                st.session_state.historico_processamento = []
-                st.rerun()
+            metricas = calcular_metricas(st.session_state.dados_consolidados)
+            st.success("Dados carregados:")
+            st.metric("Registros", metricas['total_registros'])
+            st.metric("Valor Total", f"R$ {metricas.get('valor_total', 0):,.2f}")
+            st.metric("Arquivos", metricas['arquivos_unicos'])
         else:
-            st.info("⏳ Aguardando arquivos...")
-        
-        st.markdown("---")
-        st.caption(f"🕒 {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+            st.info("Nenhum dado carregado")
     
-    # ========================================================================
-    # ÁREA PRINCIPAL
-    # ========================================================================
-    
-    # Tela inicial sem arquivos
+    # Área principal
     if not arquivos:
+        st.info("👋 **Sistema de Monitoramento de Pagamentos - POT**")
+        
         col1, col2 = st.columns([2, 1])
         
         with col1:
-            st.header("🎯 SISTEMA ULTRA ROBUSTO - POT")
             st.markdown("""
-            ### ✨ CARACTERÍSTICAS:
+            ### 📋 Funcionalidades:
             
-            **✅ À PROVA DE ERROS:**
-            - Processa QUALQUER encoding (UTF-8, Latin-1, CP1252, etc.)
-            - Ignora linhas corrompidas
-            - Converte valores automaticamente
-            - NUNCA quebra, mesmo com arquivos problemáticos
+            1. **Processamento robusto de arquivos**
+               - Detecta encoding automaticamente
+               - Suporta CSV, TXT, Excel
+               - Formato brasileiro (R$ 1.027,18)
             
-            **✅ DETECÇÃO INTELIGENTE:**
-            - Identifica mês pelo nome do arquivo
-            - Encontra colunas automaticamente
-            - Detecta formato brasileiro (R$ 1.027,18)
+            2. **Consolidação inteligente**
+               - Agrupamento por mês
+               - Análise por projeto
+               - Histórico temporal
             
-            **✅ FUNCIONALIDADES:**
-            - Processamento em lote
-            - Consolidação mensal
-            - Análise por projeto
-            - Exportação completa
+            3. **Análise completa**
+               - Métricas detalhadas
+               - Gráficos interativos
+               - Exportação em múltiplos formatos
+            
+            4. **Detecção de problemas**
+               - Valores inconsistentes
+               - Dados faltantes
+               - Duplicidades
             """)
         
         with col2:
-            st.header("📋 COMO USAR:")
             st.markdown("""
-            1. **Arraste arquivos** para a barra lateral
-            2. **Escolha o modo** de processamento
+            ### 🚀 Como usar:
+            
+            1. **Carregue os arquivos** na barra lateral
+            2. **Configure o processamento**
             3. **Analise os resultados**
             4. **Exporte relatórios**
             
-            **📁 ACEITA:**
-            - Qualquer CSV/TXT
-            - Qualquer Excel
-            - Com ou sem cabeçalho
-            - Qualquer separador
-            - Valores em R$ ou números
-            """)
+            ### 📊 Saídas:
             
-            st.info("""
-            **💡 DICA:** 
-            O sistema vai processar MESMO arquivos 
-            corrompidos ou com encoding errado!
+            - Consolidação mensal
+            - Análise por projeto
+            - Gráficos interativos
+            - Relatórios Excel/CSV
             """)
-        
-        # Mostrar histórico se existir
-        if st.session_state.historico_processamento:
-            st.markdown("---")
-            st.subheader("📜 Histórico de Processamento")
-            for item in st.session_state.historico_processamento[-5:]:  # Últimos 5
-                if "✅" in item:
-                    st.success(item)
-                elif "⚠️" in item:
-                    st.warning(item)
-                else:
-                    st.info(item)
         
         return
     
-    # ========================================================================
-    # PROCESSAMENTO DOS ARQUIVOS
-    # ========================================================================
-    st.header("🔄 PROCESSANDO ARQUIVOS")
+    # Processar arquivos
+    st.header("🔄 Processamento")
+    
+    dataframes = []
+    mensagens = []
     
     with st.spinner(f"Processando {len(arquivos)} arquivo(s)..."):
-        resultados = []
-        dataframes = []
-        
-        # Barra de progresso
-        progress_bar = st.progress(0)
-        
-        for i, arquivo in enumerate(arquivos):
-            progresso = (i + 1) / len(arquivos)
-            progress_bar.progress(progresso)
-            
-            # Mostrar nome do arquivo sendo processado
-            with st.expander(f"📄 {arquivo.name}", expanded=False):
-                st.write(f"Tamanho: {len(arquivo.getvalue()):,} bytes")
-                
-                # Processar arquivo
-                df, mensagem = processar_qualquer_arquivo(arquivo)
+        for arquivo in arquivos:
+            try:
+                if arquivo.name.lower().endswith(('.csv', '.txt')):
+                    df, msg = processar_csv_correto(arquivo)
+                elif arquivo.name.lower().endswith(('.xlsx', '.xls')):
+                    df, msg = processar_excel_correto(arquivo)
+                else:
+                    msg = f"Formato não suportado: {arquivo.name}"
+                    df = None
                 
                 if df is not None:
                     dataframes.append(df)
-                    resultados.append(mensagem)
-                    
-                    # Mostrar preview
-                    st.write(f"**Resultado:** {mensagem}")
-                    if len(df) > 0:
-                        st.write(f"Primeiras linhas:")
-                        st.dataframe(df.head(3), use_container_width=True)
+                    mensagens.append(msg)
+                    st.success(msg)
                 else:
-                    st.error(f"Falha crítica: {mensagem}")
-        
-        progress_bar.empty()
+                    mensagens.append(msg)
+                    st.error(msg)
+            except Exception as e:
+                erro_msg = f"Erro crítico em {arquivo.name}: {str(e)}"
+                mensagens.append(erro_msg)
+                st.error(erro_msg)
     
-    # ========================================================================
-    # CONSOLIDAÇÃO DOS RESULTADOS
-    # ========================================================================
     if not dataframes:
-        st.error("❌ NENHUM arquivo foi processado com sucesso.")
-        st.info("""
-        **Possíveis soluções:**
-        1. Verifique se os arquivos não estão vazios
-        2. Tente abrir os arquivos em um editor de texto primeiro
-        3. Salve como UTF-8 se possível
-        4. Entre em contato com o suporte
-        """)
+        st.error("❌ Nenhum arquivo processado com sucesso")
         return
     
-    # Consolidar DataFrames
-    novo_df = pd.concat(dataframes, ignore_index=True, sort=False)
+    # Consolidar dados
+    novo_df = pd.concat(dataframes, ignore_index=True)
     
     # Atualizar dados da sessão
-    if modo == "Processar novos" or st.session_state.dados_consolidados.empty:
+    if modo == "Substituir dados" or st.session_state.dados_consolidados.empty:
         st.session_state.dados_consolidados = novo_df
-        mensagem_consolidacao = f"✅ {len(novo_df)} novos registros processados"
+        st.success(f"✅ {len(novo_df)} registros processados")
     else:
         st.session_state.dados_consolidados = pd.concat(
             [st.session_state.dados_consolidados, novo_df], 
-            ignore_index=True, 
-            sort=False
+            ignore_index=True
         )
-        mensagem_consolidacao = f"✅ {len(novo_df)} novos registros adicionados. Total: {len(st.session_state.dados_consolidados)}"
-    
-    # Atualizar histórico
-    st.session_state.historico_processamento.extend(resultados)
-    
-    st.success(mensagem_consolidacao)
-    
-    # ========================================================================
-    # ANÁLISE DOS DADOS
-    # ========================================================================
-    st.header("📊 ANÁLISE DOS DADOS")
+        st.success(f"✅ {len(novo_df)} novos registros adicionados")
     
     df_final = st.session_state.dados_consolidados
-    totais = calcular_totais(df_final)
+    
+    # Calcular métricas
+    metricas = calcular_metricas(df_final)
     
     # Métricas principais
+    st.header("📈 Métricas Principais")
+    
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        st.metric("📈 Registros", f"{totais['total_registros']:,}")
+        st.metric("Total de Registros", f"{metricas['total_registros']:,}")
     
     with col2:
-        st.metric("💰 Valor Total", f"R$ {totais['valor_total']:,.2f}")
+        st.metric("Valor Total", f"R$ {metricas.get('valor_total', 0):,.2f}")
     
     with col3:
-        st.metric("📅 Meses", totais['meses'])
+        st.metric("Valor Médio", f"R$ {metricas.get('valor_medio', 0):,.2f}")
     
     with col4:
-        st.metric("📁 Arquivos", totais['arquivos'])
+        st.metric("Arquivos", metricas['arquivos_unicos'])
     
     # Tabs de análise
-    tab1, tab2, tab3, tab4 = st.tabs(["👁️ Visualizar", "📅 Mensal", "🏢 Projetos", "💾 Exportar"])
+    tab1, tab2, tab3, tab4 = st.tabs(["📋 Dados", "📅 Mensal", "🏢 Projetos", "📊 Gráficos"])
     
     with tab1:
         st.subheader("Dados Processados")
         
-        # Filtros básicos
+        # Filtros
         col_f1, col_f2 = st.columns(2)
         
         with col_f1:
             if 'mes_referencia' in df_final.columns:
-                meses = ['Todos'] + sorted(df_final['mes_referencia'].unique().tolist())
+                meses = ['Todos'] + sorted(df_final['mes_referencia'].dropna().unique().tolist())
                 mes_filtro = st.selectbox("Filtrar por mês:", meses)
             else:
                 mes_filtro = 'Todos'
         
         with col_f2:
             if 'projeto' in df_final.columns:
-                projetos = ['Todos'] + sorted(df_final['projeto'].dropna().unique().tolist()[:20])
+                projetos = ['Todos'] + sorted(df_final['projeto'].dropna().unique().tolist())
                 projeto_filtro = st.selectbox("Filtrar por projeto:", projetos)
             else:
                 projeto_filtro = 'Todos'
@@ -573,23 +525,21 @@ def main():
             use_container_width=True,
             height=400,
             column_config={
-                "valor_pago": st.column_config.NumberColumn(
+                "valor_pagto": st.column_config.NumberColumn(
                     "Valor Pago",
                     format="R$ %.2f"
                 )
             }
         )
-        
-        st.info(f"Mostrando {len(df_filtrado)} de {len(df_final)} registros")
     
     with tab2:
         st.subheader("Consolidação Mensal")
         
-        relatorio_mensal = criar_relatorio_mensal(df_final)
+        consolidado_mensal = gerar_consolidado_mensal(df_final)
         
-        if not relatorio_mensal.empty:
+        if not consolidado_mensal.empty:
             st.dataframe(
-                relatorio_mensal,
+                consolidado_mensal,
                 use_container_width=True,
                 column_config={
                     "valor_total": st.column_config.NumberColumn(
@@ -602,176 +552,148 @@ def main():
                     )
                 }
             )
-            
-            # Gráfico simples
-            try:
-                import plotly.express as px
-                
-                fig = px.bar(
-                    relatorio_mensal.reset_index(),
-                    x='mes_referencia',
-                    y='valor_total',
-                    title='Valor Total por Mês',
-                    labels={'valor_total': 'Valor Total (R$)'},
-                    text=[f'R$ {x:,.0f}' for x in relatorio_mensal['valor_total']]
-                )
-                fig.update_traces(textposition='outside')
-                st.plotly_chart(fig, use_container_width=True)
-            except:
-                st.info("📈 Instale 'plotly' para ver gráficos")
         else:
             st.info("Não há dados para consolidação mensal")
     
     with tab3:
         st.subheader("Consolidação por Projeto")
         
-        relatorio_projeto = criar_relatorio_projeto(df_final)
+        consolidado_projetos = gerar_consolidado_projetos(df_final)
         
-        if not relatorio_projeto.empty:
+        if not consolidado_projetos.empty:
             st.dataframe(
-                relatorio_projeto,
+                consolidado_projetos,
                 use_container_width=True,
-                height=500,
-                column_config={
-                    "valor_total": st.column_config.NumberColumn(
-                        "Valor Total",
-                        format="R$ %.2f"
-                    ),
-                    "valor_medio": st.column_config.NumberColumn(
-                        "Valor Médio",
-                        format="R$ %.2f"
-                    )
-                }
+                height=500
             )
         else:
             st.info("Não há dados de projetos para análise")
     
     with tab4:
-        st.subheader("Exportação de Dados")
+        st.subheader("Visualizações")
         
-        st.markdown("### 📥 Baixar Relatórios")
+        if 'valor_pagto' in df_final.columns and 'mes_referencia' in df_final.columns:
+            # Gráfico de evolução mensal
+            if not consolidado_mensal.empty:
+                fig1 = px.bar(
+                    consolidado_mensal.reset_index(),
+                    x='mes_referencia',
+                    y='valor_total',
+                    title='Valor Total por Mês',
+                    labels={'valor_total': 'Valor Total (R$)'}
+                )
+                st.plotly_chart(fig1, use_container_width=True)
         
-        col_exp1, col_exp2, col_exp3 = st.columns(3)
-        
-        with col_exp1:
-            # Dados completos CSV
-            csv_completo = df_final.to_csv(index=False, sep=';', decimal=',')
+        if not consolidado_projetos.empty:
+            # Gráfico de top projetos
+            top_10 = consolidado_projetos.head(10)
+            fig2 = px.bar(
+                top_10.reset_index(),
+                x='projeto',
+                y='valor_total',
+                title='Top 10 Projetos por Valor',
+                labels={'valor_total': 'Valor Total (R$)'}
+            )
+            fig2.update_layout(xaxis_tickangle=-45)
+            st.plotly_chart(fig2, use_container_width=True)
+    
+    # Exportação
+    st.header("💾 Exportação")
+    
+    col_exp1, col_exp2, col_exp3 = st.columns(3)
+    
+    with col_exp1:
+        # Exportar dados completos
+        csv_data = df_final.to_csv(index=False, sep=';', decimal=',')
+        st.download_button(
+            label="📥 Dados Completos (CSV)",
+            data=csv_data,
+            file_name=f"pot_completo_{datetime.now().strftime('%Y%m%d')}.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
+    
+    with col_exp2:
+        # Exportar consolidação mensal
+        if not consolidado_mensal.empty:
+            csv_mensal = consolidado_mensal.to_csv(sep=';', decimal=',')
             st.download_button(
-                label="📄 Dados Completos (CSV)",
-                data=csv_completo,
-                file_name=f"pot_completo_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                label="📅 Consolidação Mensal (CSV)",
+                data=csv_mensal,
+                file_name=f"pot_mensal_{datetime.now().strftime('%Y%m%d')}.csv",
                 mime="text/csv",
                 use_container_width=True
             )
-        
-        with col_exp2:
-            # Relatório mensal CSV
-            if not relatorio_mensal.empty:
-                csv_mensal = relatorio_mensal.to_csv(sep=';', decimal=',')
-                st.download_button(
-                    label="📅 Relatório Mensal (CSV)",
-                    data=csv_mensal,
-                    file_name=f"pot_mensal_{datetime.now().strftime('%Y%m%d')}.csv",
-                    mime="text/csv",
-                    use_container_width=True
-                )
-        
-        with col_exp3:
-            # Relatório projetos CSV
-            if not relatorio_projeto.empty:
-                csv_projeto = relatorio_projeto.to_csv(sep=';', decimal=',')
-                st.download_button(
-                    label="🏢 Relatório Projetos (CSV)",
-                    data=csv_projeto,
-                    file_name=f"pot_projetos_{datetime.now().strftime('%Y%m%d')}.csv",
-                    mime="text/csv",
-                    use_container_width=True
-                )
-        
-        # Exportação em Excel (se possível)
-        st.markdown("---")
-        st.markdown("### 📊 Exportação Avançada")
-        
-        try:
-            from io import BytesIO
-            output = BytesIO()
-            
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                df_final.to_excel(writer, sheet_name='DADOS', index=False)
-                
-                if not relatorio_mensal.empty:
-                    relatorio_mensal.to_excel(writer, sheet_name='MENSAL')
-                
-                if not relatorio_projeto.empty:
-                    relatorio_projeto.to_excel(writer, sheet_name='PROJETOS')
-                
-                # Adicionar resumo
-                resumo_df = pd.DataFrame([{
-                    'Total Registros': totais['total_registros'],
-                    'Valor Total': totais['valor_total'],
-                    'Valor Médio': totais['valor_medio'],
-                    'Arquivos': totais['arquivos'],
-                    'Meses': totais['meses'],
-                    'Data Exportação': datetime.now().strftime('%d/%m/%Y %H:%M')
-                }])
-                resumo_df.to_excel(writer, sheet_name='RESUMO', index=False)
-            
-            excel_bytes = output.getvalue()
-            
+    
+    with col_exp3:
+        # Exportar consolidação projetos
+        if not consolidado_projetos.empty:
+            csv_projetos = consolidado_projetos.to_csv(sep=';', decimal=',')
             st.download_button(
-                label="📊 RELATÓRIO COMPLETO (Excel)",
-                data=excel_bytes,
-                file_name=f"relatorio_pot_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                label="🏢 Consolidação Projetos (CSV)",
+                data=csv_projetos,
+                file_name=f"pot_projetos_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv",
                 use_container_width=True
             )
-        except Exception as e:
-            st.warning(f"Exportação Excel não disponível: {str(e)}")
-            st.info("Use os botões CSV acima para exportar os dados")
     
-    # ========================================================================
-    # RODAPÉ
-    # ========================================================================
+    # Exportação Excel
+    try:
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df_final.to_excel(writer, sheet_name='DADOS', index=False)
+            
+            if not consolidado_mensal.empty:
+                consolidado_mensal.to_excel(writer, sheet_name='CONSOLIDADO_MENSAL')
+            
+            if not consolidado_projetos.empty:
+                consolidado_projetos.to_excel(writer, sheet_name='CONSOLIDADO_PROJETOS')
+            
+            # Adicionar resumo
+            resumo_df = pd.DataFrame([{
+                'Total de Registros': metricas['total_registros'],
+                'Valor Total': metricas.get('valor_total', 0),
+                'Valor Médio': metricas.get('valor_medio', 0),
+                'Quantidade de Arquivos': metricas['arquivos_unicos'],
+                'Data de Exportação': datetime.now().strftime('%d/%m/%Y %H:%M')
+            }])
+            resumo_df.to_excel(writer, sheet_name='RESUMO', index=False)
+        
+        excel_bytes = output.getvalue()
+        
+        st.download_button(
+            label="📊 Relatório Completo (Excel)",
+            data=excel_bytes,
+            file_name=f"relatorio_pot_{datetime.now().strftime('%Y%m%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
+    except Exception as e:
+        st.warning(f"Exportação Excel não disponível: {str(e)}")
+    
+    # Rodapé
     st.markdown("---")
-    
-    col_rodape1, col_rodape2, col_rodape3 = st.columns(3)
-    
-    with col_rodape1:
-        st.caption(f"🔄 Último processamento: {datetime.now().strftime('%H:%M:%S')}")
-    
-    with col_rodape2:
-        st.caption(f"📊 Total registros: {totais['total_registros']:,}")
-    
-    with col_rodape3:
-        st.caption(f"💰 Valor total: R$ {totais['valor_total']:,.2f}")
+    st.caption(f"Sistema POT | {datetime.now().strftime('%d/%m/%Y %H:%M')} | Registros: {metricas['total_registros']:,}")
 
 # ============================================================================
-# EXECUÇÃO PRINCIPAL COM TRATAMENTO DE ERROS
+# EXECUÇÃO
 # ============================================================================
 
 if __name__ == "__main__":
     try:
-        # Tentativa principal
         main()
     except Exception as e:
-        # EM CASO DE QUALQUER ERRO, mostrar interface de erro
-        st.error("🚨 ERRO CRÍTICO NO SISTEMA")
-        st.error(f"Detalhes: {str(e)}")
-        
-        st.markdown("---")
-        st.info("""
-        **🔄 SOLUÇÕES:**
-        
-        1. **Recarregue a página** (F5 ou Ctrl+R)
-        2. **Verifique os arquivos** que está tentando processar
-        3. **Tente processar um arquivo de cada vez**
-        4. **Entre em contato com o suporte técnico**
-        
-        **📞 INFORMAÇÕES PARA SUPORTE:**
-        - Data/Hora: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}
-        - Erro: {str(e)}
-        """)
-        
-        # Botão para recarregar
-        if st.button("🔄 RECARREGAR APLICAÇÃO", type="primary", use_container_width=True):
-            st.rerun()
+        st.error(f"Erro crítico: {str(e)}")
+        st.info("Recarregue a página e tente novamente.")
+
+# ============================================================================
+# requirements.txt
+# ============================================================================
+"""
+streamlit>=1.28.0
+pandas>=2.0.0
+numpy>=1.24.0
+plotly>=5.17.0
+chardet>=5.2.0
+openpyxl>=3.1.0
+"""
