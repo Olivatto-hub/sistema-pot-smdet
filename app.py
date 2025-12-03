@@ -1,5 +1,11 @@
 # app.py - Sistema de Monitoramento de Pagamentos do POT
-# Versão 3.0 - Estável e Corrigida
+# VERSÃO 5.0 - COMPLETA COM MULTIPLOS ARQUIVOS E CONSOLIDAÇÃO
+# Funcionalidades:
+# 1. Processamento de múltiplos arquivos (CSV, TXT, Excel)
+# 2. Consolidação mensal dos pagamentos
+# 3. Análise por projeto
+# 4. Armazenamento em sessão para análise temporal
+# 5. Relatórios consolidados
 
 import streamlit as st
 import pandas as pd
@@ -8,165 +14,292 @@ import plotly.express as px
 import plotly.graph_objects as go
 from io import StringIO, BytesIO
 import warnings
-from datetime import datetime
+from datetime import datetime, timedelta
 import re
+import csv
+import os
+from pathlib import Path
+import tempfile
+import zipfile
 
 # Configurar warnings
 warnings.filterwarnings('ignore')
 
 # Configuração da página Streamlit
 st.set_page_config(
-    page_title="Sistema POT - Monitoramento de Pagamentos",
+    page_title="Sistema POT - Monitoramento Consolidado",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
 # Título principal
-st.title("📊 SISTEMA DE MONITORAMENTO DE PAGAMENTOS")
-st.subheader("Programa Operacional de Trabalho (POT)")
+st.title("📊 SISTEMA DE MONITORAMENTO DE PAGAMENTOS - POT")
+st.subheader("Consolidação Mensal e Análise por Projeto")
 st.markdown("---")
 
 # ============================================================================
-# FUNÇÕES DE PROCESSAMENTO DE DADOS - CORRIGIDAS SEM DUPLICAÇÃO
+# INICIALIZAÇÃO DE SESSÃO
+# ============================================================================
+
+def inicializar_sessao():
+    """Inicializa variáveis de sessão se não existirem"""
+    if 'dados_consolidados' not in st.session_state:
+        st.session_state.dados_consolidados = pd.DataFrame()
+    
+    if 'arquivos_processados' not in st.session_state:
+        st.session_state.arquivos_processados = []
+    
+    if 'historico_mensal' not in st.session_state:
+        st.session_state.historico_mensal = pd.DataFrame()
+    
+    if 'projetos_consolidados' not in st.session_state:
+        st.session_state.projetos_consolidados = pd.DataFrame()
+
+# ============================================================================
+# FUNÇÕES DE PROCESSAMENTO DE DADOS
 # ============================================================================
 
 def limpar_valor_monetario(valor):
     """
-    Limpa e converte valores monetários brasileiros para float.
-    CORREÇÃO: Não duplica valores, trata corretamente.
+    Converte valores no formato brasileiro para float
+    Suporta: R$ 1.027,18 | 1.027,18 | 1027,18 | 1027.18
     """
-    if pd.isna(valor) or valor == '' or str(valor).strip() in ['nan', 'None', 'NaT', 'NULL', 'null']:
+    if pd.isna(valor) or valor == '' or str(valor).strip() in ['nan', 'None', 'NaT', 'NULL', 'null', 'NaN', 'N/A']:
         return np.nan
     
     try:
-        # Converter para string
         str_valor = str(valor).strip()
         
-        # Remover R$, $, espaços e aspas
-        str_valor = re.sub(r'[R\$\s\'\"\\]', '', str_valor)
+        # Remover R$, espaços e aspas
+        str_valor = re.sub(r'^R\$\s*', '', str_valor)
+        str_valor = re.sub(r'[R\$\s\'\"]', '', str_valor)
         
-        # Se já for float ou int, retornar
+        if str_valor == '':
+            return np.nan
+        
+        # Se já é número (float ou int)
+        if isinstance(valor, (int, float)):
+            return float(valor)
+        
+        # Formato brasileiro: 1.027,18 ou 272.486,06
+        if ',' in str_valor:
+            if '.' in str_valor:
+                # Formato com separadores de milhar e decimal
+                # Contar dígitos após vírgula
+                partes = str_valor.split(',')
+                if len(partes) == 2 and len(partes[1]) <= 2:
+                    # Remover pontos de milhar, manter vírgula decimal
+                    valor_sem_milhar = str_valor.replace('.', '')
+                    valor_final = valor_sem_milhar.replace(',', '.')
+                    return float(valor_final)
+            else:
+                # Apenas vírgula decimal, sem pontos de milhar
+                valor_final = str_valor.replace(',', '.')
+                return float(valor_final)
+        
+        # Formato internacional ou apenas números
+        if '.' in str_valor:
+            # Se tem múltiplos pontos, pode ser milhar.internacional
+            if str_valor.count('.') > 1:
+                # Verificar se último ponto tem 2-3 dígitos após
+                ultimo_ponto = str_valor.rfind('.')
+                digitos_apos = len(str_valor) - ultimo_ponto - 1
+                if digitos_apos in [2, 3]:
+                    # Provavelmente formato internacional com decimal
+                    parte_inteira = str_valor[:ultimo_ponto].replace('.', '')
+                    parte_decimal = str_valor[ultimo_ponto+1:]
+                    valor_final = parte_inteira + '.' + parte_decimal
+                    return float(valor_final)
+            return float(str_valor)
+        
+        # Apenas números inteiros
         if str_valor.replace('.', '', 1).isdigit():
             return float(str_valor)
         
-        # Verificar padrão brasileiro: 1.593,90
-        if '.' in str_valor and ',' in str_valor:
-            # Contar quantos pontos tem - se tiver mais de 1, são milhares
-            if str_valor.count('.') > 1:
-                # Remover todos os pontos de milhar
-                str_valor = str_valor.replace('.', '')
-            
-            # Substituir vírgula decimal por ponto
-            str_valor = str_valor.replace(',', '.')
-            return float(str_valor)
+        # Tentar extrair números
+        numeros = re.findall(r'[\d,\.]+', str_valor)
+        if numeros:
+            primeiro_num = numeros[0]
+            if ',' in primeiro_num:
+                primeiro_num = primeiro_num.replace('.', '').replace(',', '.')
+            return float(primeiro_num)
         
-        # Verificar padrão com apenas vírgula: 1593,90
-        elif ',' in str_valor:
-            str_valor = str_valor.replace(',', '.')
-            return float(str_valor)
+        return np.nan
         
-        # Se chegou aqui, tentar converter diretamente
-        return float(str_valor)
-        
-    except (ValueError, TypeError):
+    except Exception:
         return np.nan
 
-def processar_arquivo_simples(uploaded_file):
+def extrair_mes_referencia(nome_arquivo, df):
     """
-    Processa arquivo de forma simples e segura sem duplicação.
+    Extrai o mês de referência do arquivo
+    Ordem de prioridade:
+    1. Coluna 'mes_referencia' no DataFrame
+    2. Coluna 'data_pagto' no DataFrame
+    3. Nome do arquivo (ex: SETEMBRO, OUTUBRO, etc.)
+    4. Data de modificação do arquivo
     """
-    try:
-        # Detectar tipo de arquivo
-        if uploaded_file.name.lower().endswith('.csv'):
-            # Tentar diferentes encodings
-            raw_data = uploaded_file.getvalue()
-            
-            # Primeira tentativa: UTF-8
+    meses_ptbr = {
+        'JANEIRO': 1, 'FEVEREIRO': 2, 'MARÇO': 3, 'MARCO': 3,
+        'ABRIL': 4, 'MAIO': 5, 'JUNHO': 6, 'JULHO': 7,
+        'AGOSTO': 8, 'SETEMBRO': 9, 'OUTUBRO': 10,
+        'NOVEMBRO': 11, 'DEZEMBRO': 12
+    }
+    
+    # 1. Verificar coluna 'mes_referencia' no DataFrame
+    if 'mes_referencia' in df.columns:
+        primeiro_valor = df['mes_referencia'].dropna().iloc[0] if len(df['mes_referencia'].dropna()) > 0 else None
+        if primeiro_valor:
             try:
-                content = raw_data.decode('utf-8-sig')
+                if isinstance(primeiro_valor, str):
+                    for mes_nome, mes_num in meses_ptbr.items():
+                        if mes_nome in primeiro_valor.upper():
+                            return mes_num, mes_nome.capitalize()
+                
+                # Tentar converter data
+                data_ref = pd.to_datetime(primeiro_valor, errors='coerce')
+                if pd.notna(data_ref):
+                    return data_ref.month, data_ref.strftime('%B').upper()
+            except:
+                pass
+    
+    # 2. Verificar coluna 'data_pagto'
+    if 'data_pagto' in df.columns:
+        datas_validas = df['data_pagto'].dropna()
+        if len(datas_validas) > 0:
+            try:
+                # Converter para datetime
+                datas_dt = pd.to_datetime(datas_validas, errors='coerce', dayfirst=True)
+                datas_dt = datas_dt.dropna()
+                if len(datas_dt) > 0:
+                    mes_comum = datas_dt.iloc[0].month
+                    mes_nome = datas_dt.iloc[0].strftime('%B').upper()
+                    return mes_comum, mes_nome
+            except:
+                pass
+    
+    # 3. Extrair do nome do arquivo
+    nome_upper = nome_arquivo.upper()
+    for mes_nome, mes_num in meses_ptbr.items():
+        if mes_nome in nome_upper:
+            return mes_num, mes_nome.capitalize()
+    
+    # 4. Data atual como fallback
+    mes_atual = datetime.now().month
+    mes_nome_atual = datetime.now().strftime('%B').upper()
+    return mes_atual, mes_nome_atual
+
+def processar_arquivo_csv(uploaded_file):
+    """Processa arquivo CSV específico do POT"""
+    try:
+        # Ler conteúdo
+        raw_data = uploaded_file.getvalue()
+        
+        # Tentar diferentes encodings
+        encodings = ['utf-8-sig', 'latin-1', 'cp1252', 'utf-8', 'iso-8859-1']
+        content = None
+        
+        for encoding in encodings:
+            try:
+                content = raw_data.decode(encoding)
+                break
             except UnicodeDecodeError:
-                # Segunda tentativa: Latin-1
-                try:
-                    content = raw_data.decode('latin-1')
-                except UnicodeDecodeError:
-                    # Terceira tentativa: CP1252 (Windows)
-                    content = raw_data.decode('cp1252')
-            
-            # Detectar delimitador
-            sample = content[:1000]
-            if ';' in sample:
-                sep = ';'
-            else:
-                sep = ','
-            
-            # Ler CSV
-            df = pd.read_csv(StringIO(content), sep=sep, dtype=str, na_values=['', 'NA', 'N/A', 'null'])
-            
-        elif uploaded_file.name.lower().endswith(('.xlsx', '.xls')):
-            # Ler Excel
-            df = pd.read_excel(uploaded_file, dtype=str, na_values=['', 'NA', 'N/A', 'null'])
+                continue
+        
+        if content is None:
+            return None, "❌ Não foi possível decodificar o arquivo"
+        
+        # Remover BOM se existir
+        content = content.lstrip('\ufeff')
+        
+        # Detectar delimitador
+        first_lines = content.split('\n', 10)
+        for line in first_lines:
+            if ';' in line and line.count(';') > line.count(','):
+                delimiter = ';'
+                break
+            elif ',' in line:
+                delimiter = ','
+                break
         else:
-            return None, "❌ Formato não suportado. Use CSV ou Excel."
+            delimiter = ';'  # Padrão
         
-        # Renomear colunas para minúsculo
-        df.columns = [str(col).strip().lower() for col in df.columns]
+        # Ler CSV manualmente para controle
+        reader = csv.reader(StringIO(content), delimiter=delimiter)
+        rows = list(reader)
         
-        # Mapeamento de colunas comum
+        if len(rows) < 2:
+            return None, "❌ Arquivo vazio ou sem dados válidos"
+        
+        # Remover linhas que são totais (muitos campos vazios no início)
+        rows_validos = []
+        for row in rows:
+            if len(row) > 5:
+                # Contar campos não vazios nos primeiros 5
+                campos_preenchidos = sum(1 for campo in row[:5] if str(campo).strip() not in ['', 'nan', 'NaN', 'None'])
+                if campos_preenchidos >= 3:  # Pelo menos 3 campos preenchidos
+                    # Verificar se não é linha de total
+                    if not any('R$' in str(campo) and ';' * 10 in str(campo) for campo in row):
+                        rows_validos.append(row)
+        
+        if len(rows_validos) < 2:
+            return None, "❌ Não há dados suficientes após limpeza"
+        
+        # Criar DataFrame
+        headers = [str(h).strip().lower() for h in rows_validos[0]]
+        data_rows = rows_validos[1:]
+        
+        # Garantir que todas as linhas tenham o mesmo número de colunas
+        max_cols = len(headers)
+        data_rows_padded = []
+        for row in data_rows:
+            if len(row) < max_cols:
+                row = row + [''] * (max_cols - len(row))
+            elif len(row) > max_cols:
+                row = row[:max_cols]
+            data_rows_padded.append(row)
+        
+        df = pd.DataFrame(data_rows_padded, columns=headers)
+        
+        # Padronizar nomes de colunas
         mapeamento = {
             'ordem': 'ordem',
             'projeto': 'projeto',
+            'num cartao': 'cartao',
             'cartão': 'cartao',
-            'cartao': 'cartao',
             'nº cartão': 'cartao',
             'n° cartão': 'cartao',
             'nome': 'nome',
             'distrito': 'distrito',
-            'agência': 'agencia',
             'agencia': 'agencia',
+            'agência': 'agencia',
             'rg': 'rg',
+            'cpf': 'cpf',
             'valor total': 'valor_total',
             'valor desconto': 'valor_desconto',
             'valor pagto': 'valor_pagto',
             'data pagto': 'data_pagto',
             'valor dia': 'valor_dia',
-            'dias a apagar': 'dias_apagar',
-            'cpf': 'cpf',
-            'gerenciadora': 'gerenciadora'
+            'dias validos': 'dias_apagar',
+            'dias a pagar': 'dias_apagar',
+            'dias': 'dias_apagar',
+            'gerenciadora': 'gerenciadora',
+            'mes referencia': 'mes_referencia',
+            'mes': 'mes_referencia',
+            'referencia': 'mes_referencia'
         }
         
-        # Aplicar mapeamento
-        for col in df.columns:
-            for key, value in mapeamento.items():
-                if key in col:
-                    df = df.rename(columns={col: value})
-                    break
+        for old_name, new_name in mapeamento.items():
+            if old_name in df.columns:
+                df = df.rename(columns={old_name: new_name})
         
-        # Garantir que temos colunas essenciais
-        colunas_essenciais = ['nome', 'valor_pagto']
-        colunas_faltando = [col for col in colunas_essenciais if col not in df.columns]
-        
-        if colunas_faltando:
-            st.warning(f"⚠️ Colunas não encontradas: {', '.join(colunas_faltando)}")
-        
-        # Processar colunas monetárias UMA ÚNICA VEZ
+        # Processar colunas monetárias
         colunas_monetarias = ['valor_total', 'valor_desconto', 'valor_pagto', 'valor_dia']
+        for col in colunas_monetarias:
+            if col in df.columns:
+                df[col] = df[col].apply(limpar_valor_monetario)
         
-        for coluna in colunas_monetarias:
-            if coluna in df.columns:
-                # Aplicar limpeza diretamente
-                df[coluna] = df[coluna].apply(limpar_valor_monetario)
-                
-                # VERIFICAÇÃO CRÍTICA: Verificar se não houve duplicação
-                if not df[coluna].isna().all():
-                    # Verificar valores absurdamente altos (possível duplicação)
-                    valores_validos = df[coluna].dropna()
-                    if len(valores_validos) > 0:
-                        media = valores_validos.mean()
-                        if media > 10000:  # Média acima de 10k é suspeita
-                            st.warning(f"⚠️ Valores suspeitamente altos na coluna '{coluna}'. Verifique possível duplicação.")
-        
-        # Processar outras colunas numéricas
+        # Processar colunas numéricas
         if 'dias_apagar' in df.columns:
             df['dias_apagar'] = pd.to_numeric(df['dias_apagar'], errors='coerce')
         
@@ -175,675 +308,916 @@ def processar_arquivo_simples(uploaded_file):
         
         # Processar datas
         if 'data_pagto' in df.columns:
-            # Tentar converter data
             df['data_pagto'] = pd.to_datetime(df['data_pagto'], dayfirst=True, errors='coerce')
         
-        # Limpar strings
-        colunas_string = ['nome', 'projeto', 'gerenciadora', 'agencia', 'rg', 'cpf']
-        
-        for col in colunas_string:
-            if col in df.columns:
-                df[col] = df[col].astype(str).str.strip()
-                # Substituir valores nulos por string vazia
-                df[col] = df[col].replace(['nan', 'None', 'NaT', 'NULL', 'null', 'NaN'], '')
-        
-        # Padronizar gerenciadora
+        # Processar gerenciadora
         if 'gerenciadora' in df.columns:
-            df['gerenciadora'] = df['gerenciadora'].str.upper().str.strip()
+            df['gerenciadora'] = df['gerenciadora'].astype(str).str.strip().str.upper()
             df['gerenciadora'] = df['gerenciadora'].replace({
                 'REDE CIDAD�': 'REDE CIDADÃO',
                 'REDE CIDADAO': 'REDE CIDADÃO',
                 'REDE': 'REDE CIDADÃO',
                 'VISTA': 'VISTA',
-                '': 'NÃO INFORMADO'
+                '': 'NÃO INFORMADO',
+                'NAN': 'NÃO INFORMADO',
+                'NONE': 'NÃO INFORMADO'
             })
         
-        # Log de processamento
-        st.info(f"✅ Processado: {len(df)} registros, {df['valor_pagto'].notna().sum() if 'valor_pagto' in df.columns else 0} valores monetários válidos")
+        # Limpar strings
+        colunas_texto = ['nome', 'projeto', 'agencia', 'rg', 'cartao', 'cpf']
+        for col in colunas_texto:
+            if col in df.columns:
+                df[col] = df[col].astype(str).str.strip()
+                df[col] = df[col].replace(['nan', 'None', 'NaT', 'NULL', 'null', 'NaN'], '')
         
-        return df, "✅ Arquivo processado com sucesso!"
+        # Adicionar coluna com nome do arquivo original
+        df['arquivo_origem'] = uploaded_file.name
         
-    except Exception as e:
-        return None, f"❌ Erro ao processar arquivo: {str(e)}"
-
-# ============================================================================
-# FUNÇÕES DE DETECÇÃO DE PROBLEMAS DETALHADOS
-# ============================================================================
-
-def detectar_problemas_detalhados(df):
-    """
-    Detecta problemas detalhados incluindo CPFs e Cartões duplicados com nomes diferentes.
-    """
-    problemas = {
-        'dados_faltantes': [],
-        'duplicidades_criticas': [],
-        'inconsistencias': [],
-        'valores_estranhos': [],
-        'alertas': []
-    }
+        # Extrair mês de referência
+        mes_num, mes_nome = extrair_mes_referencia(uploaded_file.name, df)
+        df['mes_numero'] = mes_num
+        df['mes_nome'] = mes_nome
+        df['ano'] = datetime.now().year
+        
+        return df, f"✅ Arquivo processado: {len(df)} registros (Mês: {mes_nome})"
     
+    except Exception as e:
+        return None, f"❌ Erro ao processar CSV: {str(e)}"
+
+def processar_arquivo_excel(uploaded_file):
+    """Processa arquivo Excel"""
     try:
-        # 1. DADOS FALTANTES CRÍTICOS
-        if 'nome' in df.columns:
-            nomes_vazios = df['nome'].isna().sum() + (df['nome'] == '').sum()
-            if nomes_vazios > 0:
-                problemas['dados_faltantes'].append({
-                    'tipo': 'NOMES EM BRANCO',
-                    'quantidade': nomes_vazios,
-                    'gravidade': 'ALTA',
-                    'descricao': 'Registros sem nome do beneficiário',
-                    'exemplo': df[df['nome'].isna() | (df['nome'] == '')].head(3).to_dict('records') if len(df) > 0 else []
-                })
+        # Ler todas as abas
+        xls = pd.ExcelFile(uploaded_file)
         
-        if 'cpf' in df.columns:
-            # CPFs vazios
-            cpfs_vazios = df['cpf'].isna().sum() + (df['cpf'] == '').sum()
-            if cpfs_vazios > 0:
-                problemas['dados_faltantes'].append({
-                    'tipo': 'CPFs EM BRANCO',
-                    'quantidade': cpfs_vazios,
-                    'gravidade': 'ALTA',
-                    'descricao': 'Registros sem CPF do beneficiário',
-                    'exemplo': df[df['cpf'].isna() | (df['cpf'] == '')].head(3).to_dict('records') if len(df) > 0 else []
-                })
-            
-            # CPFs inválidos (menos de 11 dígitos)
-            def cpf_valido(cpf):
-                if pd.isna(cpf) or cpf == '':
-                    return False
-                cpf_str = str(cpf)
-                # Remover caracteres não numéricos
-                cpf_str = re.sub(r'\D', '', cpf_str)
-                return len(cpf_str) == 11
-            
-            cpfs_invalidos = (~df['cpf'].apply(cpf_valido)).sum()
-            if cpfs_invalidos > 0:
-                problemas['dados_faltantes'].append({
-                    'tipo': 'CPFs INVÁLIDOS',
-                    'quantidade': cpfs_invalidos,
-                    'gravidade': 'ALTA',
-                    'descricao': 'CPFs com formato inválido (menos de 11 dígitos)',
-                    'exemplo': df[~df['cpf'].apply(cpf_valido)].head(3).to_dict('records') if len(df) > 0 else []
-                })
+        # Procurar aba com dados
+        sheet_names = xls.sheet_names
+        df_final = None
         
-        # 2. DUPLICIDADES CRÍTICAS
-        if 'cpf' in df.columns and 'nome' in df.columns:
-            # Limpar CPFs para análise
-            df_clean = df.copy()
-            df_clean['cpf_limpo'] = df_clean['cpf'].apply(lambda x: re.sub(r'\D', '', str(x)) if pd.notna(x) else '')
-            
-            # Filtrar CPFs não vazios
-            df_cpf_valido = df_clean[df_clean['cpf_limpo'] != '']
-            
-            # Encontrar CPFs duplicados
-            cpfs_duplicados = df_cpf_valido['cpf_limpo'][df_cpf_valido['cpf_limpo'].duplicated(keep=False)].unique()
-            
-            for cpf in cpfs_duplicados[:5]:  # Analisar apenas os 5 primeiros para exemplo
-                registros = df_clean[df_clean['cpf_limpo'] == cpf]
-                nomes_unicos = registros['nome'].nunique()
+        for sheet in sheet_names:
+            try:
+                df = pd.read_excel(xls, sheet_name=sheet, dtype=str)
                 
-                if nomes_unicos > 1:
-                    problemas['duplicidades_criticas'].append({
-                        'tipo': 'CPF COM NOMES DIFERENTES',
-                        'quantidade': len(registros),
-                        'gravidade': 'CRÍTICA',
-                        'descricao': f'CPF {cpf} aparece com {nomes_unicos} nomes diferentes',
-                        'exemplo': registros[['cpf', 'nome', 'agencia', 'valor_pagto']].head(3).to_dict('records')
-                    })
+                # Verificar se tem dados mínimos
+                if len(df) > 0 and len(df.columns) >= 5:
+                    df_final = df
+                    break
+            except:
+                continue
         
-        if 'cartao' in df.columns and 'nome' in df.columns:
-            # Limpar números de cartão
-            df_clean = df.copy()
-            df_clean['cartao_limpo'] = df_clean['cartao'].apply(lambda x: str(x).strip() if pd.notna(x) else '')
-            
-            # Filtrar cartões não vazios
-            df_cartao_valido = df_clean[df_clean['cartao_limpo'] != '']
-            
-            # Encontrar cartões duplicados
-            cartoes_duplicados = df_cartao_valido['cartao_limpo'][df_cartao_valido['cartao_limpo'].duplicated(keep=False)].unique()
-            
-            for cartao in cartoes_duplicados[:5]:  # Analisar apenas os 5 primeiros
-                registros = df_clean[df_clean['cartao_limpo'] == cartao]
-                nomes_unicos = registros['nome'].nunique()
-                
-                if nomes_unicos > 1:
-                    problemas['duplicidades_criticas'].append({
-                        'tipo': 'CARTÃO COM NOMES DIFERENTES',
-                        'quantidade': len(registros),
-                        'gravidade': 'CRÍTICA',
-                        'descricao': f'Cartão {cartao} aparece com {nomes_unicos} nomes diferentes',
-                        'exemplo': registros[['cartao', 'nome', 'agencia', 'valor_pagto']].head(3).to_dict('records')
-                    })
+        if df_final is None:
+            return None, "❌ Nenhuma aba com dados válidos encontrada"
         
-        # 3. VALORES ESTRANHOS
-        if 'valor_pagto' in df.columns:
-            valores_validos = df['valor_pagto'].dropna()
-            
-            if len(valores_validos) > 0:
-                # Valores zerados
-                valores_zerados = (valores_validos == 0).sum()
-                if valores_zerados > 0:
-                    problemas['valores_estranhos'].append({
-                        'tipo': 'VALORES ZERADOS',
-                        'quantidade': valores_zerados,
-                        'gravidade': 'MÉDIA',
-                        'descricao': 'Pagamentos com valor zero',
-                        'exemplo': df[df['valor_pagto'] == 0].head(3).to_dict('records') if 'nome' in df.columns else []
-                    })
-                
-                # Valores negativos
-                valores_negativos = (valores_validos < 0).sum()
-                if valores_negativos > 0:
-                    problemas['valores_estranhos'].append({
-                        'tipo': 'VALORES NEGATIVOS',
-                        'quantidade': valores_negativos,
-                        'gravidade': 'ALTA',
-                        'descricao': 'Pagamentos com valor negativo',
-                        'exemplo': df[df['valor_pagto'] < 0].head(3).to_dict('records') if 'nome' in df.columns else []
-                    })
-                
-                # Valores muito altos (acima de 99º percentil)
-                if len(valores_validos) > 10:
-                    limite_alto = valores_validos.quantile(0.99)
-                    valores_muito_altos = (valores_validos > limite_alto).sum()
-                    
-                    if valores_muito_altos > 0:
-                        problemas['valores_estranhos'].append({
-                            'tipo': 'VALORES MUITO ALTOS',
-                            'quantidade': valores_muito_altos,
-                            'gravidade': 'ALTA',
-                            'descricao': f'Valores acima de R$ {limite_alto:,.2f} (99º percentil)',
-                            'exemplo': df[df['valor_pagto'] > limite_alto].head(3).to_dict('records') if 'nome' in df.columns else []
-                        })
+        # Processar colunas (similar ao CSV)
+        df_final.columns = [str(col).strip().lower() for col in df_final.columns]
         
-        # 4. INCONSISTÊNCIAS
-        if all(col in df.columns for col in ['valor_total', 'valor_desconto', 'valor_pagto']):
-            # Verificar se Valor Total = Desconto + Pagto
-            mask = df['valor_total'].notna() & df['valor_desconto'].notna() & df['valor_pagto'].notna()
-            
-            if mask.any():
-                diferenca = (df.loc[mask, 'valor_total'] - (df.loc[mask, 'valor_desconto'] + df.loc[mask, 'valor_pagto'])).abs()
-                inconsistentes = (diferenca > 0.01).sum()
-                
-                if inconsistentes > 0:
-                    problemas['inconsistencias'].append({
-                        'tipo': 'INCONSISTÊNCIA NOS VALORES',
-                        'quantidade': inconsistentes,
-                        'gravidade': 'CRÍTICA',
-                        'descricao': 'Valor Total ≠ Valor Desconto + Valor Pagto',
-                        'exemplo': df[mask & (diferenca > 0.01)].head(3).to_dict('records') if 'nome' in df.columns else []
-                    })
+        # Padronizar nomes de colunas
+        mapeamento = {
+            'ordem': 'ordem',
+            'projeto': 'projeto',
+            'num cartao': 'cartao',
+            'cartão': 'cartao',
+            'nome': 'nome',
+            'agencia': 'agencia',
+            'valor total': 'valor_total',
+            'valor pagto': 'valor_pagto',
+            'data pagto': 'data_pagto',
+            'gerenciadora': 'gerenciadora'
+        }
         
-        # 5. ALERTAS
-        if 'data_pagto' in df.columns:
-            datas_futuras = (df['data_pagto'] > pd.Timestamp.now()).sum()
-            if datas_futuras > 0:
-                problemas['alertas'].append({
-                    'tipo': 'DATAS FUTURAS',
-                    'quantidade': datas_futuras,
-                    'gravidade': 'MÉDIA',
-                    'descricao': 'Pagamentos com data no futuro',
-                    'exemplo': df[df['data_pagto'] > pd.Timestamp.now()].head(3).to_dict('records') if 'nome' in df.columns else []
-                })
+        for old_name, new_name in mapeamento.items():
+            if old_name in df_final.columns:
+                df_final = df_final.rename(columns={old_name: new_name})
         
-        return problemas
+        # Processar colunas monetárias
+        colunas_monetarias = ['valor_total', 'valor_pagto']
+        for col in colunas_monetarias:
+            if col in df_final.columns:
+                df_final[col] = df_final[col].apply(limpar_valor_monetario)
+        
+        # Adicionar coluna com nome do arquivo
+        df_final['arquivo_origem'] = uploaded_file.name
+        
+        # Extrair mês de referência
+        mes_num, mes_nome = extrair_mes_referencia(uploaded_file.name, df_final)
+        df_final['mes_numero'] = mes_num
+        df_final['mes_nome'] = mes_nome
+        df_final['ano'] = datetime.now().year
+        
+        return df_final, f"✅ Excel processado: {len(df_final)} registros (Mês: {mes_nome})"
     
     except Exception as e:
-        st.error(f"Erro na detecção de problemas: {e}")
-        return problemas
+        return None, f"❌ Erro ao processar Excel: {str(e)}"
 
-# ============================================================================
-# FUNÇÕES DE ANÁLISE E CÁLCULOS
-# ============================================================================
-
-def calcular_metricas_corretas(df):
-    """
-    Calcula métricas corretas sem duplicação.
-    """
-    metricas = {}
+def processar_multiplos_arquivos(uploaded_files):
+    """Processa múltiplos arquivos e consolida os dados"""
+    todos_dados = []
+    resultados = []
     
-    try:
-        metricas['total_registros'] = len(df)
-        
-        if 'valor_pagto' in df.columns:
-            # Usar apenas valores válidos
-            valores_validos = df['valor_pagto'].dropna()
+    for uploaded_file in uploaded_files:
+        try:
+            nome_arquivo = uploaded_file.name.lower()
             
-            if len(valores_validos) > 0:
-                metricas['valor_total'] = float(valores_validos.sum())
-                metricas['valor_medio'] = float(valores_validos.mean())
-                metricas['valor_min'] = float(valores_validos.min())
-                metricas['valor_max'] = float(valores_validos.max())
-                metricas['qtd_valores_validos'] = len(valores_validos)
-                
-                # VERIFICAÇÃO: Se valor total parece duplicado
-                if metricas['valor_total'] > 10000000:  # Acima de 10 milhões
-                    media = metricas['valor_medio']
-                    if media > 5000:  # Média acima de 5k é suspeita
-                        st.warning("⚠️ Valores possivelmente duplicados detectados!")
+            if nome_arquivo.endswith(('.csv', '.txt')):
+                df, mensagem = processar_arquivo_csv(uploaded_file)
+            elif nome_arquivo.endswith(('.xlsx', '.xls')):
+                df, mensagem = processar_arquivo_excel(uploaded_file)
             else:
-                metricas['valor_total'] = 0.0
-                metricas['valor_medio'] = 0.0
-                metricas['valor_min'] = 0.0
-                metricas['valor_max'] = 0.0
-                metricas['qtd_valores_validos'] = 0
-        
-        if 'agencia' in df.columns:
-            agencias_validas = df['agencia'].dropna()
-            metricas['total_agencias'] = agencias_validas.nunique() if len(agencias_validas) > 0 else 0
-        
-        if 'gerenciadora' in df.columns:
-            gerenciadoras_validas = df['gerenciadora'].dropna()
-            if len(gerenciadoras_validas) > 0:
-                metricas['total_gerenciadoras'] = gerenciadoras_validas.nunique()
-                contagem = gerenciadoras_validas.value_counts()
-                metricas['total_vista'] = int(contagem.get('VISTA', 0))
-                metricas['total_rede'] = int(contagem.get('REDE CIDADÃO', 0))
+                resultados.append(f"❌ Formato não suportado: {uploaded_file.name}")
+                continue
+            
+            if df is not None:
+                todos_dados.append(df)
+                resultados.append(mensagem)
             else:
-                metricas['total_gerenciadoras'] = 0
-                metricas['total_vista'] = 0
-                metricas['total_rede'] = 0
+                resultados.append(f"❌ Falha: {uploaded_file.name} - {mensagem}")
         
-        if 'dias_apagar' in df.columns:
-            dias_validos = df['dias_apagar'].dropna()
-            metricas['dias_medio'] = float(dias_validos.mean()) if len(dias_validos) > 0 else 0.0
-        
-        if 'valor_dia' in df.columns:
-            valor_dia_valido = df['valor_dia'].dropna()
-            metricas['valor_dia_medio'] = float(valor_dia_valido.mean()) if len(valor_dia_valido) > 0 else 0.0
-        
-        return metricas
+        except Exception as e:
+            resultados.append(f"❌ Erro em {uploaded_file.name}: {str(e)}")
     
-    except Exception as e:
-        st.error(f"Erro nos cálculos: {e}")
-        return {}
+    if todos_dados:
+        # Consolidar todos os DataFrames
+        dados_consolidados = pd.concat(todos_dados, ignore_index=True)
+        
+        # Garantir colunas essenciais
+        colunas_essenciais = ['projeto', 'valor_pagto', 'mes_nome', 'mes_numero', 'ano', 'arquivo_origem']
+        for col in colunas_essenciais:
+            if col not in dados_consolidados.columns:
+                if col == 'projeto':
+                    dados_consolidados['projeto'] = 'NÃO INFORMADO'
+                elif col == 'valor_pagto':
+                    dados_consolidados['valor_pagto'] = 0.0
+        
+        return dados_consolidados, resultados
+    else:
+        return pd.DataFrame(), resultados
 
-def gerar_relatorio_agencia_correto(df):
-    """Gera relatório por agência com cálculos corretos."""
-    if 'agencia' not in df.columns or 'valor_pagto' not in df.columns:
+# ============================================================================
+# FUNÇÕES DE ANÁLISE E CONSOLIDAÇÃO
+# ============================================================================
+
+def calcular_consolidado_mensal(df):
+    """Calcula consolidação mensal dos pagamentos"""
+    if df.empty:
         return pd.DataFrame()
     
     try:
-        # Filtrar valores válidos
-        df_valido = df[df['agencia'].notna() & df['valor_pagto'].notna()]
+        # Agrupar por mês e ano
+        if 'mes_nome' in df.columns and 'ano' in df.columns:
+            # Criar coluna de período
+            df['periodo'] = df['mes_nome'] + '/' + df['ano'].astype(str)
+            
+            # Agrupar por período
+            consolidado = df.groupby('periodo').agg(
+                quantidade_pagamentos=('valor_pagto', 'count'),
+                valor_total=('valor_pagto', 'sum'),
+                valor_medio=('valor_pagto', 'mean'),
+                quantidade_projetos=('projeto', lambda x: x.nunique()),
+                quantidade_agencias=('agencia', lambda x: x.nunique() if 'agencia' in df.columns else 0),
+                arquivos=('arquivo_origem', lambda x: ', '.join(x.unique()[:3]))
+            ).round(2)
+            
+            # Ordenar por período
+            consolidado = consolidado.sort_index()
+            
+            return consolidado
         
-        if len(df_valido) == 0:
+        else:
+            # Se não tem mês/ano, agrupar por arquivo
+            consolidado = df.groupby('arquivo_origem').agg(
+                quantidade_pagamentos=('valor_pagto', 'count'),
+                valor_total=('valor_pagto', 'sum'),
+                valor_medio=('valor_pagto', 'mean')
+            ).round(2)
+            
+            return consolidado
+    
+    except Exception as e:
+        st.error(f"Erro no cálculo mensal: {e}")
+        return pd.DataFrame()
+
+def calcular_consolidado_projetos(df):
+    """Calcula consolidação por projeto"""
+    if df.empty:
+        return pd.DataFrame()
+    
+    try:
+        if 'projeto' in df.columns:
+            # Agrupar por projeto
+            por_projeto = df.groupby('projeto').agg(
+                quantidade_pagamentos=('valor_pagto', 'count'),
+                valor_total=('valor_pagto', 'sum'),
+                valor_medio=('valor_pagto', 'mean'),
+                quantidade_meses=('mes_nome', lambda x: x.nunique() if 'mes_nome' in df.columns else 1),
+                quantidade_beneficiarios=('nome', lambda x: x.nunique() if 'nome' in df.columns else 0),
+                primeira_data=('data_pagto', 'min') if 'data_pagto' in df.columns else None,
+                ultima_data=('data_pagto', 'max') if 'data_pagto' in df.columns else None
+            ).round(2)
+            
+            # Remover agregações que deram None
+            por_projeto = por_projeto.dropna(axis=1, how='all')
+            
+            # Ordenar por valor total
+            por_projeto = por_projeto.sort_values('valor_total', ascending=False)
+            
+            return por_projeto
+        else:
             return pd.DataFrame()
+    
+    except Exception as e:
+        st.error(f"Erro no cálculo por projeto: {e}")
+        return pd.DataFrame()
+
+def calcular_estatisticas_detalhadas(df):
+    """Calcula estatísticas detalhadas dos dados consolidados"""
+    estatisticas = {}
+    
+    if df.empty:
+        return estatisticas
+    
+    try:
+        # Estatísticas gerais
+        estatisticas['total_registros'] = len(df)
+        estatisticas['total_arquivos'] = df['arquivo_origem'].nunique() if 'arquivo_origem' in df.columns else 1
         
-        # Agrupar e calcular
-        relatorio = df_valido.groupby('agencia').agg(
-            qtd_beneficiarios=('nome', 'count'),
-            valor_total=('valor_pagto', 'sum'),
-            valor_medio=('valor_pagto', 'mean'),
-            valor_min=('valor_pagto', 'min'),
-            valor_max=('valor_pagto', 'max')
+        if 'valor_pagto' in df.columns:
+            valores = df['valor_pagto'].dropna()
+            if len(valores) > 0:
+                estatisticas['valor_total'] = float(valores.sum())
+                estatisticas['valor_medio'] = float(valores.mean())
+                estatisticas['valor_min'] = float(valores.min())
+                estatisticas['valor_max'] = float(valores.max())
+                estatisticas['desvio_padrao'] = float(valores.std())
+                estatisticas['quantidade_valores_validos'] = len(valores)
+        
+        # Estatísticas por mês
+        if 'mes_nome' in df.columns and 'ano' in df.columns:
+            meses_unicos = df[['mes_nome', 'ano']].drop_duplicates()
+            estatisticas['quantidade_meses'] = len(meses_unicos)
+            estatisticas['meses'] = [f"{row['mes_nome']}/{row['ano']}" for _, row in meses_unicos.iterrows()]
+        
+        # Estatísticas por projeto
+        if 'projeto' in df.columns:
+            projetos_unicos = df['projeto'].nunique()
+            estatisticas['quantidade_projetos'] = projetos_unicos
+        
+        # Estatísticas por agência
+        if 'agencia' in df.columns:
+            agencias_unicas = df['agencia'].nunique()
+            estatisticas['quantidade_agencias'] = agencias_unicas
+        
+        # Estatísticas por gerenciadora
+        if 'gerenciadora' in df.columns:
+            gerenciadoras = df['gerenciadora'].value_counts().to_dict()
+            estatisticas['gerenciadoras'] = gerenciadoras
+        
+        return estatisticas
+    
+    except Exception as e:
+        st.error(f"Erro nas estatísticas: {e}")
+        return estatisticas
+
+# ============================================================================
+# FUNÇÕES DE VISUALIZAÇÃO
+# ============================================================================
+
+def criar_grafico_evolucao_mensal(consolidado_mensal):
+    """Cria gráfico de evolução mensal dos pagamentos"""
+    if consolidado_mensal.empty:
+        return None
+    
+    try:
+        fig = go.Figure()
+        
+        # Adicionar barras para valor total
+        fig.add_trace(go.Bar(
+            x=consolidado_mensal.index,
+            y=consolidado_mensal['valor_total'],
+            name='Valor Total',
+            marker_color='#2E86AB',
+            text=[f'R$ {x:,.0f}' for x in consolidado_mensal['valor_total']],
+            textposition='auto'
+        ))
+        
+        # Adicionar linha para quantidade de pagamentos (eixo secundário)
+        fig.add_trace(go.Scatter(
+            x=consolidado_mensal.index,
+            y=consolidado_mensal['quantidade_pagamentos'],
+            name='Quantidade',
+            yaxis='y2',
+            mode='lines+markers',
+            line=dict(color='#FF6B6B', width=3),
+            marker=dict(size=8)
+        ))
+        
+        fig.update_layout(
+            title='Evolução Mensal dos Pagamentos',
+            xaxis_title='Período',
+            yaxis_title='Valor Total (R$)',
+            yaxis2=dict(
+                title='Quantidade de Pagamentos',
+                overlaying='y',
+                side='right'
+            ),
+            hovermode='x unified',
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1
+            )
+        )
+        
+        return fig
+    
+    except Exception as e:
+        st.error(f"Erro no gráfico de evolução: {e}")
+        return None
+
+def criar_grafico_projetos(consolidado_projetos):
+    """Cria gráfico de barras dos projetos"""
+    if consolidado_projetos.empty:
+        return None
+    
+    try:
+        # Pegar top 10 projetos por valor total
+        top_projetos = consolidado_projetos.head(10)
+        
+        fig = px.bar(
+            top_projetos,
+            x=top_projetos.index,
+            y='valor_total',
+            title='Top 10 Projetos por Valor Total',
+            labels={'valor_total': 'Valor Total (R$)', 'index': 'Projeto'},
+            text=[f'R$ {x:,.0f}' for x in top_projetos['valor_total']],
+            color='valor_total',
+            color_continuous_scale='Viridis'
+        )
+        
+        fig.update_layout(
+            xaxis_tickangle=-45,
+            showlegend=False,
+            coloraxis_showscale=False
+        )
+        
+        fig.update_traces(texttemplate='%{text}', textposition='outside')
+        
+        return fig
+    
+    except Exception as e:
+        st.error(f"Erro no gráfico de projetos: {e}")
+        return None
+
+def criar_grafico_distribuicao_mensal(df):
+    """Cria gráfico de distribuição por mês"""
+    if df.empty or 'mes_nome' not in df.columns:
+        return None
+    
+    try:
+        # Agrupar por mês para distribuição
+        por_mes = df.groupby('mes_nome').agg(
+            quantidade=('valor_pagto', 'count'),
+            valor_total=('valor_pagto', 'sum')
         ).round(2)
         
-        # Renomear colunas
-        relatorio = relatorio.rename(columns={
-            'qtd_beneficiarios': 'Qtd Beneficiários',
-            'valor_total': 'Valor Total',
-            'valor_medio': 'Valor Médio',
-            'valor_min': 'Valor Mínimo',
-            'valor_max': 'Valor Máximo'
-        })
+        # Ordenar por mês
+        ordem_meses = ['JANEIRO', 'FEVEREIRO', 'MARÇO', 'ABRIL', 'MAIO', 'JUNHO',
+                      'JULHO', 'AGOSTO', 'SETEMBRO', 'OUTUBRO', 'NOVEMBRO', 'DEZEMBRO']
         
-        # Ordenar por valor total
-        relatorio = relatorio.sort_values('Valor Total', ascending=False)
+        por_mes = por_mes.reindex([m for m in ordem_meses if m in por_mes.index])
         
-        return relatorio
+        fig = go.Figure()
+        
+        fig.add_trace(go.Bar(
+            x=por_mes.index,
+            y=por_mes['quantidade'],
+            name='Quantidade',
+            marker_color='#4ECDC4',
+            yaxis='y'
+        ))
+        
+        fig.add_trace(go.Scatter(
+            x=por_mes.index,
+            y=por_mes['valor_total'],
+            name='Valor Total',
+            yaxis='y2',
+            mode='lines+markers',
+            line=dict(color='#FF6B6B', width=3),
+            marker=dict(size=8)
+        ))
+        
+        fig.update_layout(
+            title='Distribuição por Mês',
+            xaxis_title='Mês',
+            yaxis=dict(title='Quantidade'),
+            yaxis2=dict(
+                title='Valor Total (R$)',
+                overlaying='y',
+                side='right'
+            ),
+            hovermode='x unified'
+        )
+        
+        return fig
     
     except Exception as e:
-        st.error(f"Erro no relatório: {e}")
-        return pd.DataFrame()
+        st.error(f"Erro no gráfico de distribuição: {e}")
+        return None
 
 # ============================================================================
-# INTERFACE PRINCIPAL - SIMPLIFICADA E ESTÁVEL
+# FUNÇÕES DE EXPORTAÇÃO
+# ============================================================================
+
+def exportar_dados_completos(df, consolidado_mensal, consolidado_projetos):
+    """Exporta todos os dados para Excel"""
+    try:
+        output = BytesIO()
+        
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            # Dados brutos consolidados
+            df.to_excel(writer, sheet_name='DADOS_CONSOLIDADOS', index=False)
+            
+            # Consolidação mensal
+            if not consolidado_mensal.empty:
+                consolidado_mensal.to_excel(writer, sheet_name='CONSOLIDADO_MENSAL')
+            
+            # Consolidação por projeto
+            if not consolidado_projetos.empty:
+                consolidado_projetos.to_excel(writer, sheet_name='CONSOLIDADO_PROJETOS')
+            
+            # Estatísticas
+            estatisticas = calcular_estatisticas_detalhadas(df)
+            if estatisticas:
+                df_estat = pd.DataFrame(list(estatisticas.items()), columns=['Metrica', 'Valor'])
+                df_estat.to_excel(writer, sheet_name='ESTATISTICAS', index=False)
+            
+            # Resumo executivo
+            resumo_data = {
+                'Total de Registros': [estatisticas.get('total_registros', 0)],
+                'Valor Total': [f"R$ {estatisticas.get('valor_total', 0):,.2f}"],
+                'Quantidade de Meses': [estatisticas.get('quantidade_meses', 0)],
+                'Quantidade de Projetos': [estatisticas.get('quantidade_projetos', 0)],
+                'Quantidade de Arquivos': [estatisticas.get('total_arquivos', 0)],
+                'Data de Geração': [datetime.now().strftime('%d/%m/%Y %H:%M')]
+            }
+            df_resumo = pd.DataFrame(resumo_data)
+            df_resumo.to_excel(writer, sheet_name='RESUMO_EXECUTIVO', index=False)
+        
+        excel_bytes = output.getvalue()
+        
+        return excel_bytes
+    
+    except Exception as e:
+        st.error(f"Erro na exportação: {e}")
+        return None
+
+# ============================================================================
+# INTERFACE PRINCIPAL
 # ============================================================================
 
 def main():
+    # Inicializar sessão
+    inicializar_sessao()
+    
     # ========================================================================
-    # SIDEBAR SIMPLIFICADA
+    # SIDEBAR
     # ========================================================================
     with st.sidebar:
-        st.header("📁 CARREGAR DADOS")
+        st.image("https://cdn-icons-png.flaticon.com/512/3067/3067256.png", width=100)
+        st.header("📁 CARREGAMENTO DE DADOS")
         
-        uploaded_file = st.file_uploader(
-            "Selecione o arquivo",
-            type=['csv', 'xlsx', 'xls'],
-            help="Formatos suportados: CSV ou Excel"
+        uploaded_files = st.file_uploader(
+            "Selecione os arquivos para processar",
+            type=['csv', 'txt', 'xlsx', 'xls'],
+            accept_multiple_files=True,
+            help="Você pode selecionar múltiplos arquivos de uma vez"
         )
         
         st.markdown("---")
         
         st.header("⚙️ CONFIGURAÇÕES")
+        
+        modo_processamento = st.radio(
+            "Modo de processamento:",
+            ["Adicionar aos dados existentes", "Substituir dados existentes"]
+        )
+        
+        st.markdown("---")
+        
+        st.header("📊 VISUALIZAÇÕES")
+        
+        mostrar_graficos = st.checkbox("Mostrar gráficos", True)
         mostrar_detalhes = st.checkbox("Mostrar detalhes dos dados", False)
         
         st.markdown("---")
         
-        st.header("✅ STATUS DO SISTEMA")
-        st.success("Sistema Operacional")
-        st.caption(f"Data: {datetime.now().strftime('%d/%m/%Y')}")
+        st.header("📈 STATUS ATUAL")
+        
+        if not st.session_state.dados_consolidados.empty:
+            st.success(f"✅ Dados carregados:")
+            st.info(f"""
+            - Registros: {len(st.session_state.dados_consolidados):,}
+            - Arquivos: {len(st.session_state.arquivos_processados)}
+            - Valor total: R$ {st.session_state.dados_consolidados['valor_pagto'].sum():,.2f}
+            """)
+        else:
+            st.warning("⚠️ Nenhum dado carregado ainda")
     
     # ========================================================================
     # ÁREA PRINCIPAL
     # ========================================================================
     
-    if uploaded_file is None:
+    if not uploaded_files:
         # Tela inicial
-        st.info("👋 Bem-vindo ao Sistema de Monitoramento de Pagamentos do POT")
+        st.info("👋 **Bem-vindo ao Sistema de Consolidação de Pagamentos - POT**")
         
         col1, col2 = st.columns([2, 1])
         
         with col1:
             st.markdown("""
-            ### 📋 Instruções de Uso:
+            ### 📋 Funcionalidades Principais:
             
-            1. **Carregue o arquivo** na barra lateral
-            2. **Formatos suportados:**
-               - CSV (separado por ponto-e-vírgula ou vírgula)
-               - Excel (.xlsx, .xls)
+            1. **Processamento de múltiplos arquivos**
+               - CSV, TXT, Excel
+               - Formatos brasileiros (R$ 1.027,18)
+               - Detecção automática de mês de referência
             
-            3. **Colunas importantes:**
-               - Nome, CPF, Número do Cartão
-               - Agência, Valor Pago
-               - Data Pagto, Gerenciadora
+            2. **Consolidação Inteligente**
+               - Agrupamento por mês
+               - Análise por projeto
+               - Histórico temporal
             
-            4. **Funcionalidades:**
-               - Processamento seguro sem duplicação
+            3. **Análise Avançada**
+               - Estatísticas detalhadas
+               - Gráficos interativos
                - Detecção de inconsistências
-               - Verificação de CPFs e Cartões duplicados
-               - Relatórios detalhados
+            
+            4. **Exportação Completa**
+               - Relatórios em Excel
+               - Dados consolidados
+               - Gráficos e métricas
+            
+            ### 🎯 Instruções:
+            
+            1. **Carregue os arquivos** na barra lateral
+            2. **Configure o modo** de processamento
+            3. **Analise os resultados** consolidados
+            4. **Exporte relatórios** conforme necessário
             """)
         
         with col2:
             st.markdown("""
-            ### 🛡️ Sistema Estável:
+            ### 📁 Formatos Suportados:
             
-            ✅ **Sem duplicação de valores**
-            ✅ **Processamento seguro**
-            ✅ **Detecção avançada**
-            ✅ **Interface confiável**
-            ✅ **Cálculos precisos**
+            **CSV/TXT:**
+            - Separador: ; ou ,
+            - Encoding: UTF-8, Latin-1
+            - Formato: R$ 1.027,18
+            
+            **Excel:**
+            - .xlsx, .xls
+            - Múltiplas abas
+            
+            ### 🔧 Processamento:
+            
+            ✅ **Validação automática**
+            ✅ **Consolidação por mês**
+            ✅ **Análise por projeto**
+            ✅ **Armazenamento em sessão**
+            ✅ **Exportação completa**
             """)
+        
+        # Exibir histórico se existir
+        if not st.session_state.historico_mensal.empty:
+            st.markdown("---")
+            st.subheader("📊 Histórico Carregado")
+            st.dataframe(st.session_state.historico_mensal, use_container_width=True)
         
         return
     
     # ========================================================================
-    # PROCESSAMENTO DO ARQUIVO
+    # PROCESSAMENTO DOS ARQUIVOS
     # ========================================================================
-    try:
-        with st.spinner('🔄 Processando arquivo...'):
-            df, mensagem = processar_arquivo_simples(uploaded_file)
-        
-        if df is None:
-            st.error(mensagem)
-            return
-        
-        st.success(mensagem)
-        
-        # Informações básicas
-        st.markdown(f"""
-        **📊 Informações do Arquivo:**
-        - **Arquivo:** `{uploaded_file.name}`
-        - **Total de Registros:** {len(df):,}
-        - **Colunas Processadas:** {len(df.columns)}
-        """)
-        
-        # Visualização rápida
-        with st.expander("🔍 Visualizar primeiros registros"):
-            st.dataframe(df.head(), use_container_width=True)
-        
-        st.markdown("---")
-        
-        # ====================================================================
-        # MÉTRICAS PRINCIPAIS - CÁLCULOS CORRETOS
-        # ====================================================================
-        st.header("📈 MÉTRICAS PRINCIPAIS")
-        
-        metricas = calcular_metricas_corretas(df)
-        
-        # Verificar se temos dados
-        if metricas.get('qtd_valores_validos', 0) == 0:
-            st.warning("⚠️ Nenhum valor monetário válido encontrado!")
-        
-        # Layout das métricas
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            total = metricas.get('total_registros', 0)
-            st.metric("Total de Registros", f"{total:,}")
-        
-        with col2:
-            valor_total = metricas.get('valor_total', 0)
-            st.metric("Valor Total Pago", f"R$ {valor_total:,.2f}")
-            
-            # Verificação de valor total
-            if valor_total > 10000000:
-                st.caption("⚠️ Verificar possíveis duplicações")
-        
-        with col3:
-            valor_medio = metricas.get('valor_medio', 0)
-            st.metric("Valor Médio", f"R$ {valor_medio:,.2f}")
-        
-        with col4:
-            agencias = metricas.get('total_agencias', 0)
-            st.metric("Agências Únicas", f"{agencias}")
-        
-        col5, col6, col7, col8 = st.columns(4)
-        
-        with col5:
-            dias_medio = metricas.get('dias_medio', 0)
-            st.metric("Dias Médios", f"{dias_medio:.1f}")
-        
-        with col6:
-            valor_dia_medio = metricas.get('valor_dia_medio', 0)
-            st.metric("Valor/Dia Médio", f"R$ {valor_dia_medio:.2f}")
-        
-        with col7:
-            vista = metricas.get('total_vista', 0)
-            st.metric("VISTA", f"{vista:,}")
-        
-        with col8:
-            rede = metricas.get('total_rede', 0)
-            st.metric("REDE CIDADÃO", f"{rede:,}")
-        
-        st.markdown("---")
-        
-        # ====================================================================
-        # DETECÇÃO DE PROBLEMAS DETALHADA
-        # ====================================================================
-        st.header("🔍 DETECÇÃO DE PROBLEMAS E INCONSISTÊNCIAS")
-        
-        with st.spinner("🔎 Analisando dados em busca de problemas..."):
-            problemas = detectar_problemas_detalhados(df)
-        
-        # Contar total de problemas
-        total_problemas = sum(len(itens) for itens in problemas.values())
-        
-        if total_problemas > 0:
-            st.warning(f"⚠️ **{total_problemas} problemas detectados** nos dados")
-            
-            # Exibir problemas por categoria
-            for categoria, itens in problemas.items():
-                if itens:
-                    st.subheader(f"📋 {categoria.replace('_', ' ').upper()}")
-                    
-                    for item in itens:
-                        with st.expander(f"❌ {item['tipo']} - {item['quantidade']} registros ({item['gravidade']})"):
-                            st.write(f"**Descrição:** {item['descricao']}")
-                            
-                            if item.get('exemplo') and len(item['exemplo']) > 0:
-                                st.write("**Exemplos:**")
-                                exemplo_df = pd.DataFrame(item['exemplo'])
-                                st.dataframe(exemplo_df, use_container_width=True)
+    st.subheader("🔄 Processamento dos Arquivos")
+    
+    with st.spinner(f'Processando {len(uploaded_files)} arquivo(s)...'):
+        dados_consolidados, resultados = processar_multiplos_arquivos(uploaded_files)
+    
+    # Mostrar resultados do processamento
+    for resultado in resultados:
+        if resultado.startswith("✅"):
+            st.success(resultado)
+        elif resultado.startswith("❌"):
+            st.error(resultado)
         else:
-            st.success("✅ Nenhum problema crítico detectado!")
+            st.info(resultado)
+    
+    if dados_consolidados.empty:
+        st.error("❌ Nenhum dado válido foi processado")
+        return
+    
+    # ========================================================================
+    # CONSOLIDAÇÃO COM DADOS EXISTENTES
+    # ========================================================================
+    if modo_processamento == "Adicionar aos dados existentes" and not st.session_state.dados_consolidados.empty:
+        # Combinar com dados existentes
+        dados_finais = pd.concat([st.session_state.dados_consolidados, dados_consolidados], ignore_index=True)
         
-        st.markdown("---")
+        # Remover duplicatas (baseado em combinação de campos únicos)
+        campos_unicos = ['nome', 'valor_pagto', 'data_pagto', 'projeto', 'arquivo_origem']
+        campos_disponiveis = [campo for campo in campos_unicos if campo in dados_finais.columns]
         
-        # ====================================================================
-        # ANÁLISES E RELATÓRIOS
-        # ====================================================================
-        st.header("📊 ANÁLISES E RELATÓRIOS")
+        if len(campos_disponiveis) >= 2:
+            dados_finais = dados_finais.drop_duplicates(subset=campos_disponiveis[:2])
         
-        tab1, tab2, tab3 = st.tabs(["🏢 Por Agência", "📈 Estatísticas", "💾 Exportar"])
+        st.success(f"✅ Dados adicionados. Total: {len(dados_finais):,} registros")
+    else:
+        dados_finais = dados_consolidados
+        st.success(f"✅ {len(dados_finais):,} registros processados")
+    
+    # Atualizar sessão
+    st.session_state.dados_consolidados = dados_finais
+    
+    # Adicionar aos arquivos processados
+    novos_arquivos = [f.name for f in uploaded_files]
+    st.session_state.arquivos_processados.extend(novos_arquivos)
+    st.session_state.arquivos_processados = list(set(st.session_state.arquivos_processados))
+    
+    # ========================================================================
+    # CÁLCULOS CONSOLIDADOS
+    # ========================================================================
+    st.subheader("📈 Análise Consolidada")
+    
+    # Calcular consolidações
+    consolidado_mensal = calcular_consolidado_mensal(dados_finais)
+    consolidado_projetos = calcular_consolidado_projetos(dados_finais)
+    estatisticas = calcular_estatisticas_detalhadas(dados_finais)
+    
+    # Atualizar histórico
+    st.session_state.historico_mensal = consolidado_mensal
+    st.session_state.projetos_consolidados = consolidado_projetos
+    
+    # ========================================================================
+    # MÉTRICAS PRINCIPAIS
+    # ========================================================================
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        total_registros = estatisticas.get('total_registros', 0)
+        st.metric("📊 Total de Registros", f"{total_registros:,}")
+    
+    with col2:
+        valor_total = estatisticas.get('valor_total', 0)
+        st.metric("💰 Valor Total", f"R$ {valor_total:,.2f}")
+    
+    with col3:
+        qtd_meses = estatisticas.get('quantidade_meses', 0)
+        st.metric("📅 Meses", f"{qtd_meses}")
+    
+    with col4:
+        qtd_projetos = estatisticas.get('quantidade_projetos', 0)
+        st.metric("🏢 Projetos", f"{qtd_projetos}")
+    
+    # ========================================================================
+    # VISUALIZAÇÃO DOS DADOS
+    # ========================================================================
+    tab1, tab2, tab3, tab4 = st.tabs(["📋 Dados", "📅 Mensal", "🏢 Projetos", "📊 Gráficos"])
+    
+    with tab1:
+        st.subheader("Dados Consolidados")
         
-        with tab1:
-            st.subheader("Análise por Agência")
-            
-            relatorio_agencia = gerar_relatorio_agencia_correto(df)
-            
-            if not relatorio_agencia.empty:
-                st.dataframe(relatorio_agencia, use_container_width=True)
-                
-                # Gráfico simples
-                try:
-                    top_10 = relatorio_agencia.head(10)
-                    fig = px.bar(
-                        top_10,
-                        x=top_10.index,
-                        y='Valor Total',
-                        title='Top 10 Agências por Valor Total',
-                        labels={'Valor Total': 'Valor Total (R$)'}
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
-                except:
-                    pass
+        # Filtros
+        col_filtro1, col_filtro2, col_filtro3 = st.columns(3)
+        
+        with col_filtro1:
+            if 'projeto' in dados_finais.columns:
+                projetos = ['Todos'] + sorted(dados_finais['projeto'].dropna().unique().tolist())
+                projeto_selecionado = st.selectbox("Filtrar por projeto:", projetos)
             else:
-                st.info("Não há dados suficientes para análise por agência.")
+                projeto_selecionado = 'Todos'
         
-        with tab2:
-            st.subheader("Estatísticas Descritivas")
-            
-            col_stat1, col_stat2 = st.columns(2)
-            
-            with col_stat1:
-                if 'valor_pagto' in df.columns:
-                    st.write("**Valores Pagos**")
-                    valores = df['valor_pagto'].dropna()
-                    if len(valores) > 0:
-                        stats = valores.describe().to_frame().round(2)
-                        st.dataframe(stats, use_container_width=True)
-            
-            with col_stat2:
-                if 'dias_apagar' in df.columns:
-                    st.write("**Dias a Pagar**")
-                    dias = df['dias_apagar'].dropna()
-                    if len(dias) > 0:
-                        stats_dias = dias.describe().to_frame().round(2)
-                        st.dataframe(stats_dias, use_container_width=True)
+        with col_filtro2:
+            if 'mes_nome' in dados_finais.columns:
+                meses = ['Todos'] + sorted(dados_finais['mes_nome'].dropna().unique().tolist())
+                mes_selecionado = st.selectbox("Filtrar por mês:", meses)
+            else:
+                mes_selecionado = 'Todos'
         
-        with tab3:
-            st.subheader("Exportação de Dados")
-            
-            # Opções de exportação
-            col_exp1, col_exp2 = st.columns(2)
-            
-            with col_exp1:
-                # Exportar CSV
-                csv_data = df.to_csv(index=False, sep=';', decimal=',')
-                st.download_button(
-                    label="📥 Baixar CSV Processado",
-                    data=csv_data,
-                    file_name=f"dados_pot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                    mime="text/csv",
-                    use_container_width=True,
-                    help="Baixar dados processados em formato CSV"
-                )
-            
-            with col_exp2:
-                # Exportar Excel
-                output = BytesIO()
-                with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                    # Dados principais
-                    df.to_excel(writer, sheet_name='DADOS', index=False)
-                    
-                    # Relatório de problemas
-                    if total_problemas > 0:
-                        problemas_data = []
-                        for categoria, itens in problemas.items():
-                            for item in itens:
-                                problemas_data.append({
-                                    'Categoria': categoria,
-                                    'Tipo': item['tipo'],
-                                    'Quantidade': item['quantidade'],
-                                    'Gravidade': item['gravidade'],
-                                    'Descrição': item['descricao']
-                                })
-                        
-                        if problemas_data:
-                            problemas_df = pd.DataFrame(problemas_data)
-                            problemas_df.to_excel(writer, sheet_name='PROBLEMAS', index=False)
-                
-                excel_bytes = output.getvalue()
-                
-                st.download_button(
-                    label="📥 Baixar Relatório Excel",
-                    data=excel_bytes,
-                    file_name=f"relatorio_pot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
-                    help="Baixar relatório completo em Excel"
-                )
-            
-            # Exportar relatório de problemas específico
-            if total_problemas > 0:
-                st.markdown("---")
-                st.subheader("📋 Relatório de Problemas")
-                
-                problemas_texto = f"RELATÓRIO DE PROBLEMAS DETECTADOS\n"
-                problemas_texto += f"Data: {datetime.now().strftime('%d/%m/%Y %H:%M')}\n"
-                problemas_texto += f"Arquivo: {uploaded_file.name}\n"
-                problemas_texto += f"Total de Problemas: {total_problemas}\n\n"
-                
-                for categoria, itens in problemas.items():
-                    if itens:
-                        problemas_texto += f"\n{categoria.upper()}:\n"
-                        for item in itens:
-                            problemas_texto += f"- {item['tipo']}: {item['quantidade']} registros ({item['gravidade']})\n"
-                            problemas_texto += f"  Descrição: {item['descricao']}\n"
-                
-                st.download_button(
-                    label="📄 Baixar Relatório de Problemas (TXT)",
-                    data=problemas_texto,
-                    file_name=f"problemas_detectados_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
-                    mime="text/plain",
-                    use_container_width=True
-                )
+        with col_filtro3:
+            if 'gerenciadora' in dados_finais.columns:
+                gerenciadoras = ['Todas'] + sorted(dados_finais['gerenciadora'].dropna().unique().tolist())
+                gerenciadora_selecionada = st.selectbox("Filtrar por gerenciadora:", gerenciadoras)
+            else:
+                gerenciadora_selecionada = 'Todas'
         
-        # ====================================================================
-        # RODAPÉ
-        # ====================================================================
-        st.markdown("---")
-        st.markdown(
-            f"""
-            <div style='text-align: center; color: gray; font-size: 0.9em;'>
-            Sistema de Monitoramento de Pagamentos - POT | 
-            Processado em: {datetime.now().strftime('%d/%m/%Y %H:%M')} | 
-            Versão: 3.0 Estável
-            </div>
-            """,
-            unsafe_allow_html=True
+        # Aplicar filtros
+        dados_filtrados = dados_finais.copy()
+        
+        if projeto_selecionado != 'Todos':
+            dados_filtrados = dados_filtrados[dados_filtrados['projeto'] == projeto_selecionado]
+        
+        if mes_selecionado != 'Todos':
+            dados_filtrados = dados_filtrados[dados_filtrados['mes_nome'] == mes_selecionado]
+        
+        if gerenciadora_selecionada != 'Todas':
+            dados_filtrados = dados_filtrados[dados_filtrados['gerenciadora'] == gerenciadora_selecionada]
+        
+        # Mostrar dados
+        st.dataframe(
+            dados_filtrados,
+            use_container_width=True,
+            height=400,
+            column_config={
+                "valor_pagto": st.column_config.NumberColumn(
+                    "Valor Pago",
+                    format="R$ %.2f"
+                )
+            }
         )
         
-    except Exception as e:
-        st.error(f"❌ Ocorreu um erro no sistema: {str(e)}")
-        st.info("""
-        **Soluções possíveis:**
-        1. Verifique o formato do arquivo
-        2. Certifique-se de que o arquivo não está corrompido
-        3. Tente carregar novamente
-        4. Contate o suporte técnico se o problema persistir
-        """)
+        # Estatísticas dos filtrados
+        if len(dados_filtrados) > 0:
+            st.info(f"""
+            **Filtro aplicado:** {len(dados_filtrados):,} registros | 
+            Valor total: R$ {dados_filtrados['valor_pagto'].sum():,.2f} | 
+            Média: R$ {dados_filtrados['valor_pagto'].mean():,.2f}
+            """)
+    
+    with tab2:
+        st.subheader("Consolidação Mensal")
+        
+        if not consolidado_mensal.empty:
+            st.dataframe(
+                consolidado_mensal,
+                use_container_width=True,
+                column_config={
+                    "valor_total": st.column_config.NumberColumn(
+                        "Valor Total",
+                        format="R$ %.2f"
+                    ),
+                    "valor_medio": st.column_config.NumberColumn(
+                        "Valor Médio",
+                        format="R$ %.2f"
+                    )
+                }
+            )
+            
+            # Gráfico de evolução mensal
+            if mostrar_graficos:
+                fig_evolucao = criar_grafico_evolucao_mensal(consolidado_mensal)
+                if fig_evolucao:
+                    st.plotly_chart(fig_evolucao, use_container_width=True)
+        else:
+            st.info("Não há dados suficientes para consolidação mensal")
+    
+    with tab3:
+        st.subheader("Consolidação por Projeto")
+        
+        if not consolidado_projetos.empty:
+            st.dataframe(
+                consolidado_projetos,
+                use_container_width=True,
+                height=400,
+                column_config={
+                    "valor_total": st.column_config.NumberColumn(
+                        "Valor Total",
+                        format="R$ %.2f"
+                    ),
+                    "valor_medio": st.column_config.NumberColumn(
+                        "Valor Médio",
+                        format="R$ %.2f"
+                    )
+                }
+            )
+            
+            # Gráfico de projetos
+            if mostrar_graficos:
+                fig_projetos = criar_grafico_projetos(consolidado_projetos)
+                if fig_projetos:
+                    st.plotly_chart(fig_projetos, use_container_width=True)
+        else:
+            st.info("Não há dados de projetos para análise")
+    
+    with tab4:
+        st.subheader("Visualizações Gráficas")
+        
+        if mostrar_graficos and not dados_finais.empty:
+            col_graf1, col_graf2 = st.columns(2)
+            
+            with col_graf1:
+                # Gráfico de distribuição mensal
+                fig_dist_mensal = criar_grafico_distribuicao_mensal(dados_finais)
+                if fig_dist_mensal:
+                    st.plotly_chart(fig_dist_mensal, use_container_width=True)
+            
+            with col_graf2:
+                # Gráfico de pizza por gerenciadora (se disponível)
+                if 'gerenciadora' in dados_finais.columns:
+                    gerenciadoras_contagem = dados_finais['gerenciadora'].value_counts()
+                    
+                    if len(gerenciadoras_contagem) > 0:
+                        fig_pizza = px.pie(
+                            values=gerenciadoras_contagem.values,
+                            names=gerenciadoras_contagem.index,
+                            title='Distribuição por Gerenciadora',
+                            hole=0.3
+                        )
+                        st.plotly_chart(fig_pizza, use_container_width=True)
+            
+            # Gráfico de distribuição de valores
+            if 'valor_pagto' in dados_finais.columns:
+                fig_hist = px.histogram(
+                    dados_finais,
+                    x='valor_pagto',
+                    nbins=30,
+                    title='Distribuição dos Valores Pagos',
+                    labels={'valor_pagto': 'Valor Pago (R$)'}
+                )
+                st.plotly_chart(fig_hist, use_container_width=True)
+    
+    # ========================================================================
+    # EXPORTAÇÃO
+    # ========================================================================
+    st.markdown("---")
+    st.subheader("💾 Exportação de Dados")
+    
+    col_exp1, col_exp2, col_exp3, col_exp4 = st.columns(4)
+    
+    with col_exp1:
+        # Exportar dados consolidados CSV
+        csv_data = dados_finais.to_csv(index=False, sep=';', decimal=',')
+        st.download_button(
+            label="📥 Dados Consolidados (CSV)",
+            data=csv_data,
+            file_name=f"pot_consolidado_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
+    
+    with col_exp2:
+        # Exportar relatório completo Excel
+        excel_bytes = exportar_dados_completos(dados_finais, consolidado_mensal, consolidado_projetos)
+        
+        if excel_bytes:
+            st.download_button(
+                label="📊 Relatório Completo (Excel)",
+                data=excel_bytes,
+                file_name=f"relatorio_pot_completo_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+    
+    with col_exp3:
+        # Exportar consolidação mensal
+        if not consolidado_mensal.empty:
+            csv_mensal = consolidado_mensal.to_csv(sep=';', decimal=',')
+            st.download_button(
+                label="📅 Consolidação Mensal (CSV)",
+                data=csv_mensal,
+                file_name=f"consolidacao_mensal_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+    
+    with col_exp4:
+        # Exportar consolidação por projeto
+        if not consolidado_projetos.empty:
+            csv_projetos = consolidado_projetos.to_csv(sep=';', decimal=',')
+            st.download_button(
+                label="🏢 Consolidação por Projeto (CSV)",
+                data=csv_projetos,
+                file_name=f"consolidacao_projetos_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+    
+    # Botão para limpar dados
+    st.markdown("---")
+    col_limpar, _, _ = st.columns([1, 2, 1])
+    
+    with col_limpar:
+        if st.button("🗑️ Limpar Todos os Dados", use_container_width=True):
+            st.session_state.dados_consolidados = pd.DataFrame()
+            st.session_state.arquivos_processados = []
+            st.session_state.historico_mensal = pd.DataFrame()
+            st.session_state.projetos_consolidados = pd.DataFrame()
+            st.success("✅ Dados limpos com sucesso!")
+            st.rerun()
+    
+    # ========================================================================
+    # RODAPÉ
+    # ========================================================================
+    st.markdown("---")
+    st.caption(f"""
+    ⚙️ Sistema de Consolidação de Pagamentos - POT v5.0 | 
+    Processado em: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')} | 
+    Total de registros: {len(dados_finais):,} | 
+    Arquivos processados: {len(st.session_state.arquivos_processados)}
+    """)
 
 # ============================================================================
 # EXECUTAR APLICAÇÃO
 # ============================================================================
 if __name__ == "__main__":
-    # Configuração simples para evitar erros
-    try:
-        main()
-    except Exception as e:
-        st.error(f"Erro crítico: {e}")
-        st.stop()
+    main()
