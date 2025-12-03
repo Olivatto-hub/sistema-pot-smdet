@@ -1,5 +1,5 @@
 # app.py - Sistema de Monitoramento de Pagamentos do POT
-# Versão 2.0 - Corrigida e Aprimorada
+# Versão 2.0 - 
 
 import streamlit as st
 import pandas as pd
