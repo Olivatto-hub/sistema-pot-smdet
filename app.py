@@ -222,10 +222,10 @@ def init_database():
         conn.commit()
         
         # ===== CRIAR ÍNDICES SEPARADAMENTE =====
-        self.criar_indices(conn)
+        criar_indices(conn)
         
         # Criar views para relatórios
-        self.criar_views_relatorios(conn)
+        criar_views_relatorios(conn)
         
         return conn
         
@@ -789,7 +789,11 @@ class ProcessadorArquivos:
         ano_match = re.search(r'(20\d{2})', nome_upper)
         ano = int(ano_match.group(1)) if ano_match else datetime.now().year
         
-        return mes or datetime.now().month, ano
+        # Se não detectou mês, usar mês atual
+        if mes is None:
+            mes = datetime.now().month
+        
+        return mes, ano
     
     def _arquivo_ja_processado(self, hash_arquivo: str) -> bool:
         """Verifica se arquivo já foi processado"""
@@ -811,8 +815,8 @@ class ProcessadorArquivos:
             ''', (
                 nome_arquivo,
                 tipo_arquivo,
-                mes,
-                ano,
+                mes if mes else None,
+                ano if ano else None,
                 total_registros,
                 hash_arquivo,
                 usuario,
@@ -883,8 +887,8 @@ class ProcessadorArquivos:
                         ''', (
                             numero_conta,
                             cpf,
-                            str(row.get('banco', '')).strip(),
-                            str(row.get('agencia', '')).strip(),
+                            str(row.get('banco', '')).strip() or 'BANCO DO BRASIL',
+                            str(row.get('agencia', '')).strip() or '0000',
                             'IMPORTACAO_PAGAMENTOS'
                         ))
                     
@@ -1345,15 +1349,19 @@ def mostrar_dashboard(conn):
         df_resumo = analisador.obter_resumo_mensal()
         if not df_resumo.empty:
             # Gráfico de evolução
-            df_resumo['periodo'] = df_resumo['mes_referencia'].astype(str) + '/' + df_resumo['ano_referencia'].astype(str)
+            df_resumo['periodo'] = df_resumo['mes_referencia'].astype(str).str.zfill(2) + '/' + df_resumo['ano_referencia'].astype(str)
+            
+            # Ordenar por data
+            df_resumo_ordenado = df_resumo.sort_values(['ano_referencia', 'mes_referencia'])
             
             fig = px.line(
-                df_resumo.sort_values(['ano_referencia', 'mes_referencia']),
+                df_resumo_ordenado,
                 x='periodo',
                 y='valor_total_pago',
                 title='Evolução do Valor Total Pago',
                 markers=True
             )
+            fig.update_layout(xaxis_title='Período', yaxis_title='Valor Total (R$)')
             st.plotly_chart(fig, use_container_width=True)
             
             # Tabela detalhada
@@ -1388,6 +1396,7 @@ def mostrar_dashboard(conn):
                 color='severidade',
                 title='Inconsistências por Tipo e Severidade'
             )
+            fig.update_layout(xaxis_title='Tipo de Inconsistência', yaxis_title='Quantidade')
             st.plotly_chart(fig, use_container_width=True)
             
             # Tabela detalhada
@@ -1556,6 +1565,15 @@ def mostrar_importacao(conn):
         st.info(f"📄 **Arquivo selecionado:** {uploaded_file.name}")
         st.info(f"📋 **Tipo:** {tipo_arquivo.replace('_', ' ').title()}")
         
+        # Prévia dos dados
+        if st.button("👁️ Ver Prévia dos Dados", use_container_width=True):
+            processador = ProcessadorArquivos(conn)
+            df_previa, mensagem = processador._ler_arquivo(uploaded_file)
+            if df_previa is not None:
+                df_previa.columns = [processador.normalizador.normalizar_nome_coluna(col) for col in df_previa.columns]
+                st.dataframe(df_previa.head(10), use_container_width=True)
+                st.info(f"Total de registros: {len(df_previa)}")
+        
         # Processar arquivo
         if st.button("🔄 Processar Arquivo", type="primary", use_container_width=True):
             processador = ProcessadorArquivos(conn)
@@ -1639,8 +1657,9 @@ def mostrar_consulta_beneficiarios(conn):
             params.append(f'%{cpf_consulta}%')
         
         if nome_consulta:
+            normalizador = NormalizadorDados()
             query += ' AND b.nome_normalizado LIKE ?'
-            params.append(f'%{NormalizadorDados.normalizar_nome(nome_consulta)}%')
+            params.append(f'%{normalizador.normalizar_nome(nome_consulta)}%')
         
         query += '''
             GROUP BY b.cpf, b.nome, b.rg, b.status, b.data_cadastro
@@ -1720,7 +1739,7 @@ def mostrar_consulta_beneficiarios(conn):
                     
                     # Gráfico do histórico
                     fig = px.line(
-                        df_historico.sort_values('Período'),
+                        df_historico,
                         x='Período',
                         y='Valor',
                         title='Histórico de Pagamentos',
@@ -2055,8 +2074,6 @@ def main():
         return
     
     # Sidebar com menu
-    st.sidebar.image("https://upload.wikimedia.org/wikipedia/commons/thumb/4/4e/Prefeitura_de_S%C3%A3o_Paulo_logo.png/320px-Prefeitura_de_S%C3%A3o_Paulo_logo.png", 
-                    width=200)
     st.sidebar.title("💰 POT - SMDET")
     st.sidebar.markdown("**Sistema de Gestão de Benefícios**")
     st.sidebar.markdown("---")
