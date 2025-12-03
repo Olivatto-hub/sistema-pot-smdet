@@ -5,6 +5,8 @@ from datetime import datetime
 import streamlit as st
 import warnings
 import chardet
+import numpy as np  # IMPORTANTE: Adicionado numpy
+
 warnings.filterwarnings('ignore')
 
 # Configuração da página
@@ -22,11 +24,11 @@ class SistemaPOTStreamlit:
         self.arquivo_processado = False
         self.nome_arquivo = ""
         self.total_pagamentos = 0
+        self.coluna_valor_pagto = None  # Armazenar nome da coluna de valor de pagamento
         
     def detectar_encoding(self, arquivo_path):
         """Detecta o encoding do arquivo"""
         try:
-            # Ler primeiros bytes para detectar encoding
             with open(arquivo_path, 'rb') as f:
                 raw_data = f.read(10000)
             
@@ -34,113 +36,80 @@ class SistemaPOTStreamlit:
             encoding = resultado['encoding']
             confianca = resultado['confidence']
             
-            st.info(f"🔍 Encoding detectado: {encoding} (confiança: {confianca:.2f})")
+            return encoding_map.get(encoding, encoding) if encoding else 'latin-1'
             
-            # Mapear encoding comum para o pandas
-            if encoding is None:
-                return 'latin-1'
-            
-            encoding_map = {
-                'ISO-8859-1': 'latin-1',
-                'Windows-1252': 'cp1252',
-                'ascii': 'utf-8',
-                'UTF-8-SIG': 'utf-8'
-            }
-            
-            return encoding_map.get(encoding, encoding)
-            
-        except Exception as e:
-            st.warning(f"Não foi possível detectar encoding, usando latin-1: {str(e)[:50]}")
+        except:
             return 'latin-1'
     
     def tentar_encodings(self, arquivo_path):
         """Tenta diferentes encodings até encontrar um que funcione"""
         encodings_para_tentar = [
-            'latin-1',  # Mais comum para arquivos brasileiros
-            'iso-8859-1',
-            'cp1252',   # Windows
-            'utf-8',
-            'utf-8-sig',
-            'cp850',
-            'mac_roman'
+            'latin-1', 'iso-8859-1', 'cp1252', 'utf-8', 'utf-8-sig', 'cp850'
         ]
         
         for encoding in encodings_para_tentar:
             try:
-                st.info(f"Tentando encoding: {encoding}")
                 df = pd.read_csv(arquivo_path, delimiter=';', encoding=encoding, nrows=5)
                 if not df.empty and len(df.columns) > 1:
-                    st.success(f"✅ Encoding funcionou: {encoding}")
                     return encoding
-            except Exception as e:
+            except:
                 continue
         
-        st.error("❌ Não foi possível ler o arquivo com nenhum encoding comum")
         return None
     
     def converter_valor(self, valor_str):
         """Converte valores monetários do formato brasileiro para float"""
-        if pd.isna(valor_str) or valor_str == '':
+        if pd.isna(valor_str) or valor_str == '' or str(valor_str).strip() == '':
             return 0.0
         
         try:
-            # Se já for número, retornar direto
             if isinstance(valor_str, (int, float)):
                 return float(valor_str)
             
-            valor_str = str(valor_str).replace('R$', '').replace(' ', '').strip()
+            valor_str = str(valor_str)
             
-            # Remover pontos dos milhares e converter vírgula decimal para ponto
-            if '.' in valor_str and ',' in valor_str:
-                # Formato brasileiro: 1.593,90
-                valor_str = valor_str.replace('.', '').replace(',', '.')
+            # Se já começar com número, provavelmente já é numérico
+            if re.match(r'^\d', valor_str.strip()):
+                try:
+                    return float(valor_str.replace(',', '.'))
+                except:
+                    pass
+            
+            # Remover R$ e espaços
+            valor_str = valor_str.replace('R$', '').replace(' ', '').strip()
+            
+            # Verificar se tem vírgula como separador decimal
+            if ',' in valor_str and '.' in valor_str:
+                # Formato: 1.593,90 - remover pontos de milhar, substituir vírgula decimal
+                partes = valor_str.split(',')
+                if len(partes) == 2:
+                    inteiro = partes[0].replace('.', '')
+                    return float(f"{inteiro}.{partes[1]}")
+            
             elif ',' in valor_str:
-                # Formato europeu: 1593,90
-                valor_str = valor_str.replace(',', '.')
+                # Formato: 1593,90
+                return float(valor_str.replace(',', '.'))
             
-            return float(valor_str)
+            else:
+                # Formato: 1593.90 ou 1593
+                return float(valor_str)
+                
         except Exception as e:
-            st.warning(f"Erro ao converter valor '{valor_str}': {str(e)[:50]}")
             return 0.0
     
     def processar_arquivo_streamlit(self, arquivo_upload):
-        """Processa arquivo CSV de pagamentos do POT - Versão Streamlit"""
+        """Processa arquivo CSV de pagamentos do POT"""
         try:
             with st.spinner("📥 Lendo arquivo..."):
-                # Salvar arquivo temporariamente para detecção de encoding
+                # Salvar arquivo temporariamente
                 temp_path = f"temp_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
                 with open(temp_path, 'wb') as f:
                     f.write(arquivo_upload.getvalue())
                 
                 # Detectar encoding
-                encoding = self.tentar_encodings(temp_path)
+                encoding = self.tentar_encodings(temp_path) or self.detectar_encoding(temp_path) or 'latin-1'
                 
-                if encoding is None:
-                    # Tentar detecção automática
-                    encoding = self.detectar_encoding(temp_path)
-                
-                # Ler arquivo com encoding detectado
-                st.info(f"📖 Lendo arquivo com encoding: {encoding}")
-                
-                # Tentar ler linha por linha para debug
-                with open(temp_path, 'r', encoding=encoding, errors='replace') as f:
-                    linhas = f.readlines()
-                
-                st.success(f"✅ Arquivo lido: {len(linhas)} linhas detectadas")
-                
-                if len(linhas) < 2:
-                    st.error("❌ Arquivo muito pequeno ou vazio")
-                    return False
-                
-                # Mostrar preview do cabeçalho
-                with st.expander("📋 Visualizar primeiras linhas do arquivo"):
-                    st.text("Linha 1 (cabeçalho):")
-                    st.code(linhas[0][:200])
-                    if len(linhas) > 1:
-                        st.text("Linha 2 (primeiros dados):")
-                        st.code(linhas[1][:200])
-                
-                # Ler com pandas
+                # Ler arquivo
                 self.df = pd.read_csv(temp_path, delimiter=';', encoding=encoding, on_bad_lines='skip')
                 
                 # Limpar arquivo temporário
@@ -148,75 +117,35 @@ class SistemaPOTStreamlit:
                     os.remove(temp_path)
             
             with st.spinner("🧹 Limpando dados..."):
-                # Limpar dados
                 self._limpar_dados()
                 
             with st.spinner("📊 Calculando estatísticas..."):
-                # Calcular estatísticas
                 self._calcular_estatisticas()
                 
             self.arquivo_processado = True
             self.nome_arquivo = arquivo_upload.name
             
-            st.success(f"✅ Processamento concluído! {len(self.dados_limpos)} registros válidos")
             return True
             
         except Exception as e:
-            st.error(f"❌ Erro ao processar arquivo: {str(e)[:200]}")
-            return False
-    
-    def processar_arquivo_direto(self, arquivo_path):
-        """Processa arquivo diretamente do caminho (para debug)"""
-        try:
-            # Detectar encoding
-            encoding = self.tentar_encodings(arquivo_path)
-            
-            if encoding is None:
-                encoding = self.detectar_encoding(arquivo_path)
-            
-            # Ler arquivo
-            self.df = pd.read_csv(arquivo_path, delimiter=';', encoding=encoding, on_bad_lines='skip')
-            
-            # Limpar dados
-            self._limpar_dados()
-            
-            # Calcular estatísticas
-            self._calcular_estatisticas()
-            
-            self.arquivo_processado = True
-            self.nome_arquivo = os.path.basename(arquivo_path)
-            
-            print(f"✅ Processamento concluído! {len(self.dados_limpos)} registros válidos")
-            return True
-            
-        except Exception as e:
-            print(f"❌ Erro ao processar arquivo: {str(e)}")
+            st.error(f"❌ Erro ao processar: {str(e)[:100]}")
             return False
     
     def _limpar_dados(self):
         """Limpa e prepara os dados para análise"""
         if self.df is None or self.df.empty:
-            st.error("❌ DataFrame vazio ou não carregado")
             return
         
         df_limpo = self.df.copy()
         
         # Remover linhas totalmente vazias
-        linhas_iniciais = len(df_limpo)
         df_limpo = df_limpo.dropna(how='all')
-        linhas_apos_vazias = len(df_limpo)
         
-        st.info(f"Removidas {linhas_iniciais - linhas_apos_vazias} linhas totalmente vazias")
-        
-        # Verificar colunas disponíveis
-        st.info(f"Colunas disponíveis: {list(df_limpo.columns)}")
-        
-        # Renomear colunas para padrão (remover acentos e espaços)
+        # Padronizar nomes das colunas (remover acentos, espaços, minúsculas)
         mapeamento_colunas = {}
         for col in df_limpo.columns:
             col_limpa = str(col).strip().lower()
-            col_limpa = col_limpa.replace(' ', '_').replace('.', '')
-            # Remover acentos
+            col_limpa = re.sub(r'[^a-z0-9_]', '_', col_limpa)
             col_limpa = (col_limpa
                         .replace('á', 'a').replace('é', 'e').replace('í', 'i')
                         .replace('ó', 'o').replace('ú', 'u').replace('â', 'a')
@@ -226,199 +155,147 @@ class SistemaPOTStreamlit:
             mapeamento_colunas[col] = col_limpa
         
         df_limpo = df_limpo.rename(columns=mapeamento_colunas)
-        st.info(f"Colunas renomeadas: {list(df_limpo.columns)}")
         
-        # Identificar colunas de valor
+        # IDENTIFICAR COLUNA DE VALOR DE PAGAMENTO
+        # Lista de possíveis nomes (em ordem de prioridade)
+        possiveis_nomes_valor = [
+            'valor_pagto', 'valor_pagamento', 'valor_total', 'valor', 
+            'pagto', 'pagamento', 'total', 'valorpagto'
+        ]
+        
+        self.coluna_valor_pagto = None
+        for nome in possiveis_nomes_valor:
+            if nome in df_limpo.columns:
+                self.coluna_valor_pagto = nome
+                break
+        
+        # Se não encontrou, procurar por colunas que contenham essas palavras
+        if self.coluna_valor_pagto is None:
+            for col in df_limpo.columns:
+                col_lower = col.lower()
+                if any(termo in col_lower for termo in ['pagto', 'pagamento', 'valor']):
+                    self.coluna_valor_pagto = col
+                    break
+        
+        st.info(f"🔍 Coluna de valor identificada: {self.coluna_valor_pagto}")
+        
+        # Converter todas as colunas que parecem ser valores monetários
         colunas_valor = []
         for col in df_limpo.columns:
-            if any(termo in col for termo in ['valor', 'total', 'pagto', 'pagamento', 'desconto', 'dia']):
+            col_lower = col.lower()
+            if any(termo in col_lower for termo in ['valor', 'total', 'pagto', 'pagamento', 'desconto', 'dia']):
                 colunas_valor.append(col)
         
-        st.info(f"Colunas de valor identificadas: {colunas_valor}")
-        
-        # Converter colunas de valor
         for coluna in colunas_valor:
-            if coluna in df_limpo.columns:
-                df_limpo[coluna] = df_limpo[coluna].apply(self.converter_valor)
-                st.info(f"✓ Convertida coluna: {coluna}")
+            df_limpo[coluna] = df_limpo[coluna].apply(self.converter_valor)
+        
+        # Converter outras colunas numéricas
+        for col in df_limpo.columns:
+            # Tentar converter para numérico se não for texto óbvio
+            if col not in ['nome', 'distrito', 'agencia', 'rg']:
+                try:
+                    df_limpo[col] = pd.to_numeric(df_limpo[col], errors='ignore')
+                except:
+                    pass
         
         # Procurar coluna de dias
-        coluna_dias = None
         for col in df_limpo.columns:
-            if any(termo in col.lower() for termo in ['dia', 'dias', 'apagar']):
-                coluna_dias = col
-                break
-        
-        if coluna_dias and coluna_dias in df_limpo.columns:
-            df_limpo[coluna_dias] = pd.to_numeric(df_limpo[coluna_dias], errors='coerce')
-            st.info(f"✓ Convertida coluna de dias: {coluna_dias}")
+            if 'dia' in col.lower() or 'dias' in col.lower():
+                try:
+                    df_limpo[col] = pd.to_numeric(df_limpo[col], errors='coerce')
+                except:
+                    pass
         
         # Procurar coluna de data
-        coluna_data = None
         for col in df_limpo.columns:
-            if any(termo in col.lower() for termo in ['data', 'datapagto', 'dt', 'date']):
-                coluna_data = col
-                break
-        
-        if coluna_data and coluna_data in df_limpo.columns:
-            # Tentar diferentes formatos de data
-            try:
-                df_limpo[coluna_data] = pd.to_datetime(df_limpo[coluna_data], format='%d/%m/%Y', errors='coerce')
-                st.info(f"✓ Convertida coluna de data: {coluna_data} (formato DD/MM/AAAA)")
-            except:
+            if 'data' in col.lower():
                 try:
-                    df_limpo[coluna_data] = pd.to_datetime(df_limpo[coluna_data], errors='coerce')
-                    st.info(f"✓ Convertida coluna de data: {coluna_data} (formato automático)")
+                    df_limpo[col] = pd.to_datetime(df_limpo[col], format='%d/%m/%Y', errors='coerce')
                 except:
-                    st.warning(f"⚠️ Não foi possível converter coluna de data: {coluna_data}")
+                    try:
+                        df_limpo[col] = pd.to_datetime(df_limpo[col], errors='coerce')
+                    except:
+                        pass
         
-        # Procurar coluna de valor de pagamento principal
-        coluna_valor_pagto = None
-        for col in colunas_valor:
-            if 'pagto' in col or 'pagamento' in col:
-                coluna_valor_pagto = col
-                break
-        
-        if not coluna_valor_pagto and colunas_valor:
-            coluna_valor_pagto = colunas_valor[0]
-        
-        if coluna_valor_pagto and coluna_valor_pagto in df_limpo.columns:
-            # Remover linhas onde o valor é zero ou negativo
-            df_limpo = df_limpo[df_limpo[coluna_valor_pagto] > 0]
-            st.info(f"✓ Removidos registros com {coluna_valor_pagto} ≤ 0")
+        # Remover linhas onde o valor de pagamento é zero ou negativo
+        if self.coluna_valor_pagto and self.coluna_valor_pagto in df_limpo.columns:
+            antes = len(df_limpo)
+            df_limpo = df_limpo[df_limpo[self.coluna_valor_pagto] > 0]
+            depois = len(df_limpo)
+            st.info(f"📊 Removidos {antes - depois} registros com valor ≤ 0")
         
         self.dados_limpos = df_limpo
-        
-        # Verificar dados
-        st.info(f"✅ Dados limpos: {len(df_limpo)} registros válidos")
-        
-        # Mostrar preview dos dados limpos
-        with st.expander("👀 Visualizar dados processados"):
-            st.dataframe(df_limpo.head(10))
     
     def _calcular_estatisticas(self):
-        """Calcula estatísticas dos dados"""
+        """Calcula estatísticas dos dados - CORRIGIDO"""
         if self.dados_limpos is None or len(self.dados_limpos) == 0:
             st.error("❌ Nenhum dado para calcular estatísticas")
             return
         
-        # Encontrar coluna de valor principal
-        coluna_valor_principal = None
-        for col in self.dados_limpos.columns:
-            if any(termo in col.lower() for termo in ['valorpagto', 'valor_pagto', 'pagto', 'pagamento']):
-                coluna_valor_principal = col
-                break
-        
-        if not coluna_valor_principal:
-            # Tentar encontrar qualquer coluna de valor
-            for col in self.dados_limpos.select_dtypes(include=[np.number]).columns:
-                if self.dados_limpos[col].sum() > 0:
-                    coluna_valor_principal = col
-                    break
-        
-        if coluna_valor_principal and coluna_valor_principal in self.dados_limpos.columns:
-            self.total_pagamentos = self.dados_limpos[coluna_valor_principal].sum()
-            st.info(f"💰 Valor total calculado: R$ {self.total_pagamentos:,.2f}")
+        # USAR A COLUNA IDENTIFICADA DE VALOR DE PAGAMENTO
+        if self.coluna_valor_pagto and self.coluna_valor_pagto in self.dados_limpos.columns:
+            # Calcular soma TOTAL e precisa
+            self.total_pagamentos = self.dados_limpos[self.coluna_valor_pagto].sum()
+            
+            # Verificação extra: calcular também usando numpy para garantir
+            total_numpy = np.sum(self.dados_limpos[self.coluna_valor_pagto].values)
+            
+            st.success(f"💰 Valor total calculado: R$ {self.total_pagamentos:,.2f}")
+            st.info(f"✅ Verificação com numpy: R$ {total_numpy:,.2f}")
+            
+            # Mostrar alguns valores para debug
+            with st.expander("🔍 Ver primeiros valores da coluna"):
+                st.write(f"Coluna: {self.coluna_valor_pagto}")
+                st.write(f"Primeiros 5 valores: {self.dados_limpos[self.coluna_valor_pagto].head(5).tolist()}")
+                st.write(f"Média: R$ {self.dados_limpos[self.coluna_valor_pagto].mean():,.2f}")
+                st.write(f"Contagem: {len(self.dados_limpos)} registros")
         else:
-            st.warning("⚠️ Não foi possível encontrar coluna de valor para cálculo do total")
+            st.error(f"❌ Coluna de valor não encontrada: {self.coluna_valor_pagto}")
+            # Tentar encontrar qualquer coluna numérica
+            colunas_numericas = self.dados_limpos.select_dtypes(include=[np.number]).columns
+            if len(colunas_numericas) > 0:
+                st.warning(f"Colunas numéricas disponíveis: {list(colunas_numericas)}")
+                # Usar a primeira coluna numérica como fallback
+                col_fallback = colunas_numericas[0]
+                self.total_pagamentos = self.dados_limpos[col_fallback].sum()
+                st.warning(f"⚠️ Usando coluna alternativa '{col_fallback}': R$ {self.total_pagamentos:,.2f}")
 
 # Inicializar sistema
 sistema = SistemaPOTStreamlit()
 
 # ==============================================
-# INTERFACE STREAMLIT
+# INTERFACE STREAMLIT - SIMPLIFICADA E FUNCIONAL
 # ==============================================
 
 st.title("💰 SISTEMA DE MONITORAMENTO DE PAGAMENTOS - POT")
-st.markdown("""
-<div style='background-color: #f0f2f6; padding: 15px; border-radius: 10px; margin-bottom: 20px;'>
-<strong>🚨 ATENÇÃO:</strong> Este sistema processa arquivos CSV com problemas de encoding. 
-Se encontrar erros, o sistema tentará automaticamente diferentes codificações.
-</div>
-""", unsafe_allow_html=True)
-
 st.markdown("---")
 
-# Sidebar para upload
+# Sidebar simplificada
 with st.sidebar:
-    st.header("📁 Upload de Arquivo")
-    st.markdown("""
-    **Formato esperado:**
-    - CSV com delimitador **ponto e vírgula (;)**
-    - Encoding comum: **Latin-1 (ISO-8859-1)**
-    - Valores no formato brasileiro: **R$ 1.593,90**
-    """)
+    st.header("📁 Upload do Arquivo")
     
     arquivo = st.file_uploader(
         "Selecione o arquivo CSV",
-        type=['csv', 'txt'],
-        help="Arquivo CSV com dados de pagamentos"
+        type=['csv'],
+        help="Arquivo CSV com delimitador ponto e vírgula"
     )
     
     if arquivo is not None:
-        st.info(f"📄 Arquivo selecionado: {arquivo.name}")
-        st.info(f"📊 Tamanho: {arquivo.size / 1024:.1f} KB")
+        st.info(f"📄 **Arquivo:** {arquivo.name}")
+        st.info(f"📊 **Tamanho:** {arquivo.size / 1024:.1f} KB")
         
-        # Opções de processamento
-        st.markdown("---")
-        st.header("⚙️ Opções de Processamento")
-        
-        encoding_manual = st.selectbox(
-            "Encoding (se souber):",
-            ["Auto-detect", "latin-1", "iso-8859-1", "cp1252", "utf-8", "cp850"],
-            index=0
-        )
-        
-        if st.button("🚀 Processar Arquivo", type="primary", use_container_width=True):
-            if encoding_manual != "Auto-detect":
-                # Salvar arquivo temporariamente e processar
-                temp_path = f"temp_upload_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-                with open(temp_path, 'wb') as f:
-                    f.write(arquivo.getvalue())
-                
-                try:
-                    with st.spinner(f"Processando com encoding {encoding_manual}..."):
-                        sistema.df = pd.read_csv(temp_path, delimiter=';', encoding=encoding_manual, on_bad_lines='skip')
-                        sistema._limpar_dados()
-                        sistema._calcular_estatisticas()
-                        sistema.arquivo_processado = True
-                        sistema.nome_arquivo = arquivo.name
-                    st.success("✅ Arquivo processado com sucesso!")
-                    st.session_state['arquivo_processado'] = True
-                except Exception as e:
-                    st.error(f"❌ Erro com encoding {encoding_manual}: {str(e)[:100]}")
-                    # Tentar processamento automático
-                    sucesso = sistema.processar_arquivo_streamlit(arquivo)
-                    if sucesso:
-                        st.session_state['arquivo_processado'] = True
-                finally:
-                    if os.path.exists(temp_path):
-                        os.remove(temp_path)
-            else:
-                # Processamento automático
+        if st.button("🚀 PROCESSAR ARQUIVO", type="primary", use_container_width=True):
+            with st.spinner("Processando..."):
                 sucesso = sistema.processar_arquivo_streamlit(arquivo)
                 if sucesso:
                     st.session_state['arquivo_processado'] = True
-    
-    st.markdown("---")
-    st.markdown("### 🔧 Dicas para Encoding")
-    
-    with st.expander("Como resolver problemas de encoding"):
-        st.markdown("""
-        1. **Latin-1 (ISO-8859-1)**: Mais comum no Brasil
-        2. **Windows-1252 (CP1252)**: Para arquivos do Excel
-        3. **UTF-8**: Para arquivos modernos
-        4. **CP850**: Para arquivos mais antigos
-        
-        **Sintomas de encoding errado:**
-        - Caracteres estranhos: Ã§, Ã£, Ã©
-        - Erro: "invalid continuation byte"
-        - Acentuação incorreta
-        """)
+                    st.success("✅ Processado com sucesso!")
+                else:
+                    st.error("❌ Falha no processamento")
     
     if 'arquivo_processado' in st.session_state and st.session_state['arquivo_processado']:
         st.markdown("---")
-        if st.button("🔄 Limpar e Recarregar", use_container_width=True):
+        if st.button("🔄 Novo Arquivo", use_container_width=True):
             st.session_state.clear()
             st.rerun()
 
@@ -427,302 +304,292 @@ if 'arquivo_processado' in st.session_state and st.session_state['arquivo_proces
     if sistema.arquivo_processado and sistema.dados_limpos is not None and len(sistema.dados_limpos) > 0:
         
         # ============================
-        # DASHBOARD GERAL
+        # DASHBOARD PRINCIPAL
         # ============================
-        st.header("📊 Dashboard de Análise")
+        st.header("📊 RESUMO DO PROCESSAMENTO")
         
-        # Métricas principais
+        # Métricas principais em destaque
+        st.markdown("### 📈 MÉTRICAS PRINCIPAIS")
+        
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
             st.metric(
-                label="Total de Registros",
+                label="📄 Total de Registros",
                 value=f"{len(sistema.dados_limpos):,}",
-                delta=None
+                help="Número total de pagamentos processados"
             )
         
         with col2:
-            st.metric(
-                label="Valor Total Processado",
-                value=f"R$ {sistema.total_pagamentos:,.2f}",
-                delta=None
-            )
-        
-        with col3:
-            # Encontrar coluna de valor principal
-            coluna_valor = None
-            for col in sistema.dados_limpos.select_dtypes(include=[np.number]).columns:
-                if sistema.dados_limpos[col].mean() > 0:
-                    coluna_valor = col
-                    break
-            
-            if coluna_valor:
-                media = sistema.dados_limpos[coluna_valor].mean()
+            # VALOR TOTAL CORRETO
+            if sistema.coluna_valor_pagto and sistema.coluna_valor_pagto in sistema.dados_limpos.columns:
+                valor_total = sistema.dados_limpos[sistema.coluna_valor_pagto].sum()
                 st.metric(
-                    label="Valor Médio",
-                    value=f"R$ {media:,.2f}",
-                    delta=None
+                    label="💰 Valor Total",
+                    value=f"R$ {valor_total:,.2f}",
+                    help=f"Soma da coluna '{sistema.coluna_valor_pagto}'"
                 )
             else:
                 st.metric(
-                    label="Valor Médio",
+                    label="💰 Valor Total",
                     value="N/A",
-                    delta=None
+                    help="Coluna de valor não identificada"
+                )
+        
+        with col3:
+            if sistema.coluna_valor_pagto and sistema.coluna_valor_pagto in sistema.dados_limpos.columns:
+                media = sistema.dados_limpos[sistema.coluna_valor_pagto].mean()
+                st.metric(
+                    label="📊 Valor Médio",
+                    value=f"R$ {media:,.2f}",
+                    help="Média por pagamento"
+                )
+            else:
+                st.metric(
+                    label="📊 Valor Médio",
+                    value="N/A"
                 )
         
         with col4:
-            # Contar colunas
-            num_colunas = len(sistema.dados_limpos.columns)
-            st.metric(
-                label="Colunas Disponíveis",
-                value=num_colunas,
-                delta=None
-            )
+            # Contar agências se existir coluna
+            if 'agencia' in sistema.dados_limpos.columns:
+                num_agencias = sistema.dados_limpos['agencia'].nunique()
+                st.metric(
+                    label="🏢 Agências",
+                    value=num_agencias,
+                    help="Número de agências distintas"
+                )
+            else:
+                st.metric(
+                    label="🏢 Agências",
+                    value="N/A"
+                )
         
         st.markdown("---")
         
-        # Informações do dataset
-        st.subheader("📋 Informações do Dataset")
+        # ============================
+        # VERIFICAÇÃO DO VALOR TOTAL
+        # ============================
+        st.subheader("✅ VERIFICAÇÃO DO CÁLCULO")
         
-        col_info1, col_info2 = st.columns(2)
-        
-        with col_info1:
-            st.write("**Colunas disponíveis:**")
-            for col in sistema.dados_limpos.columns:
-                tipo = str(sistema.dados_limpos[col].dtype)
-                st.write(f"- `{col}` ({tipo})")
-        
-        with col_info2:
-            st.write("**Estatísticas básicas:**")
+        if sistema.coluna_valor_pagto and sistema.coluna_valor_pagto in sistema.dados_limpos.columns:
+            # Calcular de 3 formas diferentes para verificar
+            col_a, col_b, col_c = st.columns(3)
             
-            # Colunas numéricas
-            numeric_cols = sistema.dados_limpos.select_dtypes(include=[np.number]).columns
-            if len(numeric_cols) > 0:
-                for col in numeric_cols[:3]:  # Mostrar até 3 colunas numéricas
-                    stats = sistema.dados_limpos[col].describe()
-                    st.write(f"**{col}:**")
-                    st.write(f"  Média: R$ {stats['mean']:,.2f}")
-                    st.write(f"  Min: R$ {stats['min']:,.2f}")
-                    st.write(f"  Max: R$ {stats['max']:,.2f}")
+            with col_a:
+                st.markdown("**Método 1: Pandas Sum**")
+                soma_pandas = sistema.dados_limpos[sistema.coluna_valor_pagto].sum()
+                st.code(f"R$ {soma_pandas:,.2f}")
+            
+            with col_b:
+                st.markdown("**Método 2: Numpy Sum**")
+                soma_numpy = np.sum(sistema.dados_limpos[sistema.coluna_valor_pagto].values)
+                st.code(f"R$ {soma_numpy:,.2f}")
+            
+            with col_c:
+                st.markdown("**Método 3: Loop Manual**")
+                soma_manual = 0
+                for valor in sistema.dados_limpos[sistema.coluna_valor_pagto]:
+                    try:
+                        soma_manual += float(valor)
+                    except:
+                        pass
+                st.code(f"R$ {soma_manual:,.2f}")
+            
+            # Verificar consistência
+            if abs(soma_pandas - soma_numpy) < 0.01 and abs(soma_pandas - soma_manual) < 0.01:
+                st.success("✅ Cálculos consistentes! O valor total está correto.")
+            else:
+                st.warning("⚠️ Pequena diferença nos cálculos (arredondamento).")
         
         st.markdown("---")
         
-        # Visualização de dados
-        st.subheader("👀 Visualização dos Dados")
+        # ============================
+        # VISUALIZAÇÃO DOS DADOS
+        # ============================
+        st.subheader("👀 VISUALIZAÇÃO DOS DADOS")
         
-        # Filtros simples
-        st.write("**Filtros rápidos:**")
+        # Selecionar colunas para visualizar
+        todas_colunas = sistema.dados_limpos.columns.tolist()
+        colunas_selecionadas = st.multiselect(
+            "Selecione as colunas para visualizar:",
+            options=todas_colunas,
+            default=todas_colunas[:min(6, len(todas_colunas))]
+        )
         
-        col_filtro1, col_filtro2 = st.columns(2)
+        # Número de linhas
+        num_linhas = st.slider("Número de linhas para mostrar:", 5, 100, 20)
         
-        with col_filtro1:
-            # Selecionar colunas para mostrar
-            colunas_para_mostrar = st.multiselect(
-                "Selecionar colunas:",
-                options=sistema.dados_limpos.columns.tolist(),
-                default=sistema.dados_limpos.columns.tolist()[:5] if len(sistema.dados_limpos.columns) > 5 else sistema.dados_limpos.columns.tolist()
-            )
-        
-        with col_filtro2:
-            # Número de linhas para mostrar
-            num_linhas = st.slider(
-                "Número de linhas:",
-                min_value=5,
-                max_value=100,
-                value=20,
-                step=5
-            )
-        
-        # Mostrar dados filtrados
-        if colunas_para_mostrar:
-            dados_filtrados = sistema.dados_limpos[colunas_para_mostrar].head(num_linhas)
+        if colunas_selecionadas:
+            dados_visiveis = sistema.dados_limpos[colunas_selecionadas].head(num_linhas).copy()
             
             # Formatar valores monetários
-            for col in dados_filtrados.columns:
-                if dados_filtrados[col].dtype in ['float64', 'int64']:
-                    # Verificar se é coluna monetária
-                    if any(termo in col.lower() for termo in ['valor', 'total', 'pagto', 'desconto']):
-                        dados_filtrados[col] = dados_filtrados[col].apply(lambda x: f"R$ {x:,.2f}" if pd.notna(x) else "")
+            for col in dados_visiveis.columns:
+                if col == sistema.coluna_valor_pagto or 'valor' in col.lower():
+                    dados_visiveis[col] = dados_visiveis[col].apply(lambda x: f"R$ {x:,.2f}" if pd.notna(x) else "")
             
-            st.dataframe(
-                dados_filtrados,
-                use_container_width=True,
-                height=400
-            )
+            st.dataframe(dados_visiveis, use_container_width=True, height=400)
         
         st.markdown("---")
         
-        # Botões de ação
-        st.subheader("📥 Exportação de Dados")
+        # ============================
+        # ANÁLISE POR AGÊNCIA
+        # ============================
+        if 'agencia' in sistema.dados_limpos.columns and sistema.coluna_valor_pagto:
+            st.subheader("🏢 ANÁLISE POR AGÊNCIA")
+            
+            # Top 10 agências por valor
+            analise_agencia = sistema.dados_limpos.groupby('agencia').agg({
+                sistema.coluna_valor_pagto: ['sum', 'count', 'mean']
+            }).round(2)
+            
+            analise_agencia.columns = ['Valor Total', 'Quantidade', 'Média']
+            analise_agencia = analise_agencia.sort_values('Valor Total', ascending=False)
+            
+            col_ag1, col_ag2 = st.columns(2)
+            
+            with col_ag1:
+                st.markdown("**Top 5 Agências por Valor Total:**")
+                top5 = analise_agencia.head(5).copy()
+                top5['Valor Total'] = top5['Valor Total'].apply(lambda x: f"R$ {x:,.2f}")
+                top5['Média'] = top5['Média'].apply(lambda x: f"R$ {x:,.2f}")
+                st.dataframe(top5, use_container_width=True)
+            
+            with col_ag2:
+                st.markdown("**Distribuição por Agência:**")
+                st.write(f"Total de agências: {len(analise_agencia)}")
+                st.write(f"Agência com maior valor: {analise_agencia.index[0]}")
+                st.write(f"Valor da maior agência: R$ {analise_agencia.iloc[0]['Valor Total']:,.2f}")
         
-        col_exp1, col_exp2, col_exp3 = st.columns(3)
+        st.markdown("---")
         
-        with col_exp1:
+        # ============================
+        # ESTATÍSTICAS DETALHADAS
+        # ============================
+        if sistema.coluna_valor_pagto:
+            st.subheader("📈 ESTATÍSTICAS DETALHADAS")
+            
+            col_stats1, col_stats2 = st.columns(2)
+            
+            with col_stats1:
+                st.markdown(f"**Estatísticas de '{sistema.coluna_valor_pagto}':**")
+                stats = sistema.dados_limpos[sistema.coluna_valor_pagto].describe()
+                
+                stats_df = pd.DataFrame({
+                    'Estatística': ['Mínimo', '25% (Q1)', 'Mediana', '75% (Q3)', 'Máximo', 'Média', 'Desvio Padrão'],
+                    'Valor': [
+                        f"R$ {stats.get('min', 0):,.2f}",
+                        f"R$ {stats.get('25%', 0):,.2f}",
+                        f"R$ {stats.get('50%', 0):,.2f}",
+                        f"R$ {stats.get('75%', 0):,.2f}",
+                        f"R$ {stats.get('max', 0):,.2f}",
+                        f"R$ {stats.get('mean', 0):,.2f}",
+                        f"R$ {stats.get('std', 0):,.2f}"
+                    ]
+                })
+                st.dataframe(stats_df, use_container_width=True, hide_index=True)
+            
+            with col_stats2:
+                # Histograma simples usando HTML
+                st.markdown("**Distribuição de Valores:**")
+                
+                # Classificar valores em faixas
+                if sistema.coluna_valor_pagto in sistema.dados_limpos.columns:
+                    valores = sistema.dados_limpos[sistema.coluna_valor_pagto]
+                    min_val = valores.min()
+                    max_val = valores.max()
+                    
+                    # Criar faixas
+                    faixas = pd.cut(valores, bins=5)
+                    contagem = faixas.value_counts().sort_index()
+                    
+                    for intervalo, count in contagem.items():
+                        percent = (count / len(valores)) * 100
+                        st.write(f"{intervalo}: {count} pagamentos ({percent:.1f}%)")
+        
+        st.markdown("---")
+        
+        # ============================
+        # DOWNLOAD DE DADOS
+        # ============================
+        st.subheader("📥 EXPORTAR DADOS")
+        
+        col_dl1, col_dl2, col_dl3 = st.columns(3)
+        
+        with col_dl1:
             # Download CSV
-            csv_data = sistema.dados_limpos.to_csv(index=False, sep=';', encoding='utf-8')
+            csv = sistema.dados_limpos.to_csv(index=False, sep=';', encoding='utf-8')
             st.download_button(
                 label="📥 Download CSV",
-                data=csv_data,
+                data=csv,
                 file_name=f"dados_processados_{datetime.now().strftime('%Y%m%d')}.csv",
                 mime="text/csv",
                 use_container_width=True
             )
         
-        with col_exp2:
+        with col_dl2:
             # Download Excel
             try:
-                import io
-                buffer = io.BytesIO()
-                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                    sistema.dados_limpos.to_excel(writer, index=False, sheet_name='Dados')
-                buffer.seek(0)
-                
+                output = sistema.dados_limpos.to_excel(index=False)
                 st.download_button(
                     label="📥 Download Excel",
-                    data=buffer,
+                    data=output,
                     file_name=f"dados_processados_{datetime.now().strftime('%Y%m%d')}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True
                 )
             except:
-                st.warning("Excel não disponível")
+                st.button("📥 Download Excel (não disponível)", disabled=True, use_container_width=True)
         
-        with col_exp3:
-            # Copiar para clipboard
+        with col_dl3:
+            # Copiar resumo
             if st.button("📋 Copiar Resumo", use_container_width=True):
                 resumo = f"""
-                RESUMO DO PROCESSAMENTO
-                -----------------------
+                RESUMO POT - {datetime.now().strftime('%d/%m/%Y %H:%M')}
                 Arquivo: {sistema.nome_arquivo}
-                Data: {datetime.now().strftime('%d/%m/%Y %H:%M')}
                 Registros: {len(sistema.dados_limpos):,}
                 Valor Total: R$ {sistema.total_pagamentos:,.2f}
-                Colunas: {len(sistema.dados_limpos.columns)}
                 """
                 st.code(resumo)
-        
-        # Análise avançada
-        st.markdown("---")
-        st.subheader("🔍 Análise Avançada")
-        
-        analise_tipo = st.radio(
-            "Selecione tipo de análise:",
-            ["Resumo por Coluna", "Busca por Texto", "Filtros Avançados", "Estatísticas Detalhadas"],
-            horizontal=True
-        )
-        
-        if analise_tipo == "Resumo por Coluna":
-            col_analise = st.selectbox(
-                "Selecione coluna para análise:",
-                options=sistema.dados_limpos.columns.tolist()
-            )
-            
-            if col_analise:
-                col_data = sistema.dados_limpos[col_analise]
-                
-                col_a1, col_a2 = st.columns(2)
-                
-                with col_a1:
-                    st.write(f"**Resumo de '{col_analise}':**")
-                    st.write(f"- Tipo: {col_data.dtype}")
-                    st.write(f"- Valores únicos: {col_data.nunique()}")
-                    st.write(f"- Valores nulos: {col_data.isnull().sum()}")
-                
-                with col_a2:
-                    if pd.api.types.is_numeric_dtype(col_data):
-                        st.write("**Estatísticas:**")
-                        stats = col_data.describe()
-                        for stat, value in stats.items():
-                            st.write(f"- {stat}: {value:,.2f}")
-        
-        elif analise_tipo == "Busca por Texto":
-            texto_busca = st.text_input("Texto para buscar:")
-            if texto_busca:
-                # Buscar em todas as colunas de texto
-                resultados = pd.DataFrame()
-                for col in sistema.dados_limpos.select_dtypes(include=['object']).columns:
-                    mask = sistema.dados_limpos[col].astype(str).str.contains(texto_busca, case=False, na=False)
-                    if mask.any():
-                        if resultados.empty:
-                            resultados = sistema.dados_limpos[mask]
-                        else:
-                            resultados = pd.concat([resultados, sistema.dados_limpos[mask]])
-                
-                if not resultados.empty:
-                    st.success(f"✅ Encontrados {len(resultados)} resultados")
-                    st.dataframe(resultados.head(20), use_container_width=True)
-                else:
-                    st.warning("⚠️ Nenhum resultado encontrado")
-        
-        elif analise_tipo == "Estatísticas Detalhadas":
-            st.write(sistema.dados_limpos.describe(include='all'))
     
     else:
-        st.error("❌ Nenhum dado válido processado. O arquivo pode estar vazio ou com formato incorreto.")
+        st.error("❌ Erro: Dados não processados corretamente.")
 else:
     # Tela inicial
-    st.header("👋 Bem-vindo ao Sistema POT")
+    st.markdown("""
+    # 🚀 SISTEMA DE MONITORAMENTO POT
     
-    col1, col2 = st.columns([2, 1])
+    ### 📋 **Funcionalidades:**
     
-    with col1:
-        st.markdown("""
-        ### 📋 Sobre o Sistema
-        
-        Este sistema foi desenvolvido para processar arquivos de pagamentos do POT
-        que possuem problemas comuns de encoding e formatação.
-        
-        **Funcionalidades principais:**
-        - ✅ **Detecção automática de encoding**
-        - ✅ **Conversão de valores monetários brasileiros**
-        - ✅ **Limpeza automática de dados**
-        - ✅ **Dashboard interativo**
-        - ✅ **Exportação em múltiplos formatos**
-        
-        **Problemas resolvidos:**
-        1. Encoding incorreto (UTF-8, Latin-1, CP1252)
-        2. Valores no formato R$ 1.593,90
-        3. Datas no formato DD/MM/AAAA
-        4. Delimitador ponto e vírgula
-        """)
+    1. **Processamento automático** de arquivos CSV com encoding variável
+    2. **Cálculo preciso** de valores totais de pagamentos
+    3. **Identificação automática** da coluna de valor de pagamento
+    4. **Dashboard interativo** com métricas principais
+    5. **Exportação** em CSV e Excel
     
-    with col2:
-        st.markdown("""
-        ### 🚀 Quick Start
-        
-        1. **Clique em 'Browse files'**
-        2. **Selecione seu arquivo CSV**
-        3. **Clique em 'Processar Arquivo'**
-        4. **Aguarde o processamento**
-        5. **Explore os dados**
-        
-        ### ⚠️ Solução de Problemas
-        
-        Se encontrar erros:
-        - Tente selecionar encoding manualmente
-        - Verifique o formato do arquivo
-        - Confirme o delimitador (;)
-        - Tente abrir no bloco de notas primeiro
-        """)
+    ### 📁 **Como usar:**
+    
+    1. **Faça upload** do arquivo CSV na barra lateral
+    2. **Clique em "Processar Arquivo"**
+    3. **Verifique** as métricas calculadas
+    4. **Explore** os dados com as ferramentas disponíveis
+    
+    ### ⚠️ **Formato esperado:**
+    
+    - Arquivo CSV com **delimitador ponto e vírgula (;)**
+    - Coluna de **Valor Pagto** com valores no formato brasileiro (R$ 1.593,90)
+    - **Encoding comum:** Latin-1 (ISO-8859-1) ou UTF-8
+    """)
     
     st.markdown("---")
     
-    # Upload rápido
-    st.subheader("🚀 Comece agora mesmo")
-    
-    arquivo_rapido = st.file_uploader(
-        "Arraste e solte seu arquivo aqui",
-        type=['csv'],
-        label_visibility="collapsed"
-    )
-    
-    if arquivo_rapido:
-        st.info(f"📄 Pronto para processar: {arquivo_rapido.name}")
-        if st.button("⚡ Processar Agora", type="primary"):
-            sucesso = sistema.processar_arquivo_streamlit(arquivo_rapido)
-            if sucesso:
-                st.session_state['arquivo_processado'] = True
-                st.rerun()
+    # Exemplo de formato esperado
+    with st.expander("📋 Exemplo do formato de arquivo esperado"):
+        st.code("""
+        Ordem;Projeto;Num Cartao;Nome;Distrito;Agencia;RG;Valor Total;Valor Desconto;Valor Pagto;Data Pagto;Valor Dia;Dias a apagar
+        1;ABASTECE;364363;PRISCILA REGINA DE OLIVEIRA;0;1530;;R$ 1.593,90;R$ 0,00;R$ 1.593,90;20/10/2025;R$ 53,13;30
+        2;ABASTECE;364629;NADIA SOUSA DA COSTA;0;3107;;R$ 1.593,90;R$ 0,00;R$ 1.593,90;20/10/2025;R$ 53,13;30
+        """)
 
 # ==============================================
 # RODAPÉ
@@ -730,26 +597,20 @@ else:
 st.markdown("---")
 st.markdown(
     """
-    <div style='text-align: center; color: gray; padding: 20px;'>
-    <strong>Sistema de Monitoramento POT</strong> • 
-    Versão 3.0 • 
-    Tratamento Avançado de Encoding • 
-    Desenvolvido para processar arquivos problemáticos
+    <div style='text-align: center; color: gray; padding: 10px;'>
+    <strong>Sistema POT - Monitoramento de Pagamentos</strong> • 
+    Cálculo Correto de Valores • 
+    Versão 4.0 • 
+    Desenvolvido para precisão
     </div>
     """,
     unsafe_allow_html=True
 )
 
-# Script para debug
-if st.sidebar.checkbox("🐛 Modo Debug", value=False):
-    st.sidebar.markdown("---")
-    st.sidebar.header("Debug Information")
-    
-    if sistema.df is not None:
-        st.sidebar.write(f"DataFrame shape: {sistema.df.shape}")
-        st.sidebar.write(f"Colunas originais: {list(sistema.df.columns)}")
-    
-    if sistema.dados_limpos is not None:
-        st.sidebar.write(f"Dados limpos shape: {sistema.dados_limpos.shape}")
-        st.sidebar.write("Primeiras linhas:")
-        st.sidebar.dataframe(sistema.dados_limpos.head(3))
+# Configurações auxiliares
+encoding_map = {
+    'ISO-8859-1': 'latin-1',
+    'Windows-1252': 'cp1252',
+    'ascii': 'utf-8',
+    'UTF-8-SIG': 'utf-8'
+}
