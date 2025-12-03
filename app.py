@@ -1,4 +1,4 @@
-# app.py - SISTEMA POT SMDET COMPLETO E CORRIGIDO
+# app.py - SISTEMA POT SMDET COMPLETO E CORRIGIDO (SEM CHARDET)
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -14,7 +14,6 @@ import sqlite3
 from sqlite3 import Error
 import os
 import json
-import chardet
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -38,23 +37,43 @@ def data_hora_atual_brasilia():
     """Retorna a data e hora atual no formato dd/mm/aaaa às HH:MM no fuso de Brasília"""
     return agora_brasilia().strftime("%d/%m/%Y às %H:%M")
 
-def detectar_encoding(arquivo):
-    """Detecta o encoding de um arquivo"""
-    rawdata = arquivo.read()
-    resultado = chardet.detect(rawdata)
+def detectar_encoding_simples(arquivo):
+    """
+    Detecta encoding de forma simples sem chardet.
+    Tenta encodings comuns para arquivos brasileiros.
+    """
+    encodings = ['utf-8', 'latin-1', 'iso-8859-1', 'cp1252', 'windows-1252']
+    
+    # Ler uma amostra do arquivo
+    raw_data = arquivo.read(10000)  # Ler os primeiros 10KB
+    arquivo.seek(0)  # Voltar ao início
+    
+    for encoding in encodings:
+        try:
+            # Tentar decodificar com o encoding
+            raw_data.decode(encoding)
+            arquivo.seek(0)
+            return encoding
+        except UnicodeDecodeError:
+            continue
+    
+    # Se nenhum funcionar, retornar utf-8 por padrão
     arquivo.seek(0)
-    return resultado['encoding']
+    return 'utf-8'
 
 def formatar_brasileiro(valor, tipo='numero'):
     """Formata valores no padrão brasileiro"""
     if pd.isna(valor):
         valor = 0
     
-    if tipo == 'monetario':
-        return f"R$ {float(valor):,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
-    elif tipo == 'numero':
-        return f"{int(valor):,}".replace(',', '.')
-    else:
+    try:
+        if tipo == 'monetario':
+            return f"R$ {float(valor):,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
+        elif tipo == 'numero':
+            return f"{int(valor):,}".replace(',', '.')
+        else:
+            return str(valor)
+    except:
         return str(valor)
 
 # ============================================
@@ -68,19 +87,21 @@ def detectar_coluna_conta(df):
         'Num Cartão', 'Num_Cartão', 'Cartao', 'Cartão', 'Conta',
         'Numero Conta', 'Numero_Conta', 'Número Conta', 'Número_Conta',
         'NumeroCartao', 'NumeroCartão', 'Numero_Cartao', 'Numero_Cartão',
-        'Nº Cartão', 'Nº Cartao', 'Nº Conta', 'Numero do Cartão'
+        'Nº Cartão', 'Nº Cartao', 'Nº Conta', 'Numero do Cartão',
+        'NRO CARTAO', 'NRO_CARTAO', 'NR_CARTAO', 'CARTAO'
     ]
     
     for coluna in df.columns:
-        coluna_limpa = str(coluna).strip().lower()
+        coluna_limpa = str(coluna).strip().upper()
         for padrao in colunas_possiveis:
-            if padrao.lower() in coluna_limpa:
+            if padrao.upper() in coluna_limpa:
                 return coluna
     
     # Se não encontrou por nome, procura por colunas que contenham números de conta
     for coluna in df.columns:
         if df[coluna].dtype == 'object':
             amostra = df[coluna].dropna().head(10).astype(str)
+            # Verificar se contém números de 6+ dígitos
             if any(re.search(r'^\d{6,}$', str(x).strip()) for x in amostra):
                 return coluna
     
@@ -91,13 +112,14 @@ def detectar_coluna_nome(df):
     colunas_possiveis = [
         'Nome', 'Nome do beneficiário', 'Beneficiario', 'Beneficiário',
         'Participante', 'Nome Completo', 'NomeBeneficiario', 'Nome_Beneficiario',
-        'NomeBeneficiário', 'Nome_Beneficiário', 'Nome do Beneficiario'
+        'NomeBeneficiário', 'Nome_Beneficiário', 'Nome do Beneficiario',
+        'NOME', 'BENEFICIARIO', 'BENEFICIÁRIO', 'PARTICIPANTE'
     ]
     
     for coluna in df.columns:
-        coluna_limpa = str(coluna).strip().lower()
+        coluna_limpa = str(coluna).strip().upper()
         for padrao in colunas_possiveis:
-            if padrao.lower() in coluna_limpa:
+            if padrao.upper() in coluna_limpa:
                 return coluna
     
     return None
@@ -108,20 +130,25 @@ def detectar_coluna_valor(df):
         'Valor Pagto', 'ValorPagto', 'Valor_Pagto', 'Valor Pago', 'ValorPago',
         'Valor_Pago', 'Valor Pagamento', 'ValorPagamento', 'Valor_Pagamento',
         'Valor', 'Valor Total', 'ValorTotal', 'Valor_Total',
-        'Valor a Pagar', 'ValoraPagar', 'Valor_a_Pagar'
+        'Valor a Pagar', 'ValoraPagar', 'Valor_a_Pagar', 'VALOR'
     ]
     
     # Primeiro busca pelas colunas de prioridade
     for coluna in df.columns:
-        coluna_limpa = str(coluna).strip().lower()
+        coluna_limpa = str(coluna).strip().upper()
         for padrao in colunas_prioridade:
-            if padrao.lower() in coluna_limpa:
+            if padrao.upper() in coluna_limpa:
                 return coluna
     
     # Se não encontrou, busca por qualquer coluna que possa conter valores monetários
     for coluna in df.columns:
         if df[coluna].dtype in ['float64', 'int64']:
             return coluna
+        elif df[coluna].dtype == 'object':
+            # Verificar se a coluna contém valores monetários
+            amostra = df[coluna].dropna().head(10).astype(str)
+            if any(re.search(r'[\d.,]+\s*[R$\€\£]?', str(x)) for x in amostra):
+                return coluna
     
     return None
 
@@ -131,26 +158,27 @@ def detectar_coluna_data(df):
         'Data', 'Data Pagto', 'DataPagto', 'Data_Pagto', 'Data Pagamento',
         'DataPagamento', 'Data_Pagamento', 'Data de Pagamento', 'Data de Pagto',
         'DataNasc', 'Data de Nasc', 'Data de Nascimento', 'DataNascimento',
-        'DtLote', 'Data Lote', 'Data_Lote'
+        'DtLote', 'Data Lote', 'Data_Lote', 'DATA', 'DT_LOTE'
     ]
     
     datas_encontradas = []
     for coluna in df.columns:
-        coluna_limpa = str(coluna).strip().lower()
+        coluna_limpa = str(coluna).strip().upper()
         for padrao in colunas_data:
-            if padrao.lower() in coluna_limpa:
+            if padrao.upper() in coluna_limpa:
                 datas_encontradas.append(coluna)
+                break
     
     return datas_encontradas
 
 def detectar_coluna_projeto(df):
     """Detecta automaticamente a coluna de projeto"""
-    colunas_possiveis = ['Projeto', 'Programa', 'Projeto/Programa', 'Nome Projeto']
+    colunas_possiveis = ['Projeto', 'Programa', 'Projeto/Programa', 'Nome Projeto', 'PROJETO', 'PROGRAMA']
     
     for coluna in df.columns:
-        coluna_limpa = str(coluna).strip().lower()
+        coluna_limpa = str(coluna).strip().upper()
         for padrao in colunas_possiveis:
-            if padrao.lower() in coluna_limpa:
+            if padrao.upper() in coluna_limpa:
                 return coluna
     
     return None
@@ -160,9 +188,9 @@ def detectar_coluna_cpf(df):
     colunas_possiveis = ['CPF', 'Cpf', 'cpf', 'CPF/CNPJ', 'CPF_CNPJ']
     
     for coluna in df.columns:
-        coluna_limpa = str(coluna).strip().lower()
+        coluna_limpa = str(coluna).strip().upper()
         for padrao in colunas_possiveis:
-            if padrao.lower() == coluna_limpa:
+            if padrao.upper() == coluna_limpa:
                 return coluna
     
     return None
@@ -173,7 +201,7 @@ def detectar_coluna_cpf(df):
 
 def extrair_mes_ano_arquivo(nome_arquivo):
     """
-    Extrai mês e ano do nome do arquivo e do conteúdo das planilhas.
+    Extrai mês e ano do nome do arquivo.
     Prioridade: colunas de data > nome do arquivo > data atual
     """
     if not nome_arquivo:
@@ -272,28 +300,43 @@ def extrair_mes_ano_dados(df):
     
     for coluna_data in colunas_data:
         try:
-            # Converter para datetime
-            df[coluna_data] = pd.to_datetime(df[coluna_data], errors='coerce', dayfirst=True)
+            # Tentar converter para datetime
+            df_temp = df.copy()
+            
+            # Primeiro tentar converter diretamente
+            df_temp[coluna_data] = pd.to_datetime(df_temp[coluna_data], errors='coerce', dayfirst=True)
+            
+            # Se não funcionar, tentar outros formatos
+            if df_temp[coluna_data].isna().all():
+                # Tentar formato brasileiro
+                for fmt in ['%d/%m/%Y', '%d/%m/%y', '%d-%m-%Y', '%d.%m.%Y']:
+                    try:
+                        df_temp[coluna_data] = pd.to_datetime(df[coluna_data], format=fmt, errors='coerce')
+                        if not df_temp[coluna_data].isna().all():
+                            break
+                    except:
+                        continue
             
             # Filtrar datas válidas
-            datas_validas = df[coluna_data].dropna()
+            datas_validas = df_temp[coluna_data].dropna()
             
             if not datas_validas.empty:
-                # Pegar a data mais frequente ou a mais recente
-                mes_mais_frequente = datas_validas.dt.month.mode()
-                ano_mais_frequente = datas_validas.dt.year.mode()
-                
-                if not mes_mais_frequente.empty and not ano_mais_frequente.empty:
-                    meses_numeros = {
-                        1: 'Janeiro', 2: 'Fevereiro', 3: 'Março', 4: 'Abril',
-                        5: 'Maio', 6: 'Junho', 7: 'Julho', 8: 'Agosto',
-                        9: 'Setembro', 10: 'Outubro', 11: 'Novembro', 12: 'Dezembro'
-                    }
+                # Pegar a data mais frequente
+                if len(datas_validas) > 0:
+                    mes_mais_frequente = datas_validas.dt.month.mode()
+                    ano_mais_frequente = datas_validas.dt.year.mode()
                     
-                    mes_num = int(mes_mais_frequente.iloc[0])
-                    ano = int(ano_mais_frequente.iloc[0])
-                    
-                    return meses_numeros.get(mes_num, 'Janeiro'), ano
+                    if not mes_mais_frequente.empty and not ano_mais_frequente.empty:
+                        meses_numeros = {
+                            1: 'Janeiro', 2: 'Fevereiro', 3: 'Março', 4: 'Abril',
+                            5: 'Maio', 6: 'Junho', 7: 'Julho', 8: 'Agosto',
+                            9: 'Setembro', 10: 'Outubro', 11: 'Novembro', 12: 'Dezembro'
+                        }
+                        
+                        mes_num = int(mes_mais_frequente.iloc[0])
+                        ano = int(ano_mais_frequente.iloc[0])
+                        
+                        return meses_numeros.get(mes_num, 'Janeiro'), ano
         except:
             continue
     
@@ -319,7 +362,7 @@ def processar_valor(valor):
             return 0.0
         
         # Remover símbolos de moeda e espaços
-        valor_str = re.sub(r'[R\$\s]', '', valor_str)
+        valor_str = re.sub(r'[R\$\s€£¥]', '', valor_str)
         
         # Substituir vírgula por ponto se for o formato brasileiro
         if ',' in valor_str and '.' in valor_str:
@@ -371,8 +414,9 @@ def processar_data(data):
             
             for formato in formatos:
                 try:
-                    data_dt = datetime.strptime(str(data), formato)
-                    break
+                    if isinstance(data, str):
+                        data_dt = datetime.strptime(data, formato)
+                        break
                 except:
                     continue
         
@@ -387,13 +431,14 @@ def identificar_tipo_planilha(nome_arquivo, df):
     # Palavras-chave para pagamentos
     palavras_pagamentos = [
         'PGTO', 'PAGTO', 'PAGAMENTO', 'PENDENCIA', 'PENDÊNCIA',
-        'PENDENCIAS', 'PENDÊNCIAS', 'REL.CADASTRO', 'REL_CADASTRO'
+        'PENDENCIAS', 'PENDÊNCIAS', 'REL.CADASTRO', 'REL_CADASTRO',
+        'RELATÓRIO', 'RELATORIO', 'BOLETIM', 'PAGAMENTOS'
     ]
     
     # Palavras-chave para abertura de contas
     palavras_abertura = [
         'ABERT', 'ABERTURA', 'CADASTRO', 'INSCRICAO', 'INSCRIÇÃO',
-        'CONTA', 'CONTAS'
+        'CONTA', 'CONTAS', 'CADASTROS', 'INSCRIÇÕES'
     ]
     
     # Verificar pelo nome do arquivo
@@ -424,41 +469,70 @@ def carregar_planilha(arquivo):
     try:
         nome_arquivo = arquivo.name
         
-        # Detectar encoding para arquivos CSV
-        if nome_arquivo.endswith('.csv'):
-            encoding = detectar_encoding(arquivo)
+        # Para arquivos CSV
+        if nome_arquivo.endswith('.csv') or nome_arquivo.endswith('.txt'):
+            # Detectar encoding
+            encoding = detectar_encoding_simples(arquivo)
             
             # Tentar diferentes delimitadores
-            for delimiter in [';', ',', '\t']:
+            delimitadores = [';', ',', '\t', '|']
+            
+            for delimiter in delimitadores:
                 try:
-                    df = pd.read_csv(arquivo, delimiter=delimiter, encoding=encoding, low_memory=False)
-                    if len(df.columns) > 1:  # Se encontrou mais de uma coluna, provavelmente é o delimitador correto
-                        arquivo.seek(0)
-                        return df
-                except:
                     arquivo.seek(0)
+                    df = pd.read_csv(arquivo, delimiter=delimiter, encoding=encoding, 
+                                    low_memory=False, on_bad_lines='skip')
+                    
+                    # Verificar se encontrou colunas válidas
+                    if len(df.columns) > 1:
+                        return df
+                    
+                    # Se tem apenas uma coluna, pode ser delimitador errado
+                    if len(df.columns) == 1:
+                        # Tentar ler como texto e analisar
+                        arquivo.seek(0)
+                        conteudo = arquivo.read().decode(encoding)
+                        linhas = conteudo.split('\n')
+                        
+                        # Contar ocorrências de cada delimitador
+                        contagem = {delim: 0 for delim in delimitadores}
+                        for linha in linhas[:10]:
+                            for delim in delimitadores:
+                                contagem[delim] += linha.count(delim)
+                        
+                        # Usar o delimitador mais comum
+                        melhor_delim = max(contagem, key=contagem.get)
+                        if contagem[melhor_delim] > 0:
+                            arquivo.seek(0)
+                            df = pd.read_csv(arquivo, delimiter=melhor_delim, 
+                                            encoding=encoding, low_memory=False)
+                            return df
+                except Exception as e:
                     continue
             
-            # Se não encontrou delimitador correto, tentar ler linha por linha
-            arquivo.seek(0)
-            linhas = arquivo.readlines()
+            # Se nada funcionou, tentar ler com engine python
+            try:
+                arquivo.seek(0)
+                df = pd.read_csv(arquivo, sep=None, engine='python', encoding=encoding, 
+                                low_memory=False, on_bad_lines='skip')
+                return df
+            except:
+                arquivo.seek(0)
+                # Último recurso: ler como texto e converter
+                conteudo = arquivo.read().decode(encoding)
+                linhas = [linha.split(';') for linha in conteudo.split('\n') if linha.strip()]
+                if linhas:
+                    df = pd.DataFrame(linhas[1:], columns=linhas[0])
+                    return df
             
-            # Encontrar delimitador mais comum
-            delimitadores = [';', ',', '\t']
-            contagem = {delim: 0 for delim in delimitadores}
+        # Para arquivos Excel
+        elif nome_arquivo.endswith(('.xlsx', '.xls', '.xlsm')):
+            try:
+                return pd.read_excel(arquivo)
+            except Exception as e:
+                st.warning(f"Erro ao ler Excel {nome_arquivo}: {str(e)}")
+                return pd.DataFrame()
             
-            for linha in linhas[:10]:  # Analisar apenas as primeiras linhas
-                for delim in delimitadores:
-                    contagem[delim] += linha.decode(encoding).count(delim)
-            
-            melhor_delim = max(contagem, key=contagem.get)
-            
-            arquivo.seek(0)
-            df = pd.read_csv(arquivo, delimiter=melhor_delim, encoding=encoding, low_memory=False)
-            return df
-            
-        elif nome_arquivo.endswith(('.xlsx', '.xls')):
-            return pd.read_excel(arquivo)
         else:
             st.error(f"Formato de arquivo não suportado: {nome_arquivo}")
             return pd.DataFrame()
@@ -477,12 +551,13 @@ def processar_dataframe(df, tipo_planilha):
     # Remover linhas completamente vazias
     df_processado = df_processado.dropna(how='all')
     
-    # Detectar e remover linha de totais
-    for idx in df_processado.index[-5:]:  # Verificar as últimas 5 linhas
+    # Remover linhas que são totais
+    for idx in df_processado.index[-10:]:  # Verificar as últimas 10 linhas
         linha = df_processado.loc[idx]
         
-        # Verificar se é linha de totais
-        if any(str(val).upper() in ['TOTAL', 'TOTAL GERAL', 'SOMA', 'SUM'] for val in linha.dropna()):
+        # Converter valores da linha para string e verificar se contém "TOTAL"
+        linha_str = ' '.join([str(val).upper() for val in linha.dropna()])
+        if any(palavra in linha_str for palavra in ['TOTAL', 'SOMA', 'SUM', 'TOTAL GERAL']):
             df_processado = df_processado.drop(idx)
     
     # Padronizar nomes de colunas
@@ -491,18 +566,31 @@ def processar_dataframe(df, tipo_planilha):
     # Processar colunas de data
     colunas_data = detectar_coluna_data(df_processado)
     for coluna in colunas_data:
-        df_processado[f'{coluna}_Processada'] = df_processado[coluna].apply(processar_data)
+        try:
+            df_processado[f'{coluna}_Processada'] = df_processado[coluna].apply(processar_data)
+        except:
+            pass
     
     # Processar coluna de valor se for planilha de pagamentos
     if tipo_planilha == 'pagamentos':
         coluna_valor = detectar_coluna_valor(df_processado)
         if coluna_valor:
-            df_processado['Valor_Processado'] = df_processado[coluna_valor].apply(processar_valor)
+            try:
+                df_processado['Valor_Processado'] = df_processado[coluna_valor].apply(processar_valor)
+            except:
+                # Tentar converter diretamente
+                try:
+                    df_processado['Valor_Processado'] = pd.to_numeric(df_processado[coluna_valor], errors='coerce').fillna(0)
+                except:
+                    df_processado['Valor_Processado'] = 0
     
     # Processar CPF
     coluna_cpf = detectar_coluna_cpf(df_processado)
     if coluna_cpf:
-        df_processado['CPF_Processado'] = df_processado[coluna_cpf].apply(processar_cpf)
+        try:
+            df_processado['CPF_Processado'] = df_processado[coluna_cpf].apply(processar_cpf)
+        except:
+            pass
     
     return df_processado
 
@@ -533,31 +621,48 @@ def analisar_pagamentos(df_pagamentos):
     coluna_projeto = detectar_coluna_projeto(df_pagamentos)
     
     # Contar registros válidos (com número de conta)
-    if coluna_conta:
-        registros_validos = df_pagamentos[coluna_conta].notna() & (df_pagamentos[coluna_conta].astype(str).str.strip() != '')
-        metrics['registros_validos'] = registros_validos.sum()
-        metrics['registros_sem_conta'] = len(df_pagamentos) - metrics['registros_validos']
+    if coluna_conta and coluna_conta in df_pagamentos.columns:
+        try:
+            registros_validos = df_pagamentos[coluna_conta].notna() & (df_pagamentos[coluna_conta].astype(str).str.strip() != '')
+            metrics['registros_validos'] = int(registros_validos.sum())
+            metrics['registros_sem_conta'] = len(df_pagamentos) - metrics['registros_validos']
+        except:
+            metrics['registros_validos'] = len(df_pagamentos)
+            metrics['registros_sem_conta'] = 0
         
         # Beneficiários únicos
-        if coluna_nome:
-            df_validos = df_pagamentos[registros_validos]
-            metrics['beneficiarios_unicos'] = df_validos[coluna_nome].nunique()
+        if coluna_nome and coluna_nome in df_pagamentos.columns:
+            try:
+                df_validos = df_pagamentos[registros_validos] if 'registros_validos' in locals() else df_pagamentos
+                metrics['beneficiarios_unicos'] = df_validos[coluna_nome].nunique()
+            except:
+                pass
     
     # Valor total
     if coluna_valor and coluna_valor in df_pagamentos.columns:
-        metrics['valor_total'] = df_pagamentos[coluna_valor].sum()
+        try:
+            metrics['valor_total'] = float(df_pagamentos[coluna_valor].sum())
+        except:
+            metrics['valor_total'] = 0.0
     
     # Projetos ativos
-    if coluna_projeto:
-        metrics['projetos_ativos'] = df_pagamentos[coluna_projeto].nunique()
+    if coluna_projeto and coluna_projeto in df_pagamentos.columns:
+        try:
+            metrics['projetos_ativos'] = df_pagamentos[coluna_projeto].nunique()
+        except:
+            metrics['projetos_ativos'] = 0
     
     # Detectar duplicidades por número de conta
-    if coluna_conta:
-        contas_duplicadas = df_pagamentos[df_pagamentos.duplicated(subset=[coluna_conta], keep=False)]
-        metrics['pagamentos_duplicados'] = contas_duplicadas[coluna_conta].nunique()
-        
-        if coluna_valor and coluna_valor in contas_duplicadas.columns:
-            metrics['valor_duplicados'] = contas_duplicadas[coluna_valor].sum()
+    if coluna_conta and coluna_conta in df_pagamentos.columns:
+        try:
+            contas_duplicadas = df_pagamentos[df_pagamentos.duplicated(subset=[coluna_conta], keep=False)]
+            metrics['pagamentos_duplicados'] = contas_duplicadas[coluna_conta].nunique()
+            
+            if coluna_valor and coluna_valor in contas_duplicadas.columns:
+                metrics['valor_duplicados'] = float(contas_duplicadas[coluna_valor].sum())
+        except:
+            metrics['pagamentos_duplicados'] = 0
+            metrics['valor_duplicados'] = 0.0
     
     return metrics
 
@@ -569,7 +674,8 @@ def analisar_contas(df_contas):
     metrics = {
         'total_contas': len(df_contas),
         'beneficiarios_unicos': 0,
-        'projetos_ativos': 0
+        'projetos_ativos': 0,
+        'contas_unicas': 0
     }
     
     # Detectar colunas
@@ -578,16 +684,25 @@ def analisar_contas(df_contas):
     coluna_conta = detectar_coluna_conta(df_contas)
     
     # Beneficiários únicos
-    if coluna_nome:
-        metrics['beneficiarios_unicos'] = df_contas[coluna_nome].nunique()
+    if coluna_nome and coluna_nome in df_contas.columns:
+        try:
+            metrics['beneficiarios_unicos'] = df_contas[coluna_nome].nunique()
+        except:
+            pass
     
     # Projetos ativos
-    if coluna_projeto:
-        metrics['projetos_ativos'] = df_contas[coluna_projeto].nunique()
+    if coluna_projeto and coluna_projeto in df_contas.columns:
+        try:
+            metrics['projetos_ativos'] = df_contas[coluna_projeto].nunique()
+        except:
+            pass
     
     # Contas únicas
-    if coluna_conta:
-        metrics['contas_unicas'] = df_contas[coluna_conta].nunique()
+    if coluna_conta and coluna_conta in df_contas.columns:
+        try:
+            metrics['contas_unicas'] = df_contas[coluna_conta].nunique()
+        except:
+            pass
     
     return metrics
 
@@ -602,19 +717,26 @@ def comparar_pagamentos_contas(df_pagamentos, df_contas):
     if not coluna_conta_pag or not coluna_conta_cont:
         return {}
     
-    # Extrair listas de contas
-    contas_com_pagamento = df_pagamentos[coluna_conta_pag].dropna().unique()
-    contas_abertas = df_contas[coluna_conta_cont].dropna().unique()
-    
-    # Encontrar contas sem pagamento
-    contas_sem_pagamento = [conta for conta in contas_abertas if conta not in contas_com_pagamento]
-    
-    return {
-        'total_contas_abertas': len(contas_abertas),
-        'total_contas_com_pagamento': len(contas_com_pagamento),
-        'total_contas_sem_pagamento': len(contas_sem_pagamento),
-        'contas_sem_pagamento': contas_sem_pagamento
-    }
+    try:
+        # Extrair listas de contas
+        contas_com_pagamento = df_pagamentos[coluna_conta_pag].dropna().unique()
+        contas_abertas = df_contas[coluna_conta_cont].dropna().unique()
+        
+        # Converter para strings para comparação
+        contas_com_pagamento = [str(c).strip() for c in contas_com_pagamento]
+        contas_abertas = [str(c).strip() for c in contas_abertas]
+        
+        # Encontrar contas sem pagamento
+        contas_sem_pagamento = [conta for conta in contas_abertas if conta not in contas_com_pagamento]
+        
+        return {
+            'total_contas_abertas': len(contas_abertas),
+            'total_contas_com_pagamento': len(set(contas_com_pagamento)),
+            'total_contas_sem_pagamento': len(contas_sem_pagamento),
+            'contas_sem_pagamento': contas_sem_pagamento
+        }
+    except:
+        return {}
 
 # ============================================
 # INTERFACE STREAMLIT
@@ -630,14 +752,14 @@ def main():
     
     uploaded_pagamentos = st.sidebar.file_uploader(
         "Planilhas de Pagamentos",
-        type=['csv', 'xlsx', 'xls'],
+        type=['csv', 'xlsx', 'xls', 'txt'],
         accept_multiple_files=True,
-        help="Carregue uma ou mais planilhas de pagamentos"
+        help="Carregue uma ou mais planilhas de pagamentos (CSV, Excel, TXT)"
     )
     
     uploaded_contas = st.sidebar.file_uploader(
         "Planilhas de Abertura de Contas",
-        type=['csv', 'xlsx', 'xls'],
+        type=['csv', 'xlsx', 'xls', 'txt'],
         accept_multiple_files=True,
         help="Carregue uma ou mais planilhas de abertura de contas"
     )
@@ -650,39 +772,61 @@ def main():
         with st.spinner("Processando planilhas de pagamentos..."):
             for arquivo in uploaded_pagamentos:
                 df = carregar_planilha(arquivo)
-                if not df.empty:
+                if not df.empty and len(df) > 0:
                     df_processado = processar_dataframe(df, 'pagamentos')
                     dados_pagamentos.append({
                         'nome': arquivo.name,
                         'dataframe': df_processado,
                         'tipo': 'pagamentos'
                     })
+                    st.sidebar.success(f"✓ {arquivo.name} ({len(df)} registros)")
     
     if uploaded_contas:
         with st.spinner("Processando planilhas de abertura de contas..."):
             for arquivo in uploaded_contas:
                 df = carregar_planilha(arquivo)
-                if not df.empty:
+                if not df.empty and len(df) > 0:
                     df_processado = processar_dataframe(df, 'contas')
                     dados_contas.append({
                         'nome': arquivo.name,
                         'dataframe': df_processado,
                         'tipo': 'contas'
                     })
+                    st.sidebar.success(f"✓ {arquivo.name} ({len(df)} registros)")
     
     # Verificar se há dados para análise
     if not dados_pagamentos and not dados_contas:
         st.info("📊 Faça o upload das planilhas para iniciar a análise")
+        
+        # Mostrar exemplo de formato esperado
+        with st.expander("ℹ️ Formato esperado das planilhas"):
+            st.write("""
+            **Para planilhas de pagamentos:**
+            - Deve conter coluna com número da conta (ex: "Num Cartao", "Conta", "Número Conta")
+            - Deve conter coluna de valor (ex: "Valor Pagto", "Valor", "Valor Pago")
+            - Pode conter colunas adicionais: Nome, Projeto, Data, CPF
+            
+            **Para planilhas de abertura de contas:**
+            - Deve conter coluna com número da conta
+            - Deve conter coluna de nome do beneficiário
+            - Pode conter colunas adicionais: Projeto, Data Nascimento, CPF
+            
+            **Formatos suportados:** CSV, Excel (XLSX, XLS), TXT
+            **Encoding suportados:** UTF-8, Latin-1, Windows-1252
+            """)
+        
         return
     
     # Combinar dados se houver múltiplos arquivos
     df_pagamentos_combinado = pd.DataFrame()
     if dados_pagamentos:
-        df_pagamentos_combinado = pd.concat([d['dataframe'] for d in dados_pagamentos], ignore_index=True)
+        dfs_pag = [d['dataframe'] for d in dados_pagamentos]
+        df_pagamentos_combinado = pd.concat(dfs_pag, ignore_index=True)
     
     df_contas_combinado = pd.DataFrame()
     if dados_contas:
-        df_contas_combinado = pd.concat([d['dataframe'] for d in dados_contas], ignore_index=True)
+        dfs_cont = [d['dataframe'] for d in dados_contas]
+        df_contas_combinado = pd.concat(dfs_cont, ignore_index=True)
     
     # Extrair mês/ano de referência
     mes_ref, ano_ref = None, None
@@ -711,23 +855,26 @@ def main():
     if not mes_ref:
         mes_ref, ano_ref = 'Outubro', datetime.now().year
     
-    # Seleção manual de mês/ano
+    # Seleção manual de mês/ano na sidebar
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("📅 Período de Referência")
+    
     col1, col2 = st.sidebar.columns(2)
     with col1:
         meses = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
                 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro']
-        mes_selecionado = st.selectbox("Mês de Referência", meses, 
+        mes_selecionado = st.selectbox("Mês", meses, 
                                       index=meses.index(mes_ref) if mes_ref in meses else 9)
     with col2:
         ano_atual = datetime.now().year
         anos = list(range(ano_atual, ano_atual - 5, -1))
-        ano_selecionado = st.selectbox("Ano de Referência", anos, 
+        ano_selecionado = st.selectbox("Ano", anos, 
                                       index=0 if ano_ref in anos else 0)
     
     st.sidebar.markdown("---")
     
     # Botão para análise
-    if st.sidebar.button("🔍 Realizar Análise", type="primary"):
+    if st.sidebar.button("🔍 Realizar Análise", type="primary", use_container_width=True):
         # Realizar análises
         with st.spinner("Realizando análises..."):
             # Análise de pagamentos
@@ -751,6 +898,9 @@ def main():
             # Exibir resultados
             st.success("✅ Análise concluída!")
             
+            # Exibir período de referência
+            st.subheader(f"📅 Período Analisado: {mes_selecionado} de {ano_selecionado}")
+            
             # Métricas principais
             st.subheader("📊 Métricas Principais")
             
@@ -761,49 +911,63 @@ def main():
                 if 'total_registros' in metrics_pagamentos:
                     st.metric("Total de Pagamentos", 
                              formatar_brasileiro(metrics_pagamentos['total_registros']))
+                else:
+                    st.metric("Total de Pagamentos", "0")
             
             with col2:
                 if 'registros_validos' in metrics_pagamentos:
                     st.metric("Pagamentos Válidos", 
                              formatar_brasileiro(metrics_pagamentos['registros_validos']))
+                else:
+                    st.metric("Pagamentos Válidos", "0")
             
             with col3:
                 if 'valor_total' in metrics_pagamentos:
                     st.metric("Valor Total", 
                              formatar_brasileiro(metrics_pagamentos['valor_total'], 'monetario'))
+                else:
+                    st.metric("Valor Total", "R$ 0,00")
             
             with col4:
-                if 'projetos_ativos' in metrics_pagamentos:
-                    st.metric("Projetos Ativos", 
-                             formatar_brasileiro(metrics_pagamentos.get('projetos_ativos', 
-                                                                       metrics_contas.get('projetos_ativos', 0))))
+                projetos = metrics_pagamentos.get('projetos_ativos', 
+                                                 metrics_contas.get('projetos_ativos', 0))
+                st.metric("Projetos Ativos", 
+                         formatar_brasileiro(projetos))
             
             # Segunda linha de métricas
             col5, col6, col7, col8 = st.columns(4)
             
             with col5:
                 if 'pagamentos_duplicados' in metrics_pagamentos:
+                    duplicados = metrics_pagamentos['pagamentos_duplicados']
+                    valor_dup = metrics_pagamentos.get('valor_duplicados', 0)
                     st.metric("Pagamentos Duplicados", 
-                             formatar_brasileiro(metrics_pagamentos['pagamentos_duplicados']),
-                             delta=f"-{formatar_brasileiro(metrics_pagamentos.get('valor_duplicados', 0), 'monetario')}",
+                             formatar_brasileiro(duplicados),
+                             delta=f"-{formatar_brasileiro(valor_dup, 'monetario')}" if valor_dup > 0 else "0",
                              delta_color="inverse")
+                else:
+                    st.metric("Pagamentos Duplicados", "0")
             
             with col6:
-                if 'beneficiarios_unicos' in metrics_pagamentos:
-                    st.metric("Beneficiários Únicos", 
-                             formatar_brasileiro(metrics_pagamentos.get('beneficiarios_unicos', 
-                                                                       metrics_contas.get('beneficiarios_unicos', 0))))
+                beneficiarios = metrics_pagamentos.get('beneficiarios_unicos', 
+                                                      metrics_contas.get('beneficiarios_unicos', 0))
+                st.metric("Beneficiários Únicos", 
+                         formatar_brasileiro(beneficiarios))
             
             with col7:
                 if 'total_contas' in metrics_contas:
                     st.metric("Contas Abertas", 
                              formatar_brasileiro(metrics_contas['total_contas']))
+                else:
+                    st.metric("Contas Abertas", "0")
             
             with col8:
                 if 'total_contas_sem_pagamento' in comparacao:
                     st.metric("Contas sem Pagamento", 
                              formatar_brasileiro(comparacao['total_contas_sem_pagamento']),
                              delta_color="inverse")
+                else:
+                    st.metric("Contas sem Pagamento", "0")
             
             st.markdown("---")
             
@@ -845,8 +1009,15 @@ def main():
                     if coluna_projeto:
                         colunas_info.append(f"🏢 Projeto: {coluna_projeto}")
                     
-                    for info in colunas_info:
-                        st.write(info)
+                    if colunas_info:
+                        for info in colunas_info:
+                            st.write(info)
+                    else:
+                        st.write("Não foi possível detectar colunas automaticamente.")
+                    
+                    # Mostrar preview dos dados
+                    with st.expander("👁️ Visualizar Primeiras Linhas dos Dados"):
+                        st.dataframe(df_pagamentos_combinado.head(10))
                 
                 if not df_contas_combinado.empty:
                     st.write("---")
@@ -862,45 +1033,60 @@ def main():
                     
                     coluna_conta = detectar_coluna_conta(df_pagamentos_combinado)
                     
-                    if coluna_conta:
-                        # Encontrar duplicidades
-                        duplicidades = df_pagamentos_combinado[
-                            df_pagamentos_combinado.duplicated(subset=[coluna_conta], keep=False)
-                        ].sort_values(by=coluna_conta)
-                        
-                        if not duplicidades.empty:
-                            st.warning(f"🚨 Foram encontradas {duplicidades[coluna_conta].nunique()} contas com pagamentos duplicados")
+                    if coluna_conta and coluna_conta in df_pagamentos_combinado.columns:
+                        try:
+                            # Encontrar duplicidades
+                            duplicidades = df_pagamentos_combinado[
+                                df_pagamentos_combinado.duplicated(subset=[coluna_conta], keep=False)
+                            ].sort_values(by=coluna_conta)
                             
-                            # Resumo por conta
-                            resumo = duplicidades.groupby(coluna_conta).agg({
-                                'Valor_Processado': ['count', 'sum'] if 'Valor_Processado' in duplicidades.columns else None
-                            }).reset_index()
-                            
-                            st.write("**Resumo das Duplicidades:**")
-                            st.dataframe(resumo.head(20))
-                            
-                            # Detalhes completos
-                            with st.expander("Ver detalhes completos"):
-                                colunas_mostrar = [coluna_conta]
+                            if not duplicidades.empty:
+                                contas_duplicadas = duplicidades[coluna_conta].nunique()
+                                st.warning(f"🚨 Foram encontradas {contas_duplicadas} contas com pagamentos duplicados")
                                 
-                                coluna_nome = detectar_coluna_nome(duplicidades)
-                                if coluna_nome:
-                                    colunas_mostrar.append(coluna_nome)
+                                # Resumo por conta
+                                resumo_cols = [coluna_conta]
+                                value_col = 'Valor_Processado' if 'Valor_Processado' in duplicidades.columns else detectar_coluna_valor(duplicidades)
                                 
-                                if 'Valor_Processado' in duplicidades.columns:
-                                    colunas_mostrar.append('Valor_Processado')
-                                
-                                coluna_projeto = detectar_coluna_projeto(duplicidades)
-                                if coluna_projeto:
-                                    colunas_mostrar.append(coluna_projeto)
-                                
-                                colunas_data = detectar_coluna_data(duplicidades)
-                                if colunas_data:
-                                    colunas_mostrar.append(colunas_data[0])
-                                
-                                st.dataframe(duplicidades[colunas_mostrar].head(50))
-                        else:
-                            st.success("✅ Nenhum pagamento duplicado encontrado")
+                                if value_col and value_col in duplicidades.columns:
+                                    resumo = duplicidades.groupby(coluna_conta).agg({
+                                        value_col: ['count', 'sum']
+                                    }).reset_index()
+                                    resumo.columns = [coluna_conta, 'Quantidade', 'Valor Total']
+                                    
+                                    st.write("**Resumo das Duplicidades (Top 20):**")
+                                    st.dataframe(resumo.head(20))
+                                    
+                                    # Detalhes completos
+                                    with st.expander("Ver detalhes completos"):
+                                        colunas_mostrar = [coluna_conta]
+                                        
+                                        coluna_nome = detectar_coluna_nome(duplicidades)
+                                        if coluna_nome and coluna_nome in duplicidades.columns:
+                                            colunas_mostrar.append(coluna_nome)
+                                        
+                                        if value_col:
+                                            colunas_mostrar.append(value_col)
+                                        
+                                        coluna_projeto = detectar_coluna_projeto(duplicidades)
+                                        if coluna_projeto and coluna_projeto in duplicidades.columns:
+                                            colunas_mostrar.append(coluna_projeto)
+                                        
+                                        colunas_data = detectar_coluna_data(duplicidades)
+                                        if colunas_data and colunas_data[0] in duplicidades.columns:
+                                            colunas_mostrar.append(colunas_data[0])
+                                        
+                                        st.dataframe(duplicidades[colunas_mostrar].head(50))
+                                else:
+                                    st.write("**Contas com registros duplicados:**")
+                                    contas_dup = duplicidades[coluna_conta].value_counts().head(20)
+                                    st.dataframe(pd.DataFrame({'Conta': contas_dup.index, 'Ocorrências': contas_dup.values}))
+                            else:
+                                st.success("✅ Nenhum pagamento duplicado encontrado")
+                        except Exception as e:
+                            st.error(f"Erro ao analisar duplicidades: {str(e)}")
+                    else:
+                        st.info("ℹ️ Não foi possível identificar coluna de conta para análise de duplicidades")
             
             with tab3:
                 st.subheader("Análise de Pendências")
@@ -913,21 +1099,26 @@ def main():
                         coluna_conta_cont = detectar_coluna_conta(df_contas_combinado)
                         coluna_nome_cont = detectar_coluna_nome(df_contas_combinado)
                         
-                        if coluna_conta_cont:
-                            contas_sem_pagamento = df_contas_combinado[
-                                df_contas_combinado[coluna_conta_cont].isin(comparacao['contas_sem_pagamento'])
-                            ]
-                            
-                            colunas_mostrar = [coluna_conta_cont]
-                            if coluna_nome_cont:
-                                colunas_mostrar.append(coluna_nome_cont)
-                            
-                            coluna_projeto = detectar_coluna_projeto(contas_sem_pagamento)
-                            if coluna_projeto:
-                                colunas_mostrar.append(coluna_projeto)
-                            
-                            st.write("**Contas sem pagamento:**")
-                            st.dataframe(contas_sem_pagamento[colunas_mostrar].head(50))
+                        if coluna_conta_cont and coluna_conta_cont in df_contas_combinado.columns:
+                            try:
+                                contas_sem_pagamento = df_contas_combinado[
+                                    df_contas_combinado[coluna_conta_cont].astype(str).isin(
+                                        [str(c) for c in comparacao['contas_sem_pagamento']]
+                                    )
+                                ]
+                                
+                                colunas_mostrar = [coluna_conta_cont]
+                                if coluna_nome_cont and coluna_nome_cont in contas_sem_pagamento.columns:
+                                    colunas_mostrar.append(coluna_nome_cont)
+                                
+                                coluna_projeto = detectar_coluna_projeto(contas_sem_pagamento)
+                                if coluna_projeto and coluna_projeto in contas_sem_pagamento.columns:
+                                    colunas_mostrar.append(coluna_projeto)
+                                
+                                st.write("**Contas sem pagamento (Primeiras 50):**")
+                                st.dataframe(contas_sem_pagamento[colunas_mostrar].head(50))
+                            except:
+                                st.write("Não foi possível filtrar as contas sem pagamento.")
                 else:
                     if not df_contas_combinado.empty and not df_pagamentos_combinado.empty:
                         st.success("✅ Todas as contas abertas possuem pagamento registrado")
@@ -942,42 +1133,53 @@ def main():
                     coluna_projeto = detectar_coluna_projeto(df_pagamentos_combinado)
                     coluna_valor = 'Valor_Processado' if 'Valor_Processado' in df_pagamentos_combinado.columns else detectar_coluna_valor(df_pagamentos_combinado)
                     
-                    if coluna_projeto and coluna_valor and coluna_valor in df_pagamentos_combinado.columns:
-                        # Top projetos por valor
-                        projetos_valor = df_pagamentos_combinado.groupby(coluna_projeto)[coluna_valor].sum().sort_values(ascending=False).head(10)
+                    if coluna_projeto and coluna_projeto in df_pagamentos_combinado.columns and coluna_valor and coluna_valor in df_pagamentos_combinado.columns:
+                        try:
+                            # Top projetos por valor
+                            projetos_valor = df_pagamentos_combinado.groupby(coluna_projeto)[coluna_valor].sum().sort_values(ascending=False).head(10)
+                            
+                            if not projetos_valor.empty and len(projetos_valor) > 0:
+                                st.write("**Top 10 Projetos por Valor Total:**")
+                                fig = px.bar(
+                                    x=projetos_valor.values,
+                                    y=projetos_valor.index,
+                                    orientation='h',
+                                    labels={'x': 'Valor Total (R$)', 'y': 'Projeto'},
+                                    title='Top 10 Projetos por Valor'
+                                )
+                                st.plotly_chart(fig, use_container_width=True)
+                        except:
+                            pass
                         
-                        if not projetos_valor.empty:
-                            st.write("**Top 10 Projetos por Valor Total:**")
-                            fig = px.bar(
-                                x=projetos_valor.values,
-                                y=projetos_valor.index,
-                                orientation='h',
-                                labels={'x': 'Valor Total (R$)', 'y': 'Projeto'},
-                                title='Top 10 Projetos por Valor'
-                            )
-                            st.plotly_chart(fig, use_container_width=True)
-                        
-                        # Distribuição de valores
-                        st.write("**Distribuição de Valores:**")
-                        fig2 = px.histogram(
-                            df_pagamentos_combinado[coluna_valor],
-                            nbins=20,
-                            labels={'value': 'Valor (R$)', 'count': 'Quantidade'},
-                            title='Distribuição dos Valores dos Pagamentos'
-                        )
-                        st.plotly_chart(fig2, use_container_width=True)
+                        try:
+                            # Distribuição de valores
+                            st.write("**Distribuição de Valores:**")
+                            valores_validos = df_pagamentos_combinado[coluna_valor].dropna()
+                            if len(valores_validos) > 0:
+                                fig2 = px.histogram(
+                                    valores_validos,
+                                    nbins=20,
+                                    labels={'value': 'Valor (R$)', 'count': 'Quantidade'},
+                                    title='Distribuição dos Valores dos Pagamentos'
+                                )
+                                st.plotly_chart(fig2, use_container_width=True)
+                        except:
+                            pass
                 
                 # Estatísticas descritivas
                 if 'valor_total' in metrics_pagamentos and metrics_pagamentos['valor_total'] > 0:
                     st.write("**Estatísticas Descritivas:**")
                     
                     if coluna_valor and coluna_valor in df_pagamentos_combinado.columns:
-                        estatisticas = df_pagamentos_combinado[coluna_valor].describe()
-                        estat_df = pd.DataFrame({
-                            'Estatística': estatisticas.index,
-                            'Valor': estatisticas.values
-                        })
-                        st.dataframe(estat_df)
+                        try:
+                            estatisticas = df_pagamentos_combinado[coluna_valor].describe()
+                            estat_df = pd.DataFrame({
+                                'Estatística': estatisticas.index,
+                                'Valor': estatisticas.values
+                            })
+                            st.dataframe(estat_df)
+                        except:
+                            pass
             
             # Botões para exportação
             st.markdown("---")
@@ -1007,7 +1209,8 @@ def main():
                     label="📄 Relatório Resumido (CSV)",
                     data=csv,
                     file_name=f"relatorio_pot_{mes_selecionado}_{ano_selecionado}.csv",
-                    mime="text/csv"
+                    mime="text/csv",
+                    use_container_width=True
                 )
             
             with col_exp2:
@@ -1019,7 +1222,8 @@ def main():
                         label="📊 Dados de Pagamentos (CSV)",
                         data=csv_pagamentos,
                         file_name=f"dados_pagamentos_{mes_selecionado}_{ano_selecionado}.csv",
-                        mime="text/csv"
+                        mime="text/csv",
+                        use_container_width=True
                     )
             
             with col_exp3:
@@ -1031,11 +1235,39 @@ def main():
                         label="📋 Dados de Contas (CSV)",
                         data=csv_contas,
                         file_name=f"dados_contas_{mes_selecionado}_{ano_selecionado}.csv",
-                        mime="text/csv"
+                        mime="text/csv",
+                        use_container_width=True
                     )
     
     else:
-        st.info("👈 Clique no botão 'Realizar Análise' para processar os dados")
+        # Mostrar preview dos dados carregados
+        if dados_pagamentos or dados_contas:
+            st.info("👈 Clique no botão 'Realizar Análise' para processar os dados")
+            
+            # Mostrar resumo do que foi carregado
+            col_load1, col_load2 = st.columns(2)
+            
+            with col_load1:
+                if dados_pagamentos:
+                    st.subheader("📊 Planilhas de Pagamentos")
+                    total_reg = sum(len(d['dataframe']) for d in dados_pagamentos)
+                    st.write(f"**Total de arquivos:** {len(dados_pagamentos)}")
+                    st.write(f"**Total de registros:** {total_reg}")
+                    
+                    with st.expander("Ver arquivos carregados"):
+                        for dado in dados_pagamentos:
+                            st.write(f"- {dado['nome']} ({len(dado['dataframe'])} registros)")
+            
+            with col_load2:
+                if dados_contas:
+                    st.subheader("📋 Planilhas de Contas")
+                    total_reg = sum(len(d['dataframe']) for d in dados_contas)
+                    st.write(f"**Total de arquivos:** {len(dados_contas)}")
+                    st.write(f"**Total de registros:** {total_reg}")
+                    
+                    with st.expander("Ver arquivos carregados"):
+                        for dado in dados_contas:
+                            st.write(f"- {dado['nome']} ({len(dado['dataframe'])} registros)")
 
 if __name__ == "__main__":
     main()
