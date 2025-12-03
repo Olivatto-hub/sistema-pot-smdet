@@ -1,17 +1,25 @@
-# 🏛️ Sistema POT - Programa Operação Trabalho
+# Sistema de Monitoramento de Pagamentos - POT
 
-Sistema desenvolvido para a **Secretaria Municipal de Desenvolvimento Econômico, Trabalho e Turismo (SMDET)** da Prefeitura de São Paulo.
+Sistema web para análise e monitoramento de pagamentos dos projetos do Programa Operacional de Trabalho (POT).
 
-## 🔐 Acesso
-- Disponível em: [https://pot-smdet.streamlit.app](https://pot-smdet.streamlit.app)
-- Acesso restrito a emails `@prefeitura.sp.gov.br`
+## 🚀 Funcionalidades
 
-## 📊 Funcionalidades
-- Dashboard executivo
-- Importação de planilhas
-- Consultas de pagamentos
-- Geração de relatórios
+- **Processamento automático** de arquivos CSV e Excel
+- **Detecção de inconsistências** e dados críticos
+- **Análise por agência** e **gerenciadora**
+- **Gráficos interativos** com Plotly
+- **Exportação** para múltiplos formatos (Excel, CSV, JSON)
+- **Correção automática** de valores duplicados
+- **Relatórios detalhados** com métricas principais
 
-## 👥 Desenvolvimento
-- **Equipe TI SMDET**
-- **Contato:** rolivatto@prefeitura.sp.gov.br
+## 📋 Pré-requisitos
+
+- Python 3.8 ou superior
+- pip (gerenciador de pacotes Python)
+
+## 🛠️ Instalação
+
+1. Clone o repositório:
+```bash
+git clone [url-do-repositorio]
+cd sistema-pot-pagamentos
