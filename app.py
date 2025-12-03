@@ -2,28 +2,31 @@ import pandas as pd
 import os
 import re
 from datetime import datetime
-import matplotlib.pyplot as plt
-import numpy as np
-from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill, Alignment
+import streamlit as st
 import warnings
 warnings.filterwarnings('ignore')
 
-class SistemaPOTCompleto:
+# Configuração da página
+st.set_page_config(
+    page_title="Sistema POT - Monitoramento de Pagamentos",
+    page_icon="💰",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+class SistemaPOTStreamlit:
     def __init__(self):
         self.df = None
         self.dados_limpos = None
         self.arquivo_processado = False
         self.nome_arquivo = ""
         self.total_pagamentos = 0
-        self.resumo = {}
         
     def converter_valor(self, valor_str):
         """Converte valores monetários do formato brasileiro para float"""
         if pd.isna(valor_str) or valor_str == '':
             return 0.0
         
-        # Remover R$, pontos e converter vírgula para ponto
         try:
             valor_str = str(valor_str).replace('R$', '').replace(' ', '').strip()
             valor_str = valor_str.replace('.', '').replace(',', '.')
@@ -31,80 +34,30 @@ class SistemaPOTCompleto:
         except:
             return 0.0
     
-    def processar_arquivo(self, caminho_arquivo):
+    def processar_arquivo(self, arquivo_upload):
         """Processa arquivo CSV de pagamentos do POT"""
         try:
-            print(f"🔍 INICIANDO PROCESSAMENTO DO ARQUIVO")
-            print(f"📂 Arquivo: {os.path.basename(caminho_arquivo)}")
-            
-            # Verificar se arquivo existe
-            if not os.path.exists(caminho_arquivo):
-                print("❌ ERRO: Arquivo não encontrado!")
-                return False
-            
-            # Tentar diferentes encodings
-            encodings = ['utf-8', 'latin-1', 'iso-8859-1', 'cp1252']
-            
-            for encoding in encodings:
-                try:
-                    # Ler o arquivo linha por linha primeiro para debug
-                    with open(caminho_arquivo, 'r', encoding=encoding) as f:
-                        linhas = f.readlines()
-                    
-                    print(f"✓ Encoding detectado: {encoding}")
-                    print(f"✓ Total de linhas no arquivo: {len(linhas)}")
-                    
-                    # Verificar se o arquivo tem conteúdo
-                    if len(linhas) < 2:
-                        print("❌ ERRO: Arquivo muito pequeno ou vazio!")
-                        return False
-                    
-                    # Mostrar cabeçalho
-                    print(f"📋 Cabeçalho: {linhas[0][:100]}...")
-                    
-                    # Processar com pandas
-                    self.df = pd.read_csv(caminho_arquivo, delimiter=';', encoding=encoding)
-                    break
-                    
-                except UnicodeDecodeError:
-                    continue
-                except Exception as e:
-                    print(f"❌ Erro ao ler com encoding {encoding}: {str(e)[:50]}")
-            
-            if self.df is None:
-                print("❌ ERRO: Não foi possível ler o arquivo com nenhum encoding!")
-                return False
-            
-            print(f"✅ ARQUIVO LIDO COM SUCESSO!")
-            print(f"📊 Shape do DataFrame: {self.df.shape}")
-            print(f"📝 Colunas: {list(self.df.columns)}")
-            
-            # Limpar dados
-            self._limpar_dados()
-            
-            # Calcular totais e estatísticas
-            self._calcular_estatisticas()
-            
-            self.arquivo_processado = True
-            self.nome_arquivo = os.path.basename(caminho_arquivo)
-            
-            print(f"\n🎉 PROCESSAMENTO CONCLUÍDO COM SUCESSO!")
-            print(f"📈 Total de registros válidos: {len(self.dados_limpos)}")
-            print(f"💰 Valor total processado: R$ {self.total_pagamentos:,.2f}")
-            
+            with st.spinner("Processando arquivo..."):
+                # Ler o arquivo
+                self.df = pd.read_csv(arquivo_upload, delimiter=';', encoding='utf-8')
+                
+                # Limpar dados
+                self._limpar_dados()
+                
+                # Calcular estatísticas
+                self._calcular_estatisticas()
+                
+                self.arquivo_processado = True
+                self.nome_arquivo = arquivo_upload.name
+                
             return True
             
         except Exception as e:
-            print(f"❌ ERRO CRÍTICO NO PROCESSAMENTO: {str(e)}")
-            import traceback
-            traceback.print_exc()
+            st.error(f"Erro ao processar arquivo: {str(e)[:100]}")
             return False
     
     def _limpar_dados(self):
         """Limpa e prepara os dados para análise"""
-        print(f"\n🧹 LIMPANDO DADOS...")
-        
-        # Criar cópia para manipulação
         df_limpo = self.df.copy()
         
         # Remover linhas totalmente vazias
@@ -116,7 +69,6 @@ class SistemaPOTCompleto:
         for coluna in colunas_valor:
             if coluna in df_limpo.columns:
                 df_limpo[coluna] = df_limpo[coluna].apply(self.converter_valor)
-                print(f"✓ Convertida coluna: {coluna}")
         
         # Converter 'Dias a apagar' para numérico
         if 'Dias a apagar' in df_limpo.columns:
@@ -131,381 +83,533 @@ class SistemaPOTCompleto:
             df_limpo = df_limpo[df_limpo['Valor Pagto'] > 0]
         
         self.dados_limpos = df_limpo
-        print(f"✅ Dados limpos: {len(df_limpo)} registros válidos")
     
     def _calcular_estatisticas(self):
         """Calcula estatísticas dos dados"""
-        print(f"\n📊 CALCULANDO ESTATÍSTICAS...")
-        
         if self.dados_limpos is None or len(self.dados_limpos) == 0:
-            print("⚠️  Nenhum dado para calcular estatísticas")
             return
         
-        df = self.dados_limpos
-        
-        # Totais
-        self.total_pagamentos = df['Valor Pagto'].sum() if 'Valor Pagto' in df.columns else 0
-        
-        # Resumo por agência
-        if 'Agencia' in df.columns:
-            resumo_agencia = df.groupby('Agencia').agg({
-                'Valor Pagto': ['sum', 'count'],
-                'Nome': 'first'
-            }).round(2)
-            print(f"✓ Resumo por agência calculado")
-        
-        # Média de valores
-        media_pagto = df['Valor Pagto'].mean() if 'Valor Pagto' in df.columns else 0
-        media_dia = df['Valor Dia'].mean() if 'Valor Dia' in df.columns else 0
-        
-        # Distribuição de dias
-        if 'Dias a apagar' in df.columns:
-            distribuicao_dias = df['Dias a apagar'].value_counts().sort_index()
-        
-        # Agências com mais pagamentos
-        if 'Agencia' in df.columns:
-            top_agencias = df['Agencia'].value_counts().head(10)
-        
-        print(f"✅ Estatísticas calculadas")
-        print(f"   • Total pagamentos: R$ {self.total_pagamentos:,.2f}")
-        print(f"   • Média por pagamento: R$ {media_pagto:,.2f}")
+        self.total_pagamentos = self.dados_limpos['Valor Pagto'].sum() if 'Valor Pagto' in self.dados_limpos.columns else 0
+
+# Inicializar sistema
+sistema = SistemaPOTStreamlit()
+
+# ==============================================
+# INTERFACE STREAMLIT
+# ==============================================
+
+st.title("💰 SISTEMA DE MONITORAMENTO DE PAGAMENTOS - POT")
+st.markdown("---")
+
+# Sidebar para upload
+with st.sidebar:
+    st.header("📁 Upload de Arquivo")
+    st.markdown("Faça o upload do arquivo CSV com os dados de pagamentos")
     
-    def gerar_relatorio(self, caminho_saida=None):
-        """Gera relatório completo em Excel"""
-        if not self.arquivo_processado:
-            print("❌ Nenhum arquivo processado. Use processar_arquivo() primeiro.")
-            return False
+    arquivo = st.file_uploader(
+        "Selecione o arquivo CSV",
+        type=['csv'],
+        help="Arquivo CSV com delimitador ponto e vírgula"
+    )
+    
+    if arquivo is not None:
+        if st.button("🔄 Processar Arquivo", type="primary", use_container_width=True):
+            sucesso = sistema.processar_arquivo(arquivo)
+            if sucesso:
+                st.success("✅ Arquivo processado com sucesso!")
+                st.session_state['arquivo_processado'] = True
+            else:
+                st.error("❌ Erro ao processar arquivo")
+    
+    st.markdown("---")
+    st.markdown("### 📊 Opções de Análise")
+    
+    if 'arquivo_processado' in st.session_state and st.session_state['arquivo_processado']:
+        analise_tipo = st.radio(
+            "Selecione o tipo de análise:",
+            ["📈 Dashboard Geral", "🔍 Busca por Nome", "🏢 Análise por Agência", "📋 Dados Completos"]
+        )
+    else:
+        st.info("⏳ Faça upload de um arquivo para começar")
+
+# Área principal
+if 'arquivo_processado' in st.session_state and st.session_state['arquivo_processado']:
+    if sistema.arquivo_processado and sistema.dados_limpos is not None:
         
-        try:
-            if caminho_saida is None:
-                caminho_saida = f"relatorio_pot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        # ============================
+        # DASHBOARD GERAL
+        # ============================
+        if analise_tipo == "📈 Dashboard Geral":
+            st.header("📊 Dashboard de Análise")
             
-            print(f"\n📄 GERANDO RELATÓRIO EXCEL...")
+            # Métricas principais
+            col1, col2, col3, col4 = st.columns(4)
             
-            with pd.ExcelWriter(caminho_saida, engine='openpyxl') as writer:
-                # 1. Dados completos
-                self.dados_limpos.to_excel(writer, sheet_name='Dados Completos', index=False)
+            with col1:
+                st.metric(
+                    label="Total de Pagamentos",
+                    value=f"{len(sistema.dados_limpos):,}",
+                    delta=None
+                )
+            
+            with col2:
+                st.metric(
+                    label="Valor Total",
+                    value=f"R$ {sistema.total_pagamentos:,.2f}",
+                    delta=None
+                )
+            
+            with col3:
+                media = sistema.dados_limpos['Valor Pagto'].mean() if 'Valor Pagto' in sistema.dados_limpos.columns else 0
+                st.metric(
+                    label="Média por Pagamento",
+                    value=f"R$ {media:,.2f}",
+                    delta=None
+                )
+            
+            with col4:
+                if 'Agencia' in sistema.dados_limpos.columns:
+                    num_agencias = sistema.dados_limpos['Agencia'].nunique()
+                    st.metric(
+                        label="Número de Agências",
+                        value=num_agencias,
+                        delta=None
+                    )
+            
+            st.markdown("---")
+            
+            # Análise por agência (TOP 10)
+            if 'Agencia' in sistema.dados_limpos.columns:
+                st.subheader("🏢 Top 10 Agências por Valor Total")
                 
-                # 2. Resumo por Agência
-                if 'Agencia' in self.dados_limpos.columns:
-                    resumo_agencia = self.dados_limpos.groupby('Agencia').agg({
-                        'Valor Pagto': ['sum', 'count', 'mean', 'std'],
-                        'Nome': 'first'
-                    }).round(2)
-                    resumo_agencia.to_excel(writer, sheet_name='Por Agência')
+                agencias_top = sistema.dados_limpos.groupby('Agencia').agg({
+                    'Valor Pagto': ['sum', 'count']
+                }).round(2)
                 
-                # 3. Top 20 maiores pagamentos
-                top_pagamentos = self.dados_limpos.nlargest(20, 'Valor Pagto')[['Nome', 'Agencia', 'Valor Pagto', 'Data Pagto']]
-                top_pagamentos.to_excel(writer, sheet_name='Top Pagamentos', index=False)
+                agencias_top.columns = ['Valor Total', 'Quantidade']
+                agencias_top = agencias_top.sort_values('Valor Total', ascending=False).head(10)
                 
-                # 4. Estatísticas gerais
-                stats_df = pd.DataFrame({
-                    'Métrica': ['Total de Pagamentos', 'Valor Total', 'Média por Pagamento', 
-                              'Maior Pagamento', 'Menor Pagamento', 'Número de Agências'],
+                # Formatar para exibição
+                agencias_display = agencias_top.copy()
+                agencias_display['Valor Total'] = agencias_display['Valor Total'].apply(lambda x: f"R$ {x:,.2f}")
+                
+                st.dataframe(
+                    agencias_display,
+                    use_container_width=True,
+                    height=400
+                )
+            
+            # Distribuição de valores
+            st.subheader("💰 Distribuição de Valores")
+            
+            col_left, col_right = st.columns(2)
+            
+            with col_left:
+                st.write("**Estatísticas Descritivas:**")
+                stats = sistema.dados_limpos['Valor Pagto'].describe() if 'Valor Pagto' in sistema.dados_limpos.columns else pd.Series()
+                stats_display = pd.DataFrame({
+                    'Estatística': ['Mínimo', '25%', 'Mediana', '75%', 'Máximo', 'Média', 'Desvio Padrão'],
                     'Valor': [
-                        len(self.dados_limpos),
-                        f"R$ {self.total_pagamentos:,.2f}",
-                        f"R$ {self.dados_limpos['Valor Pagto'].mean():,.2f}",
-                        f"R$ {self.dados_limpos['Valor Pagto'].max():,.2f}",
-                        f"R$ {self.dados_limpos['Valor Pagto'].min():,.2f}",
-                        self.dados_limpos['Agencia'].nunique() if 'Agencia' in self.dados_limpos.columns else 0
+                        f"R$ {stats.get('min', 0):,.2f}",
+                        f"R$ {stats.get('25%', 0):,.2f}",
+                        f"R$ {stats.get('50%', 0):,.2f}",
+                        f"R$ {stats.get('75%', 0):,.2f}",
+                        f"R$ {stats.get('max', 0):,.2f}",
+                        f"R$ {stats.get('mean', 0):,.2f}",
+                        f"R$ {stats.get('std', 0):,.2f}"
                     ]
                 })
-                stats_df.to_excel(writer, sheet_name='Estatísticas', index=False)
+                st.dataframe(stats_display, use_container_width=True, hide_index=True)
             
-            print(f"✅ RELATÓRIO GERADO COM SUCESSO!")
-            print(f"📁 Salvo em: {caminho_saida}")
+            with col_right:
+                if 'Dias a apagar' in sistema.dados_limpos.columns:
+                    st.write("**Distribuição de Dias a Pagar:**")
+                    dias_stats = sistema.dados_limpos['Dias a apagar'].describe()
+                    dias_display = pd.DataFrame({
+                        'Estatística': ['Média', 'Mínimo', '25%', 'Mediana', '75%', 'Máximo'],
+                        'Dias': [
+                            f"{dias_stats.get('mean', 0):.1f}",
+                            f"{dias_stats.get('min', 0):.0f}",
+                            f"{dias_stats.get('25%', 0):.0f}",
+                            f"{dias_stats.get('50%', 0):.0f}",
+                            f"{dias_stats.get('75%', 0):.0f}",
+                            f"{dias_stats.get('max', 0):.0f}"
+                        ]
+                    })
+                    st.dataframe(dias_display, use_container_width=True, hide_index=True)
             
-            return True
+            # Top 10 maiores pagamentos
+            st.subheader("🏆 Top 10 Maiores Pagamentos")
             
-        except Exception as e:
-            print(f"❌ ERRO AO GERAR RELATÓRIO: {str(e)}")
-            return False
-    
-    def mostrar_dashboard(self):
-        """Mostra dashboard com principais métricas"""
-        if not self.arquivo_processado:
-            print("❌ Nenhum arquivo processado.")
-            return
+            top_pagamentos = sistema.dados_limpos.nlargest(10, 'Valor Pagto')
+            if 'Nome' in top_pagamentos.columns and 'Valor Pagto' in top_pagamentos.columns:
+                top_display = top_pagamentos[['Nome', 'Valor Pagto']].copy()
+                top_display['Valor Pagto'] = top_display['Valor Pagto'].apply(lambda x: f"R$ {x:,.2f}")
+                
+                st.dataframe(
+                    top_display,
+                    use_container_width=True,
+                    hide_index=True
+                )
         
-        print("\n" + "="*60)
-        print("📊 DASHBOARD DE MONITORAMENTO DE PAGAMENTOS POT")
-        print("="*60)
-        
-        df = self.dados_limpos
-        
-        # Métricas principais
-        print(f"\n📈 MÉTRICAS PRINCIPAIS:")
-        print(f"   • Total de Pagamentos: {len(df):,}")
-        print(f"   • Valor Total: R$ {self.total_pagamentos:,.2f}")
-        print(f"   • Média por Pagamento: R$ {df['Valor Pagto'].mean():,.2f}")
-        print(f"   • Data do Processamento: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
-        
-        # Top 5 agências
-        if 'Agencia' in df.columns:
-            print(f"\n🏢 TOP 5 AGÊNCIAS (por valor):")
-            top_agencias = df.groupby('Agencia')['Valor Pagto'].sum().nlargest(5)
-            for agencia, valor in top_agencias.items():
-                print(f"   • Agência {agencia}: R$ {valor:,.2f}")
-        
-        # Distribuição de valores
-        print(f"\n💰 DISTRIBUIÇÃO DE VALORES:")
-        print(f"   • Maior Pagamento: R$ {df['Valor Pagto'].max():,.2f}")
-        print(f"   • Menor Pagamento: R$ {df['Valor Pagto'].min():,.2f}")
-        print(f"   • Mediana: R$ {df['Valor Pagto'].median():,.2f}")
-        
-        # Distribuição por dias
-        if 'Dias a apagar' in df.columns:
-            print(f"\n📅 DIAS A PAGAR:")
-            dias_stats = df['Dias a apagar'].describe()
-            print(f"   • Média: {dias_stats['mean']:.1f} dias")
-            print(f"   • Máximo: {dias_stats['max']:.0f} dias")
-            print(f"   • Mínimo: {dias_stats['min']:.0f} dias")
-        
-        print("\n" + "="*60)
-    
-    def buscar_por_nome(self, nome):
-        """Busca pagamentos por nome"""
-        if not self.arquivo_processado:
-            print("❌ Nenhum arquivo processado.")
-            return None
-        
-        resultados = self.dados_limpos[self.dados_limpos['Nome'].str.contains(nome, case=False, na=False)]
-        
-        if len(resultados) == 0:
-            print(f"⚠️  Nenhum resultado encontrado para '{nome}'")
-            return None
-        
-        print(f"\n🔍 RESULTADOS PARA '{nome}':")
-        print(f"   • Encontrados: {len(resultados)} registros")
-        print(f"   • Valor Total: R$ {resultados['Valor Pagto'].sum():,.2f}")
-        
-        # Mostrar primeiros resultados
-        for idx, row in resultados.head(5).iterrows():
-            print(f"\n   [{idx+1}] {row['Nome']}")
-            print(f"      Agência: {row.get('Agencia', 'N/A')}")
-            print(f"      Valor: R$ {row['Valor Pagto']:,.2f}")
-            print(f"      Data: {row.get('Data Pagto', 'N/A')}")
-        
-        return resultados
-    
-    def analisar_por_agencia(self, agencia=None):
-        """Analisa pagamentos por agência"""
-        if not self.arquivo_processado:
-            print("❌ Nenhum arquivo processado.")
-            return None
-        
-        df = self.dados_limpos
-        
-        if 'Agencia' not in df.columns:
-            print("⚠️  Coluna 'Agencia' não encontrada nos dados.")
-            return None
-        
-        if agencia:
-            resultados = df[df['Agencia'] == agencia]
-            if len(resultados) == 0:
-                print(f"⚠️  Nenhum resultado para agência {agencia}")
-                return None
+        # ============================
+        # BUSCA POR NOME
+        # ============================
+        elif analise_tipo == "🔍 Busca por Nome":
+            st.header("🔍 Busca por Nome")
             
-            print(f"\n🏢 ANÁLISE DA AGÊNCIA {agencia}:")
-            print(f"   • Total de Pagamentos: {len(resultados)}")
-            print(f"   • Valor Total: R$ {resultados['Valor Pagto'].sum():,.2f}")
-            print(f"   • Média por Pagamento: R$ {resultados['Valor Pagto'].mean():,.2f}")
+            nome_busca = st.text_input(
+                "Digite o nome para buscar:",
+                placeholder="Ex: João Silva",
+                help="Busca parcial no campo Nome"
+            )
             
-            return resultados
-        else:
-            # Análise de todas as agências
-            analise = df.groupby('Agencia').agg({
-                'Valor Pagto': ['sum', 'count', 'mean'],
-                'Nome': 'first'
-            }).round(2)
-            
-            analise.columns = ['Valor Total', 'Quantidade', 'Média', 'Exemplo Nome']
-            analise = analise.sort_values('Valor Total', ascending=False)
-            
-            print(f"\n🏢 ANÁLISE DE TODAS AS AGÊNCIAS:")
-            print(f"   • Total de Agências: {len(analise)}")
-            print(f"   • Agência com mais pagamentos: {analise.iloc[0].name}")
-            print(f"   • Valor total desta agência: R$ {analise.iloc[0]['Valor Total']:,.2f}")
-            
-            return analise
-    
-    def exportar_para_csv(self, caminho_saida):
-        """Exporta dados limpos para CSV"""
-        if not self.arquivo_processado:
-            print("❌ Nenhum arquivo processado.")
-            return False
+            if nome_busca:
+                resultados = sistema.dados_limpos[
+                    sistema.dados_limpos['Nome'].str.contains(nome_busca, case=False, na=False)
+                ]
+                
+                if len(resultados) > 0:
+                    st.success(f"✅ Encontrados {len(resultados)} resultados")
+                    
+                    # Métricas da busca
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.metric(
+                            "Total de Registros",
+                            len(resultados)
+                        )
+                    
+                    with col2:
+                        valor_total = resultados['Valor Pagto'].sum() if 'Valor Pagto' in resultados.columns else 0
+                        st.metric(
+                            "Valor Total",
+                            f"R$ {valor_total:,.2f}"
+                        )
+                    
+                    # Mostrar resultados
+                    st.subheader("📋 Resultados da Busca")
+                    
+                    # Formatar colunas para exibição
+                    resultados_display = resultados.copy()
+                    
+                    # Formatar valores monetários
+                    for col in ['Valor Total', 'Valor Pagto', 'Valor Dia']:
+                        if col in resultados_display.columns:
+                            resultados_display[col] = resultados_display[col].apply(lambda x: f"R$ {x:,.2f}" if pd.notna(x) else "")
+                    
+                    # Formatar data
+                    if 'Data Pagto' in resultados_display.columns:
+                        resultados_display['Data Pagto'] = resultados_display['Data Pagto'].dt.strftime('%d/%m/%Y')
+                    
+                    st.dataframe(
+                        resultados_display,
+                        use_container_width=True,
+                        height=400
+                    )
+                    
+                    # Opção para download
+                    csv = resultados.to_csv(index=False, sep=';', encoding='utf-8')
+                    st.download_button(
+                        label="📥 Download dos Resultados (CSV)",
+                        data=csv,
+                        file_name=f"busca_{nome_busca}_{datetime.now().strftime('%Y%m%d')}.csv",
+                        mime="text/csv"
+                    )
+                else:
+                    st.warning(f"⚠️ Nenhum resultado encontrado para '{nome_busca}'")
         
-        try:
-            self.dados_limpos.to_csv(caminho_saida, index=False, sep=';', encoding='utf-8')
-            print(f"✅ Dados exportados para: {caminho_saida}")
-            return True
-        except Exception as e:
-            print(f"❌ Erro ao exportar: {str(e)}")
-            return False
-    
-    def gerar_grafico_distribuicao(self):
-        """Gera gráfico de distribuição de valores"""
-        if not self.arquivo_processado:
-            print("❌ Nenhum arquivo processado.")
-            return
-        
-        try:
-            import matplotlib.pyplot as plt
+        # ============================
+        # ANÁLISE POR AGÊNCIA
+        # ============================
+        elif analise_tipo == "🏢 Análise por Agência":
+            st.header("🏢 Análise por Agência")
             
-            valores = self.dados_limpos['Valor Pagto']
-            
-            plt.figure(figsize=(10, 6))
-            plt.hist(valores, bins=50, alpha=0.7, color='blue', edgecolor='black')
-            plt.title('Distribuição dos Valores de Pagamento', fontsize=14)
-            plt.xlabel('Valor (R$)', fontsize=12)
-            plt.ylabel('Frequência', fontsize=12)
-            plt.grid(True, alpha=0.3)
-            plt.tight_layout()
-            
-            # Salvar gráfico
-            caminho_grafico = f"grafico_distribuicao_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-            plt.savefig(caminho_grafico, dpi=300)
-            plt.show()
-            
-            print(f"✅ Gráfico salvo em: {caminho_grafico}")
-            
-        except Exception as e:
-            print(f"⚠️  Não foi possível gerar gráfico: {str(e)}")
-
-# ==============================================
-# FUNÇÃO PRINCIPAL DE EXECUÇÃO
-# ==============================================
-
-def main():
-    """Função principal para executar o sistema"""
-    print("="*60)
-    print("SISTEMA COMPLETO DE MONITORAMENTO DE PAGAMENTOS - POT")
-    print("="*60)
-    
-    sistema = SistemaPOTCompleto()
-    
-    # Solicitar arquivo ao usuário
-    while True:
-        caminho_arquivo = input("\n📁 Digite o caminho completo do arquivo CSV: ").strip()
-        
-        if caminho_arquivo.lower() == 'sair':
-            print("👋 Encerrando sistema...")
-            return
-        
-        # Tentar processar o arquivo
-        sucesso = sistema.processar_arquivo(caminho_arquivo)
-        
-        if sucesso:
-            break
-        else:
-            print("\n⚠️  Deseja tentar outro arquivo? (s/n) ou 'sair' para encerrar")
-            resposta = input("> ").lower()
-            if resposta != 's':
-                print("👋 Encerrando sistema...")
-                return
-    
-    # Mostrar dashboard
-    sistema.mostrar_dashboard()
-    
-    # Menu interativo
-    while True:
-        print("\n" + "="*60)
-        print("MENU PRINCIPAL")
-        print("="*60)
-        print("1. 🔍 Buscar por nome")
-        print("2. 🏢 Analisar por agência")
-        print("3. 📄 Gerar relatório completo (Excel)")
-        print("4. 📊 Gerar gráfico de distribuição")
-        print("5. 💾 Exportar dados limpos (CSV)")
-        print("6. 📋 Mostrar dashboard")
-        print("7. 🔄 Processar outro arquivo")
-        print("8. 🚪 Sair")
-        print("="*60)
-        
-        opcao = input("\n🎯 Selecione uma opção (1-8): ").strip()
-        
-        if opcao == '1':
-            nome = input("🔍 Digite o nome para buscar: ").strip()
-            sistema.buscar_por_nome(nome)
-        
-        elif opcao == '2':
-            print("\n🏢 Análise por Agência:")
-            print("   a) Analisar agência específica")
-            print("   b) Análise de todas as agências")
-            sub_opcao = input("   Selecione (a/b): ").strip().lower()
-            
-            if sub_opcao == 'a':
-                agencia = input("   Digite o número da agência: ").strip()
-                sistema.analisar_por_agencia(agencia)
-            elif sub_opcao == 'b':
-                sistema.analisar_por_agencia()
-        
-        elif opcao == '3':
-            caminho = input("📄 Digite o caminho para salvar (ou Enter para padrão): ").strip()
-            if caminho == '':
-                sistema.gerar_relatorio()
+            if 'Agencia' in sistema.dados_limpos.columns:
+                # Selecionar agência
+                agencias = sorted(sistema.dados_limpos['Agencia'].dropna().unique())
+                
+                agencia_selecionada = st.selectbox(
+                    "Selecione uma agência para análise detalhada:",
+                    options=agencias,
+                    format_func=lambda x: f"Agência {x}"
+                )
+                
+                if agencia_selecionada:
+                    dados_agencia = sistema.dados_limpos[sistema.dados_limpos['Agencia'] == agencia_selecionada]
+                    
+                    st.subheader(f"📊 Análise da Agência {agencia_selecionada}")
+                    
+                    # Métricas da agência
+                    col1, col2, col3 = st.columns(3)
+                    
+                    with col1:
+                        st.metric(
+                            "Total de Pagamentos",
+                            len(dados_agencia)
+                        )
+                    
+                    with col2:
+                        valor_total = dados_agencia['Valor Pagto'].sum()
+                        st.metric(
+                            "Valor Total",
+                            f"R$ {valor_total:,.2f}"
+                        )
+                    
+                    with col3:
+                        media = dados_agencia['Valor Pagto'].mean()
+                        st.metric(
+                            "Média por Pagamento",
+                            f"R$ {media:,.2f}"
+                        )
+                    
+                    # Dados da agência
+                    st.subheader("📋 Pagamentos da Agência")
+                    
+                    dados_display = dados_agencia.copy()
+                    
+                    # Formatar colunas
+                    for col in ['Valor Total', 'Valor Pagto', 'Valor Dia']:
+                        if col in dados_display.columns:
+                            dados_display[col] = dados_display[col].apply(lambda x: f"R$ {x:,.2f}" if pd.notna(x) else "")
+                    
+                    if 'Data Pagto' in dados_display.columns:
+                        dados_display['Data Pagto'] = dados_display['Data Pagto'].dt.strftime('%d/%m/%Y')
+                    
+                    st.dataframe(
+                        dados_display,
+                        use_container_width=True,
+                        height=400
+                    )
+                    
+                    # Resumo estatístico
+                    st.subheader("📈 Estatísticas Detalhadas")
+                    
+                    stats_agencia = dados_agencia['Valor Pagto'].describe()
+                    
+                    col_stats1, col_stats2 = st.columns(2)
+                    
+                    with col_stats1:
+                        st.write("**Distribuição de Valores:**")
+                        stats_df = pd.DataFrame({
+                            'Estatística': ['Mínimo', '25%', 'Mediana', '75%', 'Máximo'],
+                            'Valor': [
+                                f"R$ {stats_agencia.get('min', 0):,.2f}",
+                                f"R$ {stats_agencia.get('25%', 0):,.2f}",
+                                f"R$ {stats_agencia.get('50%', 0):,.2f}",
+                                f"R$ {stats_agencia.get('75%', 0):,.2f}",
+                                f"R$ {stats_agencia.get('max', 0):,.2f}"
+                            ]
+                        })
+                        st.dataframe(stats_df, use_container_width=True, hide_index=True)
+                    
+                    with col_stats2:
+                        if 'Dias a apagar' in dados_agencia.columns:
+                            st.write("**Dias a Pagar:**")
+                            dias_agencia = dados_agencia['Dias a apagar'].describe()
+                            dias_df = pd.DataFrame({
+                                'Estatística': ['Média', 'Mínimo', 'Máximo'],
+                                'Dias': [
+                                    f"{dias_agencia.get('mean', 0):.1f}",
+                                    f"{dias_agencia.get('min', 0):.0f}",
+                                    f"{dias_agencia.get('max', 0):.0f}"
+                                ]
+                            })
+                            st.dataframe(dias_df, use_container_width=True, hide_index=True)
             else:
-                sistema.gerar_relatorio(caminho)
+                st.warning("⚠️ Coluna 'Agencia' não encontrada nos dados")
         
-        elif opcao == '4':
-            sistema.gerar_grafico_distribuicao()
+        # ============================
+        # DADOS COMPLETOS
+        # ============================
+        elif analise_tipo == "📋 Dados Completos":
+            st.header("📋 Dados Completos Processados")
+            
+            # Filtros
+            st.subheader("🔍 Filtros")
+            
+            col_filtro1, col_filtro2 = st.columns(2)
+            
+            with col_filtro1:
+                if 'Agencia' in sistema.dados_limpos.columns:
+                    agencias_filtro = st.multiselect(
+                        "Filtrar por Agência:",
+                        options=sorted(sistema.dados_limpos['Agencia'].dropna().unique()),
+                        default=[]
+                    )
+            
+            with col_filtro2:
+                # Filtro por valor
+                min_valor = float(sistema.dados_limpos['Valor Pagto'].min()) if 'Valor Pagto' in sistema.dados_limpos.columns else 0
+                max_valor = float(sistema.dados_limpos['Valor Pagto'].max()) if 'Valor Pagto' in sistema.dados_limpos.columns else 10000
+                
+                valor_range = st.slider(
+                    "Filtrar por Valor:",
+                    min_value=min_valor,
+                    max_value=max_valor,
+                    value=(min_valor, max_valor),
+                    step=100.0,
+                    format="R$ %.2f"
+                )
+            
+            # Aplicar filtros
+            dados_filtrados = sistema.dados_limpos.copy()
+            
+            if 'agencia' in locals() and agencias_filtro:
+                dados_filtrados = dados_filtrados[dados_filtrados['Agencia'].isin(agencias_filtro)]
+            
+            if 'Valor Pagto' in dados_filtrados.columns:
+                dados_filtrados = dados_filtrados[
+                    (dados_filtrados['Valor Pagto'] >= valor_range[0]) & 
+                    (dados_filtrados['Valor Pagto'] <= valor_range[1])
+                ]
+            
+            st.metric(
+                "Registros Filtrados",
+                f"{len(dados_filtrados):,} de {len(sistema.dados_limpos):,}"
+            )
+            
+            # Formatar dados para exibição
+            dados_display = dados_filtrados.copy()
+            
+            # Formatar valores monetários
+            for col in ['Valor Total', 'Valor Desconto', 'Valor Pagto', 'Valor Dia']:
+                if col in dados_display.columns:
+                    dados_display[col] = dados_display[col].apply(lambda x: f"R$ {x:,.2f}" if pd.notna(x) else "")
+            
+            # Formatar datas
+            date_cols = ['Data Pagto']
+            for col in date_cols:
+                if col in dados_display.columns:
+                    dados_display[col] = dados_display[col].dt.strftime('%d/%m/%Y')
+            
+            # Mostrar tabela
+            st.subheader("📊 Tabela de Dados")
+            
+            # Paginação
+            page_size = st.selectbox("Registros por página:", [10, 25, 50, 100], index=1)
+            
+            # Calcular número de páginas
+            total_pages = max(1, len(dados_display) // page_size + (1 if len(dados_display) % page_size > 0 else 0))
+            
+            # Seletor de página
+            if total_pages > 1:
+                page_number = st.number_input("Página:", min_value=1, max_value=total_pages, value=1, step=1)
+                start_idx = (page_number - 1) * page_size
+                end_idx = start_idx + page_size
+                
+                st.write(f"Mostrando registros {start_idx + 1} a {min(end_idx, len(dados_display))} de {len(dados_display)}")
+                
+                dados_pagina = dados_display.iloc[start_idx:end_idx]
+            else:
+                dados_pagina = dados_display
+            
+            # Exibir tabela
+            st.dataframe(
+                dados_pagina,
+                use_container_width=True,
+                height=500
+            )
+            
+            # Botões de download
+            st.subheader("📥 Download")
+            
+            col_dl1, col_dl2 = st.columns(2)
+            
+            with col_dl1:
+                csv_filtrado = dados_filtrados.to_csv(index=False, sep=';', encoding='utf-8')
+                st.download_button(
+                    label="📥 Download Dados Filtrados (CSV)",
+                    data=csv_filtrado,
+                    file_name=f"dados_filtrados_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+            
+            with col_dl2:
+                csv_completo = sistema.dados_limpos.to_csv(index=False, sep=';', encoding='utf-8')
+                st.download_button(
+                    label="📥 Download Todos os Dados (CSV)",
+                    data=csv_completo,
+                    file_name=f"dados_completos_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
         
-        elif opcao == '5':
-            caminho = input("💾 Digite o caminho para salvar o CSV: ").strip()
-            if caminho:
-                sistema.exportar_para_csv(caminho)
-        
-        elif opcao == '6':
-            sistema.mostrar_dashboard()
-        
-        elif opcao == '7':
-            main()  # Reiniciar processo
-            break
-        
-        elif opcao == '8':
-            print("\n👋 Encerrando sistema...")
-            break
-        
-        else:
-            print("❌ Opção inválida! Tente novamente.")
-        
-        input("\n⏎ Pressione Enter para continuar...")
-
-# ==============================================
-# EXEMPLO DE USO RÁPIDO (TESTE DIRETO)
-# ==============================================
-
-def teste_rapido(caminho_arquivo):
-    """Função para teste rápido do sistema"""
-    print("🧪 INICIANDO TESTE RÁPIDO DO SISTEMA...")
+        # ============================
+        # BOTÃO DE RESET
+        # ============================
+        st.markdown("---")
+        if st.button("🔄 Processar Outro Arquivo", use_container_width=True):
+            st.session_state.clear()
+            st.rerun()
     
-    sistema = SistemaPOTCompleto()
-    
-    # Processar arquivo
-    if sistema.processar_arquivo(caminho_arquivo):
-        # Mostrar dashboard
-        sistema.mostrar_dashboard()
-        
-        # Gerar relatório
-        sistema.gerar_relatorio()
-        
-        # Exportar CSV
-        sistema.exportar_para_csv("dados_limpos_pot.csv")
-        
-        print("\n✅ TESTE CONCLUÍDO COM SUCESSO!")
-        return True
     else:
-        print("\n❌ FALHA NO TESTE!")
-        return False
-
-# ==============================================
-# EXECUTAR SISTEMA
-# ==============================================
-
-if __name__ == "__main__":
-    # Para usar de forma interativa:
-    main()
+        st.warning("⚠️ Nenhum dado processado. Faça upload de um arquivo válido.")
+else:
+    # Tela inicial
+    st.info("👋 Bem-vindo ao Sistema de Monitoramento de Pagamentos POT")
     
-    # Para teste rápido com arquivo específico:
-    # teste_rapido("PGTO ABASTECE SETEMBRO.csv")
+    col_intro1, col_intro2 = st.columns(2)
+    
+    with col_intro1:
+        st.markdown("""
+        ### 📋 Funcionalidades:
+        
+        - **📊 Dashboard Geral**: Métricas e análises completas
+        - **🔍 Busca por Nome**: Encontre pagamentos específicos
+        - **🏢 Análise por Agência**: Detalhes por agência
+        - **📋 Dados Completos**: Visualização e filtros avançados
+        - **📥 Exportação**: Download em formato CSV
+        
+        ### 📁 Formato do Arquivo:
+        
+        O arquivo deve ser CSV com delimitador **ponto e vírgula (;)**
+        
+        Colunas esperadas:
+        - Nome
+        - Agencia
+        - Valor Pagto
+        - Data Pagto
+        - Dias a apagar
+        """)
+    
+    with col_intro2:
+        st.markdown("""
+        ### 🚀 Como Usar:
+        
+        1. **Faça upload** do arquivo CSV na barra lateral
+        2. **Clique em Processar Arquivo**
+        3. **Selecione o tipo de análise**
+        4. **Explore os dados** com as ferramentas disponíveis
+        
+        ### ⚠️ Requisitos:
+        
+        - Arquivo CSV válido
+        - Formato brasileiro para valores (R$ 1.593,90)
+        - Datas no formato DD/MM/AAAA
+        
+        ### 📞 Suporte:
+        
+        Em caso de problemas, verifique:
+        - Formato do arquivo
+        - Encoding (UTF-8 recomendado)
+        - Presença das colunas necessárias
+        """)
+    
+    st.markdown("---")
+    st.warning("⏳ Aguardando upload do arquivo...")
+
+# ==============================================
+# RODAPÉ
+# ==============================================
+st.markdown("---")
+st.markdown(
+    """
+    <div style='text-align: center; color: gray;'>
+    Sistema de Monitoramento de Pagamentos POT • Desenvolvido para análise de dados financeiros • Versão 2.0
+    </div>
+    """,
+    unsafe_allow_html=True
+)
