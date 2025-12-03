@@ -1,8 +1,6 @@
 import pandas as pd
 import streamlit as st
 from io import BytesIO
-import matplotlib.pyplot as plt
-import seaborn as sns
 
 # Configuração da página
 st.set_page_config(page_title="Análise PGTO ABASTECE", page_icon="💰", layout="wide")
@@ -49,9 +47,14 @@ def calcular_metricas(df):
         'Valor Pago': df['Valor Pagto'].sum(),
         'Média por Pessoa': df['Valor Total'].mean(),
         'Maior Valor': df['Valor Total'].max(),
-        'Menor Valor': df['Valor Total'].min()
+        'Menor Valor': df['Valor Total'].min(),
+        'Valor Médio Pago': df['Valor Pagto'].mean()
     }
     return metricas
+
+# Função para formatar valores monetários
+def formatar_moeda(valor):
+    return f"R$ {valor:,.2f}"
 
 # Interface principal
 uploaded_file = st.file_uploader("Faça upload do arquivo CSV (PGTO ABASTECE)", type=['csv'])
@@ -71,7 +74,7 @@ if uploaded_file is not None:
         st.sidebar.header("🔍 Filtros")
         
         # Filtro por Projeto
-        projetos = df['Projeto'].unique()
+        projetos = sorted(df['Projeto'].unique())
         projeto_selecionado = st.sidebar.selectbox("Selecione o Projeto:", ['Todos'] + list(projetos))
         
         # Filtro por valor
@@ -82,6 +85,9 @@ if uploaded_file is not None:
             (float(df['Valor Total'].min()), float(df['Valor Total'].max()))
         )
         
+        # Filtro por nome
+        nome_filtro = st.sidebar.text_input("Filtrar por nome (parcial):")
+        
         # Aplicar filtros
         df_filtrado = df.copy()
         
@@ -90,112 +96,191 @@ if uploaded_file is not None:
         
         df_filtrado = df_filtrado[(df_filtrado['Valor Total'] >= min_valor) & (df_filtrado['Valor Total'] <= max_valor)]
         
+        if nome_filtro:
+            df_filtrado = df_filtrado[df_filtrado['Nome'].str.contains(nome_filtro, case=False, na=False)]
+        
         # Métricas principais
         st.header("📊 Métricas Gerais")
         metricas = calcular_metricas(df_filtrado)
         
+        # Layout de métricas em colunas
         col1, col2, col3 = st.columns(3)
+        
         with col1:
             st.metric("👥 Total de Pessoas", f"{metricas['Total Pessoas']:,}")
-            st.metric("📈 Maior Valor", f"R$ {metricas['Maior Valor']:,.2f}")
+            st.metric("📈 Maior Valor", formatar_moeda(metricas['Maior Valor']))
         
         with col2:
-            st.metric("💰 Valor Total", f"R$ {metricas['Valor Total']:,.2f}")
-            st.metric("📉 Menor Valor", f"R$ {metricas['Menor Valor']:,.2f}")
+            st.metric("💰 Valor Total", formatar_moeda(metricas['Valor Total']))
+            st.metric("📉 Menor Valor", formatar_moeda(metricas['Menor Valor']))
         
         with col3:
-            st.metric("💵 Valor Pago", f"R$ {metricas['Valor Pago']:,.2f}")
-            st.metric("📊 Média por Pessoa", f"R$ {metricas['Média por Pessoa']:,.2f}")
+            st.metric("💵 Valor Pago", formatar_moeda(metricas['Valor Pago']))
+            st.metric("📊 Média por Pessoa", formatar_moeda(metricas['Média por Pessoa']))
         
         # Análise por Projeto
         st.header("📈 Análise por Projeto")
+        
+        # Estatísticas por projeto usando pandas
         projeto_stats = df_filtrado.groupby('Projeto').agg({
             'Nome': 'count',
-            'Valor Total': ['sum', 'mean', 'min', 'max']
+            'Valor Total': ['sum', 'mean', 'min', 'max'],
+            'Valor Pagto': 'sum'
         }).round(2)
         
-        projeto_stats.columns = ['Quantidade', 'Valor Total', 'Média', 'Mínimo', 'Máximo']
-        projeto_stats['Valor Total'] = projeto_stats['Valor Total'].map(lambda x: f'R$ {x:,.2f}')
-        projeto_stats['Média'] = projeto_stats['Média'].map(lambda x: f'R$ {x:,.2f}')
-        projeto_stats['Mínimo'] = projeto_stats['Mínimo'].map(lambda x: f'R$ {x:,.2f}')
-        projeto_stats['Máximo'] = projeto_stats['Máximo'].map(lambda x: f'R$ {x:,.2f}')
+        # Renomear colunas
+        projeto_stats.columns = ['Quantidade', 'Valor Total', 'Média', 'Mínimo', 'Máximo', 'Valor Pago']
         
-        st.dataframe(projeto_stats)
+        # Formatar valores
+        projeto_stats_formatado = projeto_stats.copy()
+        for col in ['Valor Total', 'Média', 'Mínimo', 'Máximo', 'Valor Pago']:
+            projeto_stats_formatado[col] = projeto_stats_formatado[col].apply(lambda x: f"R$ {x:,.2f}")
         
-        # Gráficos
+        st.dataframe(projeto_stats_formatado)
+        
+        # Visualizações com gráficos nativos do Streamlit
         st.header("📊 Visualizações Gráficas")
         
         col1, col2 = st.columns(2)
         
         with col1:
             st.subheader("Distribuição por Projeto (Quantidade)")
-            fig, ax = plt.subplots(figsize=(10, 6))
-            df_filtrado['Projeto'].value_counts().plot(kind='bar', ax=ax, color='skyblue')
-            ax.set_ylabel('Quantidade de Pessoas')
-            ax.set_xlabel('Projeto')
-            plt.xticks(rotation=45)
-            st.pyplot(fig)
+            contagem_projetos = df_filtrado['Projeto'].value_counts()
+            st.bar_chart(contagem_projetos)
         
         with col2:
-            st.subheader("Distribuição por Projeto (Valor Total)")
-            fig, ax = plt.subplots(figsize=(10, 6))
-            df_filtrado.groupby('Projeto')['Valor Total'].sum().sort_values().plot(
-                kind='barh', ax=ax, color='lightgreen'
-            )
-            ax.set_xlabel('Valor Total (R$)')
-            ax.set_ylabel('Projeto')
-            st.pyplot(fig)
+            st.subheader("Valor Total por Projeto")
+            valor_por_projeto = df_filtrado.groupby('Projeto')['Valor Total'].sum().sort_values()
+            st.bar_chart(valor_por_projeto)
         
-        # Distribuição de Valores
+        # Histograma de valores
         st.subheader("Distribuição de Valores Individuais")
-        fig, ax = plt.subplots(figsize=(12, 6))
-        df_filtrado['Valor Total'].hist(bins=30, ax=ax, edgecolor='black')
-        ax.set_xlabel('Valor (R$)')
-        ax.set_ylabel('Frequência')
-        ax.set_title('Histograma de Valores')
-        st.pyplot(fig)
+        
+        # Criar bins para o histograma
+        bins = st.slider("Número de intervalos (bins):", 5, 50, 20)
+        
+        # Usar o gráfico de barras do Streamlit para histograma
+        hist_data = df_filtrado['Valor Total']
+        hist_values, hist_bins = pd.cut(hist_data, bins=bins, retbins=True)
+        hist_counts = hist_values.value_counts().sort_index()
+        
+        st.bar_chart(hist_counts)
+        
+        # Tabelas detalhadas
+        st.header("📋 Dados Detalhados")
         
         # Top 10 maiores valores
-        st.header("🏆 Top 10 Maiores Valores")
-        top_10 = df_filtrado.nlargest(10, 'Valor Total')[['Nome', 'Projeto', 'Valor Total']]
-        top_10['Valor Total'] = top_10['Valor Total'].map(lambda x: f'R$ {x:,.2f}')
-        st.dataframe(top_10)
+        with st.expander("🏆 Top 10 Maiores Valores"):
+            top_10 = df_filtrado.nlargest(10, 'Valor Total')[['Nome', 'Projeto', 'Valor Total', 'Data Pagto']].copy()
+            top_10['Valor Total'] = top_10['Valor Total'].apply(formatar_moeda)
+            top_10['Data Pagto'] = top_10['Data Pagto'].dt.strftime('%d/%m/%Y')
+            st.dataframe(top_10)
         
-        # Pesquisa de pessoas
-        st.header("🔎 Pesquisar Pessoa")
-        nome_pesquisa = st.text_input("Digite o nome para pesquisa:")
+        # Top 10 menores valores
+        with st.expander("📉 Top 10 Menores Valores"):
+            bottom_10 = df_filtrado.nsmallest(10, 'Valor Total')[['Nome', 'Projeto', 'Valor Total', 'Data Pagto']].copy()
+            bottom_10['Valor Total'] = bottom_10['Valor Total'].apply(formatar_moeda)
+            bottom_10['Data Pagto'] = bottom_10['Data Pagto'].dt.strftime('%d/%m/%Y')
+            st.dataframe(bottom_10)
         
-        if nome_pesquisa:
-            resultados = df_filtrado[df_filtrado['Nome'].str.contains(nome_pesquisa, case=False, na=False)]
-            st.write(f"🔍 {len(resultados)} resultado(s) encontrado(s):")
+        # Pesquisa avançada
+        st.header("🔎 Pesquisa Avançada")
+        
+        col_search1, col_search2 = st.columns(2)
+        
+        with col_search1:
+            pesquisa_nome = st.text_input("Digite o nome para pesquisa exata:")
+        
+        with col_search2:
+            pesquisa_projeto = st.selectbox("Filtrar por projeto:", ['Todos'] + list(df_filtrado['Projeto'].unique()))
+        
+        if pesquisa_nome:
+            resultados = df_filtrado[df_filtrado['Nome'].str.contains(pesquisa_nome, case=False, na=False)]
+            
+            if pesquisa_projeto != 'Todos':
+                resultados = resultados[resultados['Projeto'] == pesquisa_projeto]
             
             if len(resultados) > 0:
-                for _, row in resultados.iterrows():
-                    with st.container():
-                        st.markdown(f"**{row['Nome']}**")
-                        st.write(f"Projeto: {row['Projeto']}")
-                        st.write(f"Valor Total: R$ {row['Valor Total']:,.2f}")
-                        st.write(f"Data Pagto: {row['Data Pagto'].strftime('%d/%m/%Y')}")
-                        st.divider()
+                st.write(f"🔍 {len(resultados)} resultado(s) encontrado(s):")
+                
+                resultados_formatados = resultados.copy()
+                resultados_formatados['Valor Total'] = resultados_formatados['Valor Total'].apply(formatar_moeda)
+                resultados_formatados['Valor Pagto'] = resultados_formatados['Valor Pagto'].apply(formatar_moeda)
+                resultados_formatados['Data Pagto'] = resultados_formatados['Data Pagto'].dt.strftime('%d/%m/%Y')
+                
+                st.dataframe(resultados_formatados[['Nome', 'Projeto', 'Valor Total', 'Valor Pagto', 'Data Pagto']])
+            else:
+                st.warning("Nenhum resultado encontrado com os critérios especificados.")
+        
+        # Resumo estatístico
+        st.header("📈 Resumo Estatístico Completo")
+        
+        col_stat1, col_stat2 = st.columns(2)
+        
+        with col_stat1:
+            st.subheader("Estatísticas Descritivas")
+            estatisticas = df_filtrado['Valor Total'].describe()
+            
+            for stat, value in estatisticas.items():
+                if stat in ['count']:
+                    st.write(f"**{stat.capitalize()}:** {int(value):,}")
+                else:
+                    st.write(f"**{stat.capitalize()}:** R$ {value:,.2f}")
+        
+        with col_stat2:
+            st.subheader("Distribuição por Faixa de Valor")
+            
+            # Criar faixas de valor
+            faixas = pd.cut(df_filtrado['Valor Total'], bins=5)
+            distribuicao_faixas = faixas.value_counts().sort_index()
+            
+            for faixa, quantidade in distribuicao_faixas.items():
+                st.write(f"**{faixa}:** {quantidade:,} pessoas ({quantidade/len(df_filtrado)*100:.1f}%)")
         
         # Download dos dados filtrados
         st.header("📥 Exportar Dados")
         
-        if st.button("💾 Baixar Dados Filtrados (CSV)"):
-            csv = df_filtrado.to_csv(index=False, sep=';', decimal=',')
-            st.download_button(
-                label="Clique para baixar",
-                data=csv,
-                file_name="dados_filtrados_pgto_abastece.csv",
-                mime="text/csv"
-            )
+        col_dl1, col_dl2 = st.columns(2)
+        
+        with col_dl1:
+            if st.button("💾 Baixar Dados Filtrados (CSV)", use_container_width=True):
+                csv = df_filtrado.to_csv(index=False, sep=';', decimal=',')
+                st.download_button(
+                    label="Clique para baixar CSV",
+                    data=csv,
+                    file_name="dados_filtrados_pgto_abastece.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+        
+        with col_dl2:
+            if st.button("📄 Baixar Resumo (Excel)", use_container_width=True):
+                # Criar um resumo em Excel
+                output = BytesIO()
+                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                    df_filtrado.to_excel(writer, sheet_name='Dados Completos', index=False)
+                    projeto_stats.to_excel(writer, sheet_name='Resumo por Projeto')
+                    
+                    # Adicionar estatísticas
+                    estatisticas_df = pd.DataFrame([metricas])
+                    estatisticas_df.to_excel(writer, sheet_name='Métricas', index=False)
+                
+                output.seek(0)
+                st.download_button(
+                    label="Clique para baixar Excel",
+                    data=output,
+                    file_name="resumo_analise_pgto.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
         
         # Informações sobre os dados
         with st.expander("ℹ️ Informações sobre os dados"):
-            st.write(f"**Total de registros no arquivo original:** {len(df)}")
-            st.write(f"**Total de registros após filtros:** {len(df_filtrado)}")
+            st.write(f"**Total de registros no arquivo original:** {len(df):,}")
+            st.write(f"**Total de registros após filtros:** {len(df_filtrado):,}")
             st.write(f"**Período dos dados:** {df['Data Pagto'].min().strftime('%d/%m/%Y')} a {df['Data Pagto'].max().strftime('%d/%m/%Y')}")
             st.write(f"**Projetos encontrados:** {', '.join(projetos)}")
+            st.write(f"**Intervalo de valores:** {formatar_moeda(df['Valor Total'].min())} a {formatar_moeda(df['Valor Total'].max())}")
 
 else:
     st.info("👆 Faça upload de um arquivo CSV para começar a análise.")
@@ -205,4 +290,13 @@ else:
     - Separador: ponto-e-vírgula (;)
     - Formato de data: DD/MM/YYYY
     - Formato de valores: R$ 1.593,90
+    
+    ### 🚀 Funcionalidades disponíveis:
+    1. **Filtros avançados** por projeto, valor e nome
+    2. **Métricas em tempo real** com KPIs importantes
+    3. **Análise por projeto** com estatísticas detalhadas
+    4. **Gráficos interativos** usando bibliotecas nativas
+    5. **Pesquisa avançada** de pessoas
+    6. **Exportação de dados** em CSV e Excel
+    7. **Resumo estatístico** completo
     """)
