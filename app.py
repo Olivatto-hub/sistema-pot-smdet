@@ -37,14 +37,17 @@ def check_login(username, password):
     # Credenciais simples (em produção, usar banco de dados ou env vars)
     users = {
         "admin": ("admin123", "Administrador"),
-        "operador": ("operador123", "Operador")
+        "operador": ("operador123", "Operador"),
+        "admin.ti@prefeitura.sp.gov.br": ("smdet2025", "Administrador")
     }
     
+    # Verifica credenciais diretas
     if username in users and users[username][0] == password:
         st.session_state.authenticated = True
         st.session_state.user_role = users[username][1]
         st.session_state.username = username
         return True
+    
     return False
 
 def logout():
