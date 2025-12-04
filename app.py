@@ -69,48 +69,112 @@ class SistemaPOT:
         self.log("❌ Nenhum encoding comum funcionou")
         return None
     
-    def converter_valor(self, valor_str):
-        """Converte valores monetários do formato brasileiro para float"""
+    def eh_data(self, valor_str):
+        """Verifica se uma string parece ser uma data no formato brasileiro"""
+        if pd.isna(valor_str) or not isinstance(valor_str, str):
+            return False
+        
+        valor_str = str(valor_str).strip()
+        
+        # Verifica padrões comuns de data
+        padroes_data = [
+            r'^\d{1,2}/\d{1,2}/\d{4}$',  # DD/MM/AAAA
+            r'^\d{1,2}-\d{1,2}-\d{4}$',  # DD-MM-AAAA
+            r'^\d{4}-\d{1,2}-\d{1,2}$',  # AAAA-MM-DD
+            r'^\d{1,2}/\d{1,2}/\d{2}$',  # DD/MM/AA
+            r'^\d{1,2}-\d{1,2}-\d{2}$',  # DD-MM-AA
+        ]
+        
+        for padrao in padroes_data:
+            if re.match(padrao, valor_str):
+                return True
+        
+        # Verifica se contém palavras relacionadas a data/mês/ano
+        palavras_data = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 
+                        'jul', 'ago', 'set', 'out', 'nov', 'dez',
+                        'january', 'february', 'march', 'april', 'may', 'june',
+                        'july', 'august', 'september', 'october', 'november', 'december']
+        
+        valor_lower = valor_str.lower()
+        for palavra in palavras_data:
+            if palavra in valor_lower:
+                return True
+        
+        return False
+    
+    def converter_valor_monetario(self, valor_str):
+        """Converte apenas valores monetários do formato brasileiro para float"""
         if pd.isna(valor_str) or valor_str == '' or str(valor_str).strip() == '':
             return 0.0
         
         try:
-            if isinstance(valor_str, (int, float)):
+            # Se for um número, retorna direto
+            if isinstance(valor_str, (int, float, np.number)):
                 return float(valor_str)
             
             valor_str = str(valor_str).strip()
             
+            # Verifica se é uma data - NÃO CONVERTE
+            if self.eh_data(valor_str):
+                return valor_str  # Mantém como string
+            
+            # Tenta converter direto para float
             try:
                 return float(valor_str)
             except:
                 pass
             
+            # Remove símbolo de moeda
             valor_str = valor_str.replace('R$', '').replace(' ', '').strip()
             
             if valor_str == '':
                 return 0.0
             
+            # Verifica se tem ponto e vírgula como separador decimal
+            valor_str = valor_str.replace(';', '.')
+            
+            # Formato brasileiro: 1.234,56
             if '.' in valor_str and ',' in valor_str:
+                # Se tem milhares separados por ponto e decimal por vírgula
+                if valor_str.count('.') == 1 and len(valor_str.split('.')[-1]) <= 2:
+                    # Pode ser decimal simples (ex: 123.45)
+                    try:
+                        return float(valor_str)
+                    except:
+                        pass
+                
+                # Remove pontos de milhar e substitui vírgula por ponto
                 partes = valor_str.split(',')
                 if len(partes) == 2:
                     inteiro = partes[0].replace('.', '')
                     decimal = partes[1]
                     return float(f"{inteiro}.{decimal}")
             
+            # Formato com vírgula decimal: 1234,56
             elif ',' in valor_str:
-                return float(valor_str.replace(',', '.'))
+                # Verifica se a vírgula separa decimal
+                partes = valor_str.split(',')
+                if len(partes) == 2 and len(partes[1]) <= 2:
+                    return float(valor_str.replace(',', '.'))
+                else:
+                    # Pode ser separador de milhar
+                    return float(valor_str.replace(',', ''))
             
+            # Formato com ponto: pode ser separador decimal ou de milhar
             elif '.' in valor_str:
-                if valor_str.count('.') == 1 and len(valor_str.split('.')[-1]) <= 2:
+                partes = valor_str.split('.')
+                if len(partes) == 2 and len(partes[1]) <= 2:
+                    # Ponto como separador decimal
                     return float(valor_str)
                 else:
+                    # Ponto como separador de milhar
                     return float(valor_str.replace('.', ''))
             
             else:
                 return float(valor_str)
                 
         except Exception as e:
-            self.log(f"Erro ao converter valor '{str(valor_str)[:20]}': {e}")
+            self.log(f"⚠️ Não foi possível converter '{str(valor_str)[:20]}' para valor monetário: {e}")
             return 0.0
     
     def processar_arquivo_streamlit(self, arquivo_upload):
@@ -151,7 +215,8 @@ class SistemaPOT:
                     encoding=encoding, 
                     on_bad_lines='skip',
                     dtype=str,
-                    quoting=3
+                    quoting=3,
+                    low_memory=False
                 )
                 
                 self.log(f"✅ Arquivo lido com pandas. Shape: {self.df.shape}")
@@ -216,10 +281,12 @@ class SistemaPOT:
         linhas_iniciais = len(df_limpo)
         self.log(f"Dados iniciais: {linhas_iniciais} linhas, {len(df_limpo.columns)} colunas")
         
+        # Remove linhas totalmente vazias
         df_limpo = df_limpo.dropna(how='all')
         linhas_apos_vazias = len(df_limpo)
         self.log(f"Removidas {linhas_iniciais - linhas_apos_vazias} linhas totalmente vazias")
         
+        # Normaliza nomes das colunas
         colunas_originais = list(df_limpo.columns)
         self.log(f"Colunas originais: {colunas_originais}")
         
@@ -242,10 +309,11 @@ class SistemaPOT:
         df_limpo = df_limpo.rename(columns=mapeamento_colunas)
         self.log(f"Colunas após renomeação: {list(df_limpo.columns)}")
         
+        # Identifica coluna de valor
         possiveis_nomes_valor = [
             'valor_pagto', 'valor_pagamento', 'valor_total', 'valor', 
             'pagto', 'pagamento', 'total', 'valorpagto', 'valor_pgto',
-            'valorpagamento'
+            'valorpagamento', 'vlr_pagto', 'vlr_pagamento'
         ]
         
         self.coluna_valor_pagto = None
@@ -258,19 +326,26 @@ class SistemaPOT:
         if self.coluna_valor_pagto is None:
             for col in df_limpo.columns:
                 col_lower = col.lower()
-                if any(termo in col_lower for termo in ['val', 'pag', 'total']):
+                if any(termo in col_lower for termo in ['val', 'pag', 'total', 'vlr']):
                     self.coluna_valor_pagto = col
                     self.log(f"✅ Coluna de valor identificada por padrão: {col}")
                     break
         
         if self.coluna_valor_pagto is None:
             self.log("⚠️ Coluna de valor não identificada automaticamente")
+            # Tenta inferir pela análise dos dados
             for col in df_limpo.columns:
                 try:
                     amostra = df_limpo[col].dropna().head(10)
                     if len(amostra) > 0:
-                        valores = amostra.apply(self.converter_valor)
-                        if valores.sum() > 0:
+                        # Tenta converter alguns valores
+                        valores_convertidos = []
+                        for val in amostra:
+                            convertido = self.converter_valor_monetario(val)
+                            if convertido != 0.0 and not self.eh_data(str(val)):
+                                valores_convertidos.append(convertido)
+                        
+                        if len(valores_convertidos) > 5 and any(v > 0 for v in valores_convertidos):
                             self.coluna_valor_pagto = col
                             self.log(f"✅ Coluna de valor inferida: {col}")
                             break
@@ -279,31 +354,71 @@ class SistemaPOT:
         
         self.log(f"Coluna de valor final: {self.coluna_valor_pagto}")
         
+        # Analisa cada coluna e converte apenas se for valor monetário
         colunas_convertidas = []
+        colunas_data = []
+        colunas_texto = []
+        
         for coluna in df_limpo.columns:
-            if any(termo in coluna.lower() for termo in ['nome', 'distrito', 'rg', 'projeto', 'cartao']):
+            # Verifica se a coluna parece conter dados textuais
+            coluna_lower = coluna.lower()
+            if any(termo in coluna_lower for termo in ['nome', 'distrito', 'rg', 'projeto', 'cartao', 
+                                                      'agencia', 'endereco', 'cidade', 'estado', 
+                                                      'cpf', 'cnpj', 'telefone', 'email', 'banco',
+                                                      'conta', 'descricao', 'observacao']):
+                colunas_texto.append(coluna)
                 continue
             
-            try:
-                valores_originais = df_limpo[coluna].head(3).tolist()
-                df_limpo[coluna] = df_limpo[coluna].apply(self.converter_valor)
-                valores_convertidos = df_limpo[coluna].head(3).tolist()
-                
-                if any(v != 0 for v in valores_convertidos):
+            # Amostra para análise
+            amostra = df_limpo[coluna].dropna().head(20)
+            if len(amostra) == 0:
+                continue
+            
+            # Verifica se é coluna de data
+            valores_data = 0
+            valores_monetarios = 0
+            
+            for val in amostra:
+                if self.eh_data(str(val)):
+                    valores_data += 1
+                else:
+                    # Tenta converter para monetário
+                    convertido = self.converter_valor_monetario(val)
+                    if convertido != 0.0 and convertido != str(val):
+                        valores_monetarios += 1
+            
+            # Decisão baseada na análise
+            if valores_data > valores_monetarios and valores_data > len(amostra) * 0.3:
+                # Principalmente datas
+                colunas_data.append(coluna)
+                self.log(f"Coluna '{coluna}' identificada como DATA")
+            elif valores_monetarios > len(amostra) * 0.3 or coluna == self.coluna_valor_pagto:
+                # Principalmente valores monetários
+                try:
+                    valores_originais = df_limpo[coluna].head(3).tolist()
+                    df_limpo[coluna] = df_limpo[coluna].apply(self.converter_valor_monetario)
+                    valores_convertidos = df_limpo[coluna].head(3).tolist()
+                    
                     colunas_convertidas.append(coluna)
-                    self.log(f"Coluna convertida: {coluna} (ex: {valores_originais} -> {valores_convertidos})")
-            except Exception as e:
-                self.log(f"Erro ao converter coluna {coluna}: {e}")
+                    self.log(f"Coluna convertida para monetário: {coluna}")
+                except Exception as e:
+                    self.log(f"Erro ao converter coluna {coluna} para monetário: {e}")
+            else:
+                # Mantém como texto
+                colunas_texto.append(coluna)
         
-        self.log(f"Total de colunas convertidas: {len(colunas_convertidas)}")
+        self.log(f"Total de colunas convertidas para monetário: {len(colunas_convertidas)}")
+        self.log(f"Total de colunas identificadas como data: {len(colunas_data)}")
+        self.log(f"Total de colunas mantidas como texto: {len(colunas_texto)}")
         
+        # Remove registros com valor ≤ 0 na coluna de pagamento
         if self.coluna_valor_pagto and self.coluna_valor_pagto in df_limpo.columns:
             antes = len(df_limpo)
             df_limpo = df_limpo[df_limpo[self.coluna_valor_pagto] > 0]
             depois = len(df_limpo)
             removidos = antes - depois
             if removidos > 0:
-                self.log(f"Removidos {removidos} registros com valor ≤ 0")
+                self.log(f"Removidos {removidos} registros com valor ≤ 0 na coluna {self.coluna_valor_pagto}")
         
         self.dados_limpos = df_limpo
         self.log(f"✅ Dados limpos: {len(df_limpo)} linhas, {len(df_limpo.columns)} colunas")
@@ -328,11 +443,12 @@ class SistemaPOT:
         
         self.log(f"Dados faltantes analisados: {len(faltantes_por_coluna)} colunas")
         
+        # Identifica linhas com faltantes críticos
         colunas_criticas = []
         if self.coluna_valor_pagto:
             colunas_criticas.append(self.coluna_valor_pagto)
         
-        for col in ['nome', 'agencia']:
+        for col in ['nome', 'agencia', 'cpf', 'cnpj']:
             if col in self.dados_limpos.columns:
                 colunas_criticas.append(col)
         
@@ -354,6 +470,7 @@ class SistemaPOT:
         
         inconsistencias = []
         
+        # Verifica valores negativos na coluna de pagamento
         if self.coluna_valor_pagto and self.coluna_valor_pagto in self.dados_limpos.columns:
             negativos = self.dados_limpos[self.dados_limpos[self.coluna_valor_pagto] < 0]
             if len(negativos) > 0:
@@ -366,6 +483,7 @@ class SistemaPOT:
                 })
                 self.log(f"Valores negativos encontrados: {len(negativos)}")
         
+        # Verifica valores zerados na coluna de pagamento
         if self.coluna_valor_pagto and self.coluna_valor_pagto in self.dados_limpos.columns:
             zerados = self.dados_limpos[self.dados_limpos[self.coluna_valor_pagto] == 0]
             if len(zerados) > 0:
@@ -378,28 +496,37 @@ class SistemaPOT:
                 })
                 self.log(f"Valores zerados encontrados: {len(zerados)}")
         
-        if 'agencia' in self.dados_limpos.columns:
-            agencias_invalidas = self.dados_limpos[self.dados_limpos['agencia'].isnull()]
-            if len(agencias_invalidas) > 0:
-                inconsistencias.append({
-                    'Tipo': 'Agências Inválidas',
-                    'Coluna': 'agencia',
-                    'Quantidade': len(agencias_invalidas),
-                    'Exemplo': f"{len(agencias_invalidas)} registros sem agência",
-                    'Descrição': 'Agência não informada'
-                })
-                self.log(f"Agências inválidas: {len(agencias_invalidas)}")
+        # Verifica valores muito altos (possíveis erros)
+        if self.coluna_valor_pagto and self.coluna_valor_pagto in self.dados_limpos.columns:
+            valores = self.dados_limpos[self.coluna_valor_pagto]
+            if len(valores) > 0:
+                media = valores.mean()
+                desvio = valores.std()
+                limite_superior = media + 3 * desvio
+                valores_extremos = self.dados_limpos[valores > limite_superior]
+                if len(valores_extremos) > 0:
+                    inconsistencias.append({
+                        'Tipo': 'Valores Extremamente Altos',
+                        'Coluna': self.coluna_valor_pagto,
+                        'Quantidade': len(valores_extremos),
+                        'Exemplo': f"Acima de R$ {limite_superior:,.2f}",
+                        'Descrição': 'Valores muito acima da média (possível erro)'
+                    })
+                    self.log(f"Valores extremamente altos: {len(valores_extremos)}")
         
-        if 'nome' in self.dados_limpos.columns:
-            nomes_faltantes = self.dados_limpos[self.dados_limpos['nome'].isnull()]
-            if len(nomes_faltantes) > 0:
-                inconsistencias.append({
-                    'Tipo': 'Nomes Faltantes',
-                    'Coluna': 'nome',
-                    'Quantidade': len(nomes_faltantes),
-                    'Exemplo': f"{len(nomes_faltantes)} registros sem nome",
-                    'Descrição': 'Nome do beneficiário não informado'
-                })
+        # Verifica dados críticos faltantes
+        colunas_criticas = ['nome', 'agencia', 'cpf', 'cnpj']
+        for coluna in colunas_criticas:
+            if coluna in self.dados_limpos.columns:
+                faltantes = self.dados_limpos[self.dados_limpos[coluna].isnull()]
+                if len(faltantes) > 0:
+                    inconsistencias.append({
+                        'Tipo': f'{coluna.upper()} Faltante',
+                        'Coluna': coluna,
+                        'Quantidade': len(faltantes),
+                        'Exemplo': f"{len(faltantes)} registros sem {coluna}",
+                        'Descrição': f'{coluna} não informado'
+                    })
         
         if inconsistencias:
             self.inconsistencias = pd.DataFrame(inconsistencias)
@@ -418,22 +545,29 @@ class SistemaPOT:
         
         if self.coluna_valor_pagto and self.coluna_valor_pagto in self.dados_limpos.columns:
             try:
-                self.total_pagamentos = self.dados_limpos[self.coluna_valor_pagto].sum()
-                total_numpy = np.sum(self.dados_limpos[self.coluna_valor_pagto].values)
+                valores = self.dados_limpos[self.coluna_valor_pagto]
+                
+                # Calcula usando pandas
+                self.total_pagamentos = valores.sum()
+                
+                # Verifica com numpy para validação
+                total_numpy = np.nansum(valores.values)
                 
                 self.log(f"💰 Valor total calculado (pandas): R$ {self.total_pagamentos:,.2f}")
                 self.log(f"💰 Valor total calculado (numpy): R$ {total_numpy:,.2f}")
                 
+                # Se houver diferença significativa, usa a média
                 if abs(self.total_pagamentos - total_numpy) > 0.01:
                     self.log("⚠️ Diferença detectada entre métodos de soma!")
                     self.total_pagamentos = (self.total_pagamentos + total_numpy) / 2
                     self.log(f"💰 Valor total ajustado: R$ {self.total_pagamentos:,.2f}")
                 
-                valores = self.dados_limpos[self.coluna_valor_pagto]
+                # Estatísticas detalhadas
                 self.log(f"  - Média: R$ {valores.mean():,.2f}")
                 self.log(f"  - Mínimo: R$ {valores.min():,.2f}")
                 self.log(f"  - Máximo: R$ {valores.max():,.2f}")
                 self.log(f"  - Mediana: R$ {valores.median():,.2f}")
+                self.log(f"  - Desvio Padrão: R$ {valores.std():,.2f}")
                 
             except Exception as e:
                 self.log(f"Erro ao calcular estatísticas: {e}")
@@ -475,7 +609,10 @@ def main():
     st.markdown("---")
     
     # Inicializar sistema
-    sistema = SistemaPOT()
+    if 'sistema' not in st.session_state:
+        st.session_state['sistema'] = SistemaPOT()
+    
+    sistema = st.session_state['sistema']
     
     # Sidebar
     with st.sidebar:
@@ -505,6 +642,7 @@ def main():
                         st.session_state['mostrar_debug'] = mostrar_debug
                         st.session_state['sistema'] = sistema
                         st.success("✅ Arquivo processado com sucesso!")
+                        st.rerun()
                     else:
                         st.error("❌ Erro ao processar arquivo. Verifique o log.")
             
@@ -670,9 +808,10 @@ def main():
                 if colunas_selecionadas:
                     dados_visiveis = sistema.dados_limpos[colunas_selecionadas].head(num_linhas).copy()
                     
+                    # Formata valores monetários
                     if sistema.coluna_valor_pagto and sistema.coluna_valor_pagto in dados_visiveis.columns:
                         dados_visiveis[sistema.coluna_valor_pagto] = dados_visiveis[sistema.coluna_valor_pagto].apply(
-                            lambda x: f"R$ {x:,.2f}" if pd.notna(x) else ""
+                            lambda x: f"R$ {x:,.2f}" if pd.notna(x) and isinstance(x, (int, float, np.number)) else str(x)
                         )
                     
                     st.dataframe(
@@ -760,6 +899,7 @@ def main():
         ✅ **DETECÇÃO DE INCONSISTÊNCIAS** automática
         ✅ **CÁLCULO PRECISO** de valores totais
         ✅ **EXPORTAÇÃO** em formato CSV
+        ✅ **DETECÇÃO INTELIGENTE** de colunas (datas, valores, textos)
         
         ### 📁 **COMO USAR:**
         
@@ -775,7 +915,7 @@ def main():
         """
         <div style='text-align: center; color: gray; padding: 20px;'>
         <strong>💰 SISTEMA POT - MONITORAMENTO DE PAGAMENTOS</strong><br>
-        Versão Final • Processamento Robusto • Análise Completa
+        Versão 2.0 • Processamento Robusto • Análise Inteligente
         </div>
         """,
         unsafe_allow_html=True
