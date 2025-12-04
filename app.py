@@ -77,13 +77,16 @@ st.markdown("""
 # ⚙️ FUNÇÕES DE UTILIDADE E PROCESSAMENTO
 # ============================================
 
-# Lista de colunas esperadas para o processamento, incluindo as originais e as renomeadas
-REQUIRED_COLS = {
+# Mapeamento de nomes de colunas esperados (Chave: Nome no arquivo; Valor: Nome usado na aplicação)
+# Adicione variações comuns se necessário
+COLUMN_MAP = {
     'Num Cartao': 'Num Cartao', 'Valor Total': 'Valor Total', 'Valor Desconto': 'Valor Desconto', 
     'Valor Pagto': 'Valor Pagto', 'Data Pagto': 'Data Pagto', 'Valor Dia': 'Valor Dia', 
     'Dias a apagar': 'Dias a apagar', 'Gerenciadora': 'Gerenciadora', 'Nome': 'Nome', 'CPF': 'CPF', 
     'Ordem': 'Ordem', 'Projeto': 'Projeto'
 }
+REQUIRED_FINAL_COLS = ['Projeto', 'Gerenciadora', 'Valor Pagto', 'Data Pagto', 'CPF', 'Ordem', 'Valor Total']
+
 
 # Função para inicializar configurações padrão
 def initialize_config():
@@ -107,11 +110,12 @@ def initialize_config():
 def apply_filters(df, filters):
     df_filtered = df.copy()
     
-    # Garante a existência da coluna antes de filtrar
+    # Filtro de Projeto
     if 'Projeto' in df_filtered.columns:
         if filters['projeto'] and filters['projeto'] != 'All':
             df_filtered = df_filtered[df_filtered['Projeto'].isin(filters['projeto'])]
     
+    # Filtro de Gerenciadora
     if 'Gerenciadora' in df_filtered.columns:
         if filters['gerenciadora'] and filters['gerenciadora'] != 'All':
             df_filtered = df_filtered[df_filtered['Gerenciadora'].isin(filters['gerenciadora'])]
@@ -126,7 +130,8 @@ def apply_filters(df, filters):
         data_col = pd.to_datetime(df_filtered['Data Pagto'], format='%d/%m/%Y', errors='coerce')
         # Filtra apenas linhas onde a data foi convertida com sucesso E está no intervalo
         valid_dates = data_col.notna()
-        df_filtered = df_filtered[valid_dates].copy() # Trabalha apenas com datas válidas
+        # Nota: Usar .loc ou .copy() após a filtragem para evitar SettingWithCopyWarning
+        df_filtered = df_filtered.loc[valid_dates].copy() 
         data_col_valid = data_col[valid_dates]
         
         df_filtered = df_filtered[
@@ -140,6 +145,7 @@ def apply_filters(df, filters):
 def load_data(uploaded_file):
     try:
         # Tenta ler o arquivo CSV
+        uploaded_file.seek(0)
         df = pd.read_csv(uploaded_file, sep=';', encoding='utf-8', on_bad_lines='skip')
     except UnicodeDecodeError:
         try:
@@ -153,23 +159,26 @@ def load_data(uploaded_file):
         st.error(f"Erro ao ler o arquivo: {e}")
         return pd.DataFrame()
 
-    # Normalização dos nomes das colunas
-    # 1. Renomeia para o formato esperado (sem acentos/espaços)
-    df.columns = df.columns.str.strip()
+    # Normalização e mapeamento dos nomes das colunas
     col_mapping = {}
-    for col_name in df.columns:
-        normalized_name = col_name.replace(' ', '_').replace('ã', 'a').replace('ç', 'c').replace('.', '').replace('/', '').replace('\\', '').strip()
-        # Mapeamento reverso para os nomes finais esperados
-        if normalized_name.lower() in [key.lower().replace(' ', '_').replace('ã', 'a').replace('ç', 'c') for key in REQUIRED_COLS.keys()]:
-            # Encontra o nome esperado original
-            for final_name, _ in REQUIRED_COLS.items():
-                if normalized_name.lower() == final_name.lower().replace(' ', '_').replace('ã', 'a').replace('ç', 'c'):
-                    col_mapping[col_name] = final_name
-                    break
-        else:
-             # Mantém o nome original se não for uma coluna mapeada
-            col_mapping[col_name] = col_name 
-
+    
+    # Prepara os nomes das colunas carregadas para comparação (minúsculas, sem espaço/acento)
+    normalized_loaded_cols = {
+        col: col.strip().lower().replace(' ', '').replace('ã', 'a').replace('ç', 'c').replace('.', '')
+        for col in df.columns
+    }
+    
+    # Prepara os nomes finais esperados para comparação (minúsculas, sem espaço/acento)
+    normalized_target_cols = {
+        val.strip().lower().replace(' ', '').replace('ã', 'a').replace('ç', 'c').replace('.', ''): val
+        for val in COLUMN_MAP.values()
+    }
+    
+    # Cria o mapeamento: Coluna Original -> Nome Final Esperado
+    for original_col, normalized_loaded_name in normalized_loaded_cols.items():
+        if normalized_loaded_name in normalized_target_cols:
+            col_mapping[original_col] = normalized_target_cols[normalized_loaded_name]
+    
     df.rename(columns=col_mapping, inplace=True)
     
     # Colunas que DEVEM ser tratadas como numéricas (mesmo que com prefixo R$)
@@ -191,18 +200,23 @@ def load_data(uploaded_file):
         if initial_count != final_count:
             st.warning(f"⚠️ {initial_count - final_count} linhas duplicadas foram removidas. Total: {final_count}.")
     else:
-        st.warning("Colunas necessárias para desduplicação (Ordem, CPF, Valor Pagto, Data Pagto) não encontradas.")
+        st.warning(f"Colunas necessárias para desduplicação ({', '.join(dedup_cols)}) não encontradas. Ignorando desduplicação.")
     
     # 🚨 PONTO CRÍTICO DE VALIDAÇÃO 🚨
     # Garante que as colunas essenciais para o filtro existam
-    if 'Projeto' not in df.columns or 'Gerenciadora' not in df.columns or 'Valor Pagto' not in df.columns or 'Data Pagto' not in df.columns:
-        st.error("As colunas 'Projeto', 'Gerenciadora', 'Valor Pagto' e 'Data Pagto' são obrigatórias e não foram identificadas corretamente na base após o processamento. Verifique o cabeçalho do seu arquivo.")
+    missing_cols = [col for col in REQUIRED_FINAL_COLS if col not in df.columns]
+    
+    if missing_cols:
+        st.error(f"As seguintes colunas obrigatórias são essenciais e não foram identificadas na base: {', '.join(missing_cols)}. Colunas presentes no arquivo: {', '.join(df.columns)}")
+        st.warning("Verifique se as colunas estão presentes e escritas corretamente no cabeçalho do seu arquivo CSV.")
         return pd.DataFrame()
         
     # Adicionar coluna de Mês/Ano para análise temporal
+    # Deve ser feito após a validação da 'Data Pagto'
     df['Mes_Ano'] = pd.to_datetime(df['Data Pagto'], format='%d/%m/%Y', errors='coerce').dt.to_period('M')
     
     # Identificação de pendências básicas 
+    # Deve ser feito após a validação do 'CPF' e 'Valor Pagto'
     df['Pendencia'] = np.where(df['CPF'].isnull() | (df['CPF'] == 0) | (df['Valor Pagto'] <= 0), True, False)
     
     return df
@@ -277,7 +291,7 @@ uploaded_file = st.sidebar.file_uploader(
 
 if uploaded_file and 'data' not in st.session_state:
     st.session_state['data'] = load_data(uploaded_file)
-    # Se o DataFrame estiver vazio após o load_data, exibe uma mensagem de erro e interrompe
+    # Se o DataFrame estiver vazio após o load_data (devido a colunas faltando), exibe uma mensagem de erro
     if st.session_state['data'].empty:
         st.session_state.pop('data', None) # Remove a chave 'data' para não entrar no loop
         st.stop()
@@ -318,20 +332,25 @@ df = st.session_state['data']
 
 st.sidebar.markdown("### 🔍 FILTROS DE ANÁLISE")
 
-# Definir valores padrão para os filtros
-# 🚨 PONTO DE CORREÇÃO: Usar validação para evitar quebra 🚨
-if 'Projeto' in df.columns and 'Gerenciadora' in df.columns and 'Valor Pagto' in df.columns and 'Data Pagto' in df.columns:
+# Definir valores padrão para os filtros (Proteção contra DataFrame vazio)
+# Este bloco SÓ É EXECUTADO se df não for vazio E contiver as colunas essenciais (garantido pela load_data)
+if all(col in df.columns for col in REQUIRED_FINAL_COLS):
+    
     unique_projects = sorted(df['Projeto'].unique())
     unique_gerenciadoras = sorted(df['Gerenciadora'].dropna().unique())
+    
+    # Usar .astype(float) para garantir que min/max funcionem
     valor_min, valor_max = float(df['Valor Pagto'].min()), float(df['Valor Pagto'].max())
     
     # Processamento seguro de datas
     data_col_dt = pd.to_datetime(df['Data Pagto'], format='%d/%m/%Y', errors='coerce').dropna()
+    
+    # Definir range de datas válido
     if not data_col_dt.empty:
         min_date = data_col_dt.min().date()
         max_date = data_col_dt.max().date()
     else:
-        # Fallback para data atual se a coluna Data Pagto for inválida/vazia
+        # Fallback para um range seguro se as datas forem inválidas/vazias
         min_date = datetime(2020, 1, 1).date()
         max_date = datetime.now().date()
     
@@ -381,7 +400,7 @@ if 'Projeto' in df.columns and 'Gerenciadora' in df.columns and 'Valor Pagto' in
         default_start = stored_filters.get('data_inicio', min_date)
         default_end = stored_filters.get('data_fim', max_date)
         
-        # Ajusta as datas padrão se elas estiverem fora do intervalo atual da base
+        # Ajusta as datas padrão se elas estiverem fora do intervalo da base
         if default_start < min_date: default_start = min_date
         if default_end > max_date: default_end = max_date
         
@@ -419,8 +438,8 @@ if 'Projeto' in df.columns and 'Gerenciadora' in df.columns and 'Valor Pagto' in
         st.rerun() 
         
     # === LÓGICA DE CÁLCULO INICIAL OU APÓS RECARGA ===
-    # Se o df_analise não foi populado, aplica os filtros iniciais.
-    if st.session_state['df_analise'].empty or len(st.session_state['df_analise']) == 0:
+    # Se o df_analise não foi populado ou foi esvaziado, aplica os filtros iniciais.
+    if st.session_state['df_analise'].empty:
         st.session_state['df_analise'] = apply_filters(df, current_filters)
         st.session_state['df_pendencias'] = st.session_state['df_analise'][st.session_state['df_analise']['Pendencia'] == True].copy()
 
@@ -428,10 +447,12 @@ if 'Projeto' in df.columns and 'Gerenciadora' in df.columns and 'Valor Pagto' in
     df_pendencias = st.session_state['df_pendencias']
 
 else:
-    # Se alguma coluna obrigatória estiver faltando, usa DataFrames vazios para evitar quebra
+    # Este bloco só deve ser atingido se a validação em load_data falhou E o erro não foi capturado.
+    # No entanto, se o df_analise estava vazio, ele entrará no bloco anterior
+    # Para ter certeza que a aplicação não quebra, definimos DataFrames vazios
     df_analise = pd.DataFrame()
     df_pendencias = pd.DataFrame()
-    st.info("Aguardando o carregamento correto da base de dados. Verifique as mensagens de erro.")
+    st.info("Aguardando o carregamento correto da base de dados. Verifique as mensagens de erro de validação.")
     st.stop()
 
 # ============================================
@@ -448,15 +469,14 @@ aba_dashboard, aba_processamento, aba_pendencias, aba_config = st.tabs([
 with aba_dashboard:
     if df_analise.empty:
         st.warning("Nenhum dado corresponde aos filtros aplicados ou a base de dados não foi carregada corretamente. Tente ajustar os filtros na barra lateral.")
-        # Se df_analise está vazio, não tente calcular métricas
         st.stop()
 
     col1, col2, col3, col4 = st.columns(4)
 
-    # Cálculo dos KPIs
+    # Cálculo dos KPIs (Garantido que as colunas existem por df_analise.empty check)
     total_pago = df_analise['Valor Pagto'].sum()
     num_pagamentos = len(df_analise) 
-    num_beneficiarios = df_analise['CPF'].nunique() if 'CPF' in df_analise.columns else 0
+    num_beneficiarios = df_analise['CPF'].nunique()
     num_pendencias = len(df_pendencias)
     
     # Métricas Principais
@@ -480,64 +500,62 @@ with aba_dashboard:
     
     st.markdown("---")
     
-    # 2. Análise por Projeto e Gerenciadora (Apenas se as colunas existirem)
-    if 'Gerenciadora' in df_analise.columns and 'Projeto' in df_analise.columns:
-        col_g1, col_g2 = st.columns([1, 2])
+    # 2. Análise por Projeto e Gerenciadora
+    col_g1, col_g2 = st.columns([1, 2])
+    
+    with col_g1:
+        st.markdown('<p class="chart-title">Distribuição por Gerenciadora</p>', unsafe_allow_html=True)
+        fig_pie = create_gerenciadora_pie_chart(df_analise)
+        st.plotly_chart(fig_pie, use_container_width=True)
         
-        with col_g1:
-            st.markdown('<p class="chart-title">Distribuição por Gerenciadora</p>', unsafe_allow_html=True)
-            fig_pie = create_gerenciadora_pie_chart(df_analise)
-            st.plotly_chart(fig_pie, use_container_width=True)
-            
-        with col_g2:
-            st.markdown('<p class="chart-title">🏛️ VALORES TOTAIS POR PROJETO</p>', unsafe_allow_html=True)
-            
-            df_proj = df_analise.groupby('Projeto').agg(
-                Valor_Total_Pago=('Valor Pagto', 'sum'),
-                Valor_Total_Bruto=('Valor Total', 'sum'),
-                Total_Beneficiarios=('CPF', 'nunique'),
-                Media_Pagto=('Valor Pagto', 'mean')
-            ).reset_index()
-            
-            # Renaming for display
-            df_proj.columns = ['Projeto', 'Valor Total Pago', 'Valor Total Bruto', 'Total de Beneficiários', 'Média de Pagamento']
-            
-            fig_bar = create_project_bar_chart(df_proj)
-            st.plotly_chart(fig_bar, use_container_width=True)
-            
-        st.markdown("---")
-
-    # 3. Análise Temporal (Apenas se a coluna Mes_Ano existir)
-    if 'Mes_Ano' in df_analise.columns:
-        st.markdown("### 📈 ANÁLISE TEMPORAL (PAGAMENTO MÊS/ANO)")
+    with col_g2:
+        st.markdown('<p class="chart-title">🏛️ VALORES TOTAIS POR PROJETO</p>', unsafe_allow_html=True)
         
-        df_tempo = df_analise.groupby('Mes_Ano').agg(
+        df_proj = df_analise.groupby('Projeto').agg(
             Valor_Total_Pago=('Valor Pagto', 'sum'),
-            Total_Pagamentos=('Ordem', 'nunique')
+            Valor_Total_Bruto=('Valor Total', 'sum'),
+            Total_Beneficiarios=('CPF', 'nunique'),
+            Media_Pagto=('Valor Pagto', 'mean')
         ).reset_index()
         
-        df_tempo['Mes_Ano_str'] = df_tempo['Mes_Ano'].astype(str)
+        # Renaming for display
+        df_proj.columns = ['Projeto', 'Valor Total Pago', 'Valor Total Bruto', 'Total de Beneficiários', 'Média de Pagamento']
         
-        fig_line = px.line(
-            df_tempo,
-            x='Mes_Ano_str',
-            y='Valor_Total_Pago',
-            title='Evolução Mensal do Valor Total Pago',
-            markers=True,
-            text='Valor_Total_Pago'
-        )
+        fig_bar = create_project_bar_chart(df_proj)
+        st.plotly_chart(fig_bar, use_container_width=True)
         
-        fig_line.update_traces(
-            texttemplate='R$ %{text:,.2s}', 
-            textposition="top center",
-            line=dict(color=px.colors.qualitative.Dark24[0], width=3),
-        )
-        fig_line.update_layout(
-            xaxis_title="Mês/Ano",
-            yaxis_title="Valor Total Pago (R$)",
-            xaxis_tickangle=-45
-        )
-        st.plotly_chart(fig_line, use_container_width=True)
+    st.markdown("---")
+
+    # 3. Análise Temporal
+    st.markdown("### 📈 ANÁLISE TEMPORAL (PAGAMENTO MÊS/ANO)")
+    
+    df_tempo = df_analise.groupby('Mes_Ano').agg(
+        Valor_Total_Pago=('Valor Pagto', 'sum'),
+        Total_Pagamentos=('Ordem', 'nunique')
+    ).reset_index()
+    
+    df_tempo['Mes_Ano_str'] = df_tempo['Mes_Ano'].astype(str)
+    
+    fig_line = px.line(
+        df_tempo,
+        x='Mes_Ano_str',
+        y='Valor_Total_Pago',
+        title='Evolução Mensal do Valor Total Pago',
+        markers=True,
+        text='Valor_Total_Pago'
+    )
+    
+    fig_line.update_traces(
+        texttemplate='R$ %{text:,.2s}', 
+        textposition="top center",
+        line=dict(color=px.colors.qualitative.Dark24[0], width=3),
+    )
+    fig_line.update_layout(
+        xaxis_title="Mês/Ano",
+        yaxis_title="Valor Total Pago (R$)",
+        xaxis_tickangle=-45
+    )
+    st.plotly_chart(fig_line, use_container_width=True)
 
 # ===========================================
 # 🛠️ Aba Processamento e Exportação
@@ -565,7 +583,7 @@ with aba_processamento:
         if export_format == "Excel (.xlsx)":
             output = BytesIO()
             try:
-                with pd.ExcelWriter(output, engine='openpyxl') as writer: 
+                with pd.ExcelWriter(output, engine='openypxl') as writer: 
                     df_analise.to_excel(writer, index=False, sheet_name='Dados Analisados')
                 data_to_download = output.getvalue()
                 mime_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -593,7 +611,6 @@ with aba_processamento:
                 use_container_width=True
             )
         else:
-            # Caso o fallback para CSV não tenha funcionado
             st.warning("Não foi possível gerar o arquivo para download.")
 
 # ===========================================
