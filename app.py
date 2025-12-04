@@ -120,8 +120,18 @@ def apply_filters(df, filters):
 @st.cache_data(show_spinner="Processando dados e realizando validações iniciais...")
 def load_data(uploaded_file):
     try:
-        # Tenta ler o arquivo CSV com delimitador ';'
+        # Tenta ler o arquivo CSV com delimitador ';' e encoding 'utf-8' (mais comum)
         df = pd.read_csv(uploaded_file, sep=';', encoding='utf-8', on_bad_lines='skip')
+    except UnicodeDecodeError:
+        try:
+            # CORREÇÃO PARA O ERRO DE ENCODING: Tenta 'latin-1' (compatível com Windows/pt-br)
+            uploaded_file.seek(0) # Volta o ponteiro do arquivo para o início
+            df = pd.read_csv(uploaded_file, sep=';', encoding='latin-1', on_bad_lines='skip')
+            st.warning("⚠️ Arquivo lido usando encoding 'latin-1' para corrigir problemas de caracteres.")
+        except Exception as e:
+            # Caso não funcione com latin-1, reporta o erro original
+            st.error(f"Erro ao ler o arquivo: {e}")
+            return pd.DataFrame()
     except Exception as e:
         st.error(f"Erro ao ler o arquivo: {e}")
         return pd.DataFrame()
@@ -140,7 +150,7 @@ def load_data(uploaded_file):
     # Conversão de colunas numéricas
     for col in ['Valor Total', 'Valor Desconto', 'Valor Pagto', 'Valor Dia']:
         # Remove R$ and . and replace , with .
-        df[col] = df[col].astype(str).str.replace('R$', '', regex=False).str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
+        df[col] = df[col].astype(str).str.replace('R$', '', regex=False).str.replace('.', '', regex=False).str.replace(',', '.', regex=False).str.replace(' ', '', regex=False)
         # Handle empty/NaN/invalid values before conversion
         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0) # Convert to numeric
     
@@ -199,7 +209,7 @@ def create_project_bar_chart(df_proj):
     )
     
     fig.update_traces(
-        texttemplate='%{text:$.2s}',  # Formata o texto como R$ com milhar (e.g., $1.5M)
+        texttemplate='R$ %{text:$.2s}',  # Formata o texto como R$ com milhar (e.g., $1.5M)
         textposition='outside',
         marker_line_color='rgb(8,48,107)',
         marker_line_width=1.5
