@@ -7,8 +7,7 @@ import plotly.graph_objects as go
 from datetime import datetime
 import warnings
 import re
-import json
-from pathlib import Path
+import traceback
 warnings.filterwarnings('ignore')
 
 # ============================================
@@ -26,993 +25,764 @@ st.set_page_config(
 # ============================================
 st.markdown("""
 <style>
-    /* ESTILOS BASE QUE FUNCIONAM EM AMBOS OS TEMAS */
-    :root {
-        --primary-color: #1E3A8A;
-        --secondary-color: #3B82F6;
-        --success-color: #10B981;
-        --warning-color: #F59E0B;
-        --danger-color: #EF4444;
-        --info-color: #06B6D4;
-        --text-primary: #111827;
-        --text-secondary: #6B7280;
-        --bg-primary: #FFFFFF;
-        --bg-secondary: #F9FAFB;
-        --border-color: #E5E7EB;
-        --shadow-color: rgba(0, 0, 0, 0.1);
-    }
-    
-    @media (prefers-color-scheme: dark) {
-        :root {
-            --primary-color: #3B82F6;
-            --secondary-color: #60A5FA;
-            --text-primary: #F9FAFB;
-            --text-secondary: #D1D5DB;
-            --bg-primary: #111827;
-            --bg-secondary: #1F2937;
-            --border-color: #374151;
-            --shadow-color: rgba(0, 0, 0, 0.3);
-        }
-    }
-    
-    /* TÍTULO PRINCIPAL - VISÍVEL EM QUALQUER TEMA */
+    /* ESTILOS BASE */
     .main-header {
         font-size: 2.2em;
         font-weight: 800;
         margin-bottom: 0.5em;
         text-align: center;
-        color: var(--primary-color);
         padding-bottom: 15px;
-        border-bottom: 3px solid var(--primary-color);
-        text-shadow: 0 2px 4px var(--shadow-color);
-        background: linear-gradient(90deg, var(--primary-color), var(--secondary-color));
+        border-bottom: 3px solid #1E3A8A;
+        background: linear-gradient(90deg, #1E3A8A, #3B82F6);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
         background-clip: text;
     }
     
-    /* MÉTRICAS COM ALTO CONTRASTE */
+    /* MÉTRICAS */
     [data-testid="stMetric"] {
-        background-color: var(--bg-secondary) !important;
+        background-color: #f8f9fa !important;
         padding: 20px;
         border-radius: 12px;
-        border: 2px solid var(--border-color);
-        box-shadow: 0 4px 6px var(--shadow-color);
-        transition: all 0.3s ease;
-    }
-    
-    [data-testid="stMetric"]:hover {
-        transform: translateY(-5px);
-        box-shadow: 0 8px 12px var(--shadow-color);
-        border-color: var(--primary-color);
-    }
-    
-    [data-testid="stMetricLabel"] {
-        color: var(--text-secondary) !important;
-        font-weight: 600 !important;
-        font-size: 0.95em !important;
+        border: 2px solid #dee2e6;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
     }
     
     [data-testid="stMetricValue"] {
-        color: var(--text-primary) !important;
         font-size: 1.8em !important;
         font-weight: 700 !important;
     }
     
-    [data-testid="stMetricDelta"] {
-        color: var(--text-secondary) !important;
-        font-weight: 600 !important;
-    }
-    
-    /* BOTÕES VISÍVEIS EM QUALQUER TEMA */
+    /* BOTÕES */
     .stButton > button {
         border-radius: 8px;
         font-weight: 600;
-        transition: all 0.3s ease;
         padding: 0.85rem 1.5rem;
-        border: 2px solid var(--primary-color);
-        background-color: var(--bg-primary);
-        color: var(--primary-color) !important;
-        font-size: 1em;
+        border: 2px solid #1E3A8A;
+        background-color: white;
+        color: #1E3A8A !important;
     }
     
     .stButton > button:hover {
-        transform: translateY(-3px);
-        box-shadow: 0 6px 12px var(--shadow-color);
-        background-color: var(--primary-color) !important;
+        background-color: #1E3A8A !important;
         color: white !important;
-        border-color: var(--primary-color);
     }
     
-    .stButton > button:focus {
-        box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.5);
+    /* TEMA ESCURO */
+    @media (prefers-color-scheme: dark) {
+        [data-testid="stMetric"] {
+            background-color: #2d3748 !important;
+            border-color: #4a5568;
+        }
+        
+        .stButton > button {
+            background-color: #2d3748;
+            color: #e2e8f0 !important;
+            border-color: #4a5568;
+        }
+        
+        .stButton > button:hover {
+            background-color: #1E3A8A !important;
+            color: white !important;
+        }
     }
     
-    .primary-button > button {
-        background-color: var(--primary-color) !important;
-        color: white !important;
-        border: 2px solid var(--primary-color) !important;
-    }
-    
-    .primary-button > button:hover {
-        background-color: var(--secondary-color) !important;
-        border-color: var(--secondary-color) !important;
-    }
-    
-    /* TABELAS COM ALTA LEGIBILIDADE */
-    .stDataFrame {
-        border-radius: 10px;
-        overflow: hidden;
-        border: 2px solid var(--border-color);
-        background-color: var(--bg-primary) !important;
-    }
-    
-    .stDataFrame table {
-        background-color: var(--bg-primary) !important;
-    }
-    
-    .stDataFrame th {
-        background-color: var(--bg-secondary) !important;
-        color: var(--text-primary) !important;
-        font-weight: 700 !important;
-        border-bottom: 2px solid var(--border-color) !important;
-        padding: 12px 15px !important;
-    }
-    
-    .stDataFrame td {
-        color: var(--text-primary) !important;
-        border-bottom: 1px solid var(--border-color) !important;
-        padding: 10px 15px !important;
-    }
-    
-    .stDataFrame tr:hover {
-        background-color: var(--bg-secondary) !important;
-    }
-    
-    /* ABAS VISÍVEIS EM QUALQUER TEMA */
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 4px;
-        background-color: var(--bg-secondary);
-        padding: 8px;
-        border-radius: 10px;
-        margin-bottom: 20px;
-    }
-    
-    .stTabs [data-baseweb="tab"] {
-        height: 55px;
-        white-space: pre-wrap;
-        background-color: var(--bg-secondary);
-        border-radius: 8px;
-        padding: 15px 20px;
-        color: var(--text-secondary);
-        font-weight: 600;
-        transition: all 0.3s ease;
-        border: 2px solid transparent;
-    }
-    
-    .stTabs [data-baseweb="tab"]:hover {
-        background-color: var(--bg-primary);
-        color: var(--text-primary);
-        border-color: var(--border-color);
-    }
-    
-    .stTabs [aria-selected="true"] {
-        background-color: var(--primary-color) !important;
-        color: white !important;
-        border-color: var(--primary-color) !important;
-        box-shadow: 0 4px 6px var(--shadow-color);
-    }
-    
-    /* INPUTS E SELECTS */
-    .stSelectbox, .stTextInput, .stNumberInput, .stDateInput, .stMultiselect {
-        border-radius: 8px;
-    }
-    
-    .stSelectbox > div > div, 
-    .stTextInput > div > div, 
-    .stNumberInput > div > div,
-    .stDateInput > div > div,
-    .stMultiselect > div > div {
-        background-color: var(--bg-primary) !important;
-        border: 2px solid var(--border-color) !important;
-        border-radius: 8px !important;
-        color: var(--text-primary) !important;
-    }
-    
-    .stSelectbox > div > div:hover,
-    .stTextInput > div > div:hover,
-    .stNumberInput > div > div:hover,
-    .stDateInput > div > div:hover,
-    .stMultiselect > div > div:hover {
-        border-color: var(--primary-color) !important;
-    }
-    
-    .stSelectbox label, 
-    .stTextInput label, 
-    .stNumberInput label,
-    .stDateInput label,
-    .stMultiselect label,
-    .stSlider label {
-        color: var(--text-primary) !important;
-        font-weight: 600 !important;
-    }
-    
-    /* SLIDERS */
-    .stSlider > div {
-        padding: 10px 0;
-    }
-    
-    .stSlider > div > div > div {
-        background-color: var(--primary-color) !important;
-    }
-    
-    .stSlider > div > div > div > div {
-        background-color: var(--primary-color) !important;
-        border-color: var(--primary-color) !important;
-    }
-    
-    /* CHECKBOXES E RADIOS */
-    .stCheckbox > label, .stRadio > label {
-        color: var(--text-primary) !important;
-        font-weight: 500 !important;
-    }
-    
-    .stCheckbox span, .stRadio span {
-        color: var(--text-primary) !important;
-    }
-    
-    /* EXPANDERS */
-    .streamlit-expanderHeader {
-        background-color: var(--bg-secondary) !important;
-        color: var(--text-primary) !important;
-        font-weight: 600 !important;
-        border-radius: 8px;
-        border: 2px solid var(--border-color);
-        margin-bottom: 10px;
-    }
-    
-    .streamlit-expanderContent {
-        background-color: var(--bg-primary) !important;
-        border-radius: 0 0 8px 8px;
-        border: 2px solid var(--border-color);
-        border-top: none;
-    }
-    
-    /* SIDEBAR */
-    [data-testid="stSidebar"] {
-        background-color: var(--bg-secondary) !important;
-    }
-    
-    [data-testid="stSidebar"] .stButton > button {
-        margin-bottom: 10px;
-    }
-    
-    /* SPINNER */
-    .stSpinner > div {
-        border-color: var(--primary-color) !important;
-    }
-    
-    /* MENSAGENS DE ALERTA */
-    .stAlert {
-        border-radius: 10px;
-        border: 2px solid var(--border-color);
-        background-color: var(--bg-secondary) !important;
-    }
-    
-    /* SCROLLBAR PERSONALIZADA */
-    ::-webkit-scrollbar {
-        width: 10px;
-        height: 10px;
-    }
-    
-    ::-webkit-scrollbar-track {
-        background: var(--bg-secondary);
-        border-radius: 5px;
-    }
-    
-    ::-webkit-scrollbar-thumb {
-        background: var(--primary-color);
-        border-radius: 5px;
-    }
-    
-    ::-webkit-scrollbar-thumb:hover {
-        background: var(--secondary-color);
-    }
-    
-    /* CARDS PERSONALIZADOS */
+    /* CUSTOM CARDS */
     .custom-card {
-        background-color: var(--bg-secondary);
-        border-radius: 12px;
-        padding: 20px;
-        border: 2px solid var(--border-color);
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        border-radius: 15px;
+        padding: 25px;
+        color: white;
         margin-bottom: 20px;
-        box-shadow: 0 4px 6px var(--shadow-color);
-    }
-    
-    .custom-card h3 {
-        color: var(--primary-color);
-        margin-top: 0;
-        border-bottom: 2px solid var(--border-color);
-        padding-bottom: 10px;
+        box-shadow: 0 10px 20px rgba(0,0,0,0.2);
     }
     
     /* BADGES */
-    .status-badge {
+    .badge {
         display: inline-block;
-        padding: 4px 12px;
+        padding: 5px 15px;
         border-radius: 20px;
-        font-size: 0.85em;
         font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
+        font-size: 0.85em;
+        margin: 2px;
     }
     
-    .status-pago {
-        background-color: rgba(16, 185, 129, 0.2);
-        color: #10B981;
-        border: 1px solid #10B981;
+    .badge-success {
+        background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+        color: white;
     }
     
-    .status-pendente {
-        background-color: rgba(239, 68, 68, 0.2);
-        color: #EF4444;
-        border: 1px solid #EF4444;
+    .badge-warning {
+        background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+        color: white;
     }
     
-    /* TOOLTIPS */
-    [data-testid="stTooltip"] {
-        background-color: var(--bg-primary) !important;
-        color: var(--text-primary) !important;
-        border: 2px solid var(--border-color) !important;
-        border-radius: 8px !important;
-        box-shadow: 0 4px 12px var(--shadow-color) !important;
-    }
-    
-    /* HEADERS SECUNDÁRIOS */
-    h1, h2, h3, h4, h5, h6 {
-        color: var(--text-primary) !important;
-    }
-    
-    /* LINHAS DIVISÓRIAS */
-    hr {
-        border-color: var(--border-color) !important;
-        margin: 2rem 0 !important;
-    }
-    
-    /* RODAPÉ */
-    .footer {
-        text-align: center;
-        color: var(--text-secondary);
-        font-size: 0.9em;
-        padding: 20px;
-        margin-top: 40px;
-        border-top: 2px solid var(--border-color);
+    .badge-danger {
+        background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+        color: white;
     }
 </style>
 """, unsafe_allow_html=True)
 
 # ============================================
-# INICIALIZAÇÃO DO ESTADO DA SESSÃO
+# INICIALIZAÇÃO ROBUSTA DO ESTADO
 # ============================================
-if 'dataframes' not in st.session_state:
-    st.session_state['dataframes'] = {}
-if 'is_processed' not in st.session_state:
-    st.session_state['is_processed'] = False
-if 'config' not in st.session_state:
-    st.session_state['config'] = {
-        'auto_validar': True,
-        'manter_historico': True,
-        'limite_registros': 100000,
-        'formato_exportacao': "Excel (.xlsx)",
-        'incluir_graficos': True,
-        'tema_escuro': False,
-        'mostrar_tutoriais': True
+def initialize_session_state():
+    """Inicializa todas as variáveis de estado com valores padrão."""
+    defaults = {
+        'dataframes': {},
+        'is_processed': False,
+        'config': {
+            'auto_validar': True,
+            'manter_historico': True,
+            'limite_registros': 100000,
+            'formato_exportacao': "Excel (.xlsx)",
+            'incluir_graficos': True
+        },
+        'filtros_ativos': {},
+        'pagina_atual': 1,
+        'uploaded_files': [],
+        'processing_error': None
     }
-if 'filtros_ativos' not in st.session_state:
-    st.session_state['filtros_ativos'] = {}
-if 'pagina_atual' not in st.session_state:
-    st.session_state['pagina_atual'] = 1
+    
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+initialize_session_state()
 
 # ============================================
-# FUNÇÕES AUXILIARES
+# FUNÇÕES AUXILIARES COM TRATAMENTO DE ERROS
 # ============================================
 
-def get_theme_colors():
-    """Retorna cores baseadas no tema atual."""
-    return {
-        'primary': '#1E3A8A',
-        'secondary': '#3B82F6',
-        'success': '#10B981',
-        'warning': '#F59E0B',
-        'danger': '#EF4444',
-        'text_primary': st.get_option('theme.textColor') or '#111827',
-        'bg_primary': st.get_option('theme.backgroundColor') or '#FFFFFF'
-    }
-
-def create_badge(status):
-    """Cria um badge colorido para status."""
-    if status == 'PAGO':
-        return f'<span class="status-badge status-pago">✅ {status}</span>'
-    else:
-        return f'<span class="status-badge status-pendente">⏳ {status}</span>'
+def safe_get(data, key, default=None):
+    """Obtém valor de forma segura de dicionários aninhados."""
+    try:
+        if isinstance(data, dict):
+            return data.get(key, default)
+        return default
+    except:
+        return default
 
 def formatar_valor_brl(valor):
-    """Formata valor para Real Brasileiro."""
+    """Formata valor para Real Brasileiro de forma segura."""
     try:
+        if pd.isna(valor):
+            return "R$ 0,00"
         valor = float(valor)
         return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-    except:
+    except (ValueError, TypeError):
         return "R$ 0,00"
 
 def formatar_numero(numero):
-    """Formata número com separadores de milhar."""
+    """Formata número com separadores de milhar de forma segura."""
     try:
-        return f"{int(numero):,}".replace(",", ".")
+        if pd.isna(numero):
+            return "0"
+        return f"{int(float(numero)):,}".replace(",", ".")
     except:
         return str(numero)
 
 def clean_column_name(col):
-    """Limpa e normaliza os nomes das colunas."""
-    col = str(col).strip().upper()
-    col = re.sub(r'[^A-Z0-9_ÁÉÍÓÚÀÈÌÒÙÃÕÇ ]+', '', col)
-    
-    # Mapeamento de substituições
-    replacements = {
-        'CARTO': 'CARTAO',
-        'CARTÃO': 'CARTAO',
-        'AGENCIA': 'AGENCIA',
-        'AGÊNCIA': 'AGENCIA',
-        'VLR DIA': 'VALOR_DIA',
-        'VL DIA': 'VALOR_DIA',
-        'DIAS': 'DIAS_VALIDOS',
-        'MÊS': 'MES',
-        'OBS': 'OBSERVACOES',
-        'VALORTOTAL': 'VALOR_TOTAL',
-        'VALORDESCONTO': 'VALOR_DESCONTO',
-        'VALORPAGTO': 'VALOR_PAGAMENTO',
-        'VALOR PAGAMENTO': 'VALOR_PAGAMENTO',
-        'VALOR PAGTO': 'VALOR_PAGAMENTO',
-        'PAGAMENTO': 'VALOR_PAGAMENTO',
-        'VLR PAGTO': 'VALOR_PAGAMENTO',
-        'VLR PAGAMENTO': 'VALOR_PAGAMENTO',
-        'NOME DO BENEFICIARIO': 'NOME',
-        'NOME BENEFICIARIO': 'NOME',
-        'BENEFICIARIO': 'NOME',
-        'CODIGO BENEFICIARIO': 'CODIGO',
-        'MATRICULA': 'MATRICULA',
-        'MATRÍCULA': 'MATRICULA'
-    }
-    
-    for old, new in replacements.items():
-        col = col.replace(old, new)
-    
-    return col.replace(' ', '_').replace('.', '').replace('__', '_').strip('_')
+    """Limpa e normaliza nomes de colunas de forma segura."""
+    try:
+        col = str(col).strip().upper()
+        col = re.sub(r'[^A-Z0-9_ÁÉÍÓÚÀÈÌÒÙÃÕÇ ]+', '', col)
+        
+        replacements = {
+            'CARTO': 'CARTAO',
+            'CARTÃO': 'CARTAO',
+            'AGENCIA': 'AGENCIA',
+            'AGÊNCIA': 'AGENCIA',
+            'VLR DIA': 'VALOR_DIA',
+            'VL DIA': 'VALOR_DIA',
+            'DIAS': 'DIAS_VALIDOS',
+            'MÊS': 'MES',
+            'OBS': 'OBSERVACOES',
+            'VALORTOTAL': 'VALOR_TOTAL',
+            'VALORDESCONTO': 'VALOR_DESCONTO',
+            'VALORPAGTO': 'VALOR_PAGAMENTO',
+            'VALOR PAGAMENTO': 'VALOR_PAGAMENTO',
+            'VALOR PAGTO': 'VALOR_PAGAMENTO',
+            'PAGAMENTO': 'VALOR_PAGAMENTO',
+            'VLR PAGTO': 'VALOR_PAGAMENTO',
+            'VLR PAGAMENTO': 'VALOR_PAGAMENTO',
+            'NOME DO BENEFICIARIO': 'NOME',
+            'NOME BENEFICIARIO': 'NOME',
+            'BENEFICIARIO': 'NOME',
+            'CODIGO BENEFICIARIO': 'CODIGO',
+            'MATRICULA': 'MATRICULA',
+            'MATRÍCULA': 'MATRICULA'
+        }
+        
+        for old, new in replacements.items():
+            col = col.replace(old, new)
+        
+        return col.replace(' ', '_').replace('.', '').replace('__', '_').strip('_')
+    except:
+        return str(col)
 
-@st.cache_data(show_spinner="🔄 Carregando e processando dados...")
+def processar_valor_coluna(serie):
+    """Processa uma coluna de valores de forma segura."""
+    try:
+        if serie.dtype == 'object':
+            # Remove caracteres não numéricos
+            serie = serie.astype(str).str.replace(r'[^\d.,-]', '', regex=True)
+            
+            # Verifica formato brasileiro (ponto como separador de milhar, vírgula como decimal)
+            if serie.str.contains(r'\d{1,3}(\.\d{3})*,\d{2}').any():
+                serie = serie.str.replace('.', '', regex=False)
+                serie = serie.str.replace(',', '.', regex=False)
+            # Verifica formato americano (vírgula como separador de milhar)
+            elif serie.str.contains(r'\d{1,3}(,\d{3})*\.\d{2}').any():
+                serie = serie.str.replace(',', '', regex=False)
+        
+        # Converte para numérico
+        serie_numerica = pd.to_numeric(serie, errors='coerce')
+        
+        # Verifica valores extremamente altos (possível erro de formatação)
+        if serie_numerica.max() > 10000000:  # Valores acima de 10 milhões
+            # Verifica se podem ser valores com casas decimais duplicadas
+            if (serie_numerica % 100 == 0).all():
+                serie_numerica = serie_numerica / 100
+        
+        return serie_numerica.fillna(0)
+    except:
+        return pd.Series([0] * len(serie), index=serie.index)
+
+@st.cache_data(show_spinner="🔄 Processando arquivos...")
 def load_and_process_files(uploaded_files, limite_registros):
-    """Carrega, limpa e concatena todos os arquivos."""
+    """Carrega e processa arquivos com tratamento de erros robusto."""
     dataframes = {}
     
     if not uploaded_files:
-        return dataframes
+        return dataframes, None
 
-    all_pendencias = []
+    all_pagamentos = []
+    errors = []
     
-    for file in uploaded_files:
+    for idx, file in enumerate(uploaded_files):
         try:
-            # Detecta extensão e lê arquivo
-            file_extension = file.name.lower().split('.')[-1]
-            file_size = len(file.getvalue()) / 1024 / 1024  # Tamanho em MB
+            # Verifica tamanho do arquivo
+            file_size = len(file.getvalue()) / 1024 / 1024  # MB
+            if file_size > 100:  # Limite de 100MB
+                errors.append(f"Arquivo {file.name} muito grande ({file_size:.1f}MB). Máximo: 100MB")
+                continue
             
+            # Detecta extensão
+            file_extension = file.name.lower().split('.')[-1]
+            
+            # Tenta diferentes métodos de leitura
+            df = None
             if file_extension == 'csv':
-                # Tenta diferentes encodings
+                # Tenta diferentes encodings e delimitadores
                 encodings = ['utf-8', 'latin1', 'ISO-8859-1', 'cp1252']
+                delimiters = [';', ',', '\t']
+                
                 for encoding in encodings:
-                    try:
-                        # Tenta com delimitador ;
-                        df = pd.read_csv(file, sep=';', encoding=encoding, 
-                                        on_bad_lines='skip', nrows=limite_registros,
-                                        dtype=str, low_memory=False)
-                        break
-                    except:
+                    for delimiter in delimiters:
                         try:
-                            # Tenta com delimitador ,
-                            df = pd.read_csv(file, sep=',', encoding=encoding,
-                                           on_bad_lines='skip', nrows=limite_registros,
-                                           dtype=str, low_memory=False)
-                            break
+                            file.seek(0)  # Reset file pointer
+                            df = pd.read_csv(
+                                file, 
+                                sep=delimiter, 
+                                encoding=encoding, 
+                                on_bad_lines='skip',
+                                nrows=limite_registros,
+                                dtype=str,
+                                low_memory=False
+                            )
+                            if len(df.columns) > 1:  # Se encontrou múltiplas colunas
+                                break
                         except:
                             continue
-                else:
-                    st.error(f"❌ Não foi possível ler o arquivo {file.name}")
+                    if df is not None and len(df.columns) > 1:
+                        break
+            
+            elif file_extension in ['xlsx', 'xls']:
+                try:
+                    file.seek(0)
+                    df = pd.read_excel(file, nrows=limite_registros, dtype=str)
+                except Exception as e:
+                    errors.append(f"Erro ao ler Excel {file.name}: {str(e)}")
                     continue
             
             elif file_extension == 'txt':
-                # Para arquivos TXT, tenta diferentes delimitadores
                 try:
-                    df = pd.read_csv(file, sep='\t', encoding='utf-8', 
-                                    on_bad_lines='skip', nrows=limite_registros,
-                                    dtype=str, low_memory=False)
-                except:
-                    try:
-                        df = pd.read_csv(file, sep=';', encoding='latin1',
-                                       on_bad_lines='skip', nrows=limite_registros,
-                                       dtype=str, low_memory=False)
-                    except:
-                        st.error(f"❌ Não foi possível ler o arquivo TXT {file.name}")
-                        continue
-            else:
-                st.error(f"❌ Formato não suportado: {file.name}")
+                    file.seek(0)
+                    # Tenta diferentes delimitadores
+                    content = file.getvalue().decode('utf-8', errors='ignore')
+                    if ';' in content[:1000]:
+                        df = pd.read_csv(file, sep=';', encoding='utf-8', nrows=limite_registros, dtype=str)
+                    elif '\t' in content[:1000]:
+                        df = pd.read_csv(file, sep='\t', encoding='utf-8', nrows=limite_registros, dtype=str)
+                    else:
+                        df = pd.read_csv(file, sep=',', encoding='utf-8', nrows=limite_registros, dtype=str)
+                except Exception as e:
+                    errors.append(f"Erro ao ler TXT {file.name}: {str(e)}")
+                    continue
+            
+            if df is None or df.empty:
+                errors.append(f"Não foi possível ler {file.name} ou arquivo vazio")
                 continue
             
-            # Limpeza de nomes de colunas
+            # Limpa nomes das colunas
             df.columns = [clean_column_name(col) for col in df.columns]
             
-            # Padronização de colunas numéricas
-            value_cols = ['VALOR_TOTAL', 'VALOR_DESCONTO', 'VALOR_PAGAMENTO', 'VALOR_DIA']
+            # Remove colunas completamente vazias
+            df = df.dropna(axis=1, how='all')
             
-            for col in value_cols:
+            if df.empty:
+                errors.append(f"Arquivo {file.name} vazio após limpeza")
+                continue
+            
+            # Processa colunas de valores
+            value_columns = ['VALOR_TOTAL', 'VALOR_DESCONTO', 'VALOR_PAGAMENTO', 'VALOR_DIA']
+            for col in value_columns:
                 if col in df.columns:
-                    # Converte para string e limpa
-                    df[col] = df[col].astype(str)
-                    
-                    # Remove caracteres não numéricos
-                    df[col] = df[col].str.replace(r'[^\d.,-]', '', regex=True)
-                    df[col] = df[col].str.replace(r'\.(?=\d{3})', '', regex=True)  # Remove pontos de milhar
-                    df[col] = df[col].str.replace(',', '.', regex=False)  # Substitui vírgula por ponto
-                    
-                    # Converte para numérico
-                    df[col] = pd.to_numeric(df[col], errors='coerce')
-                    df[col] = df[col].fillna(0)
-                    
-                    # Verificação de valores anômalos
-                    if df[col].mean() > 1000000:  # Valores muito altos
-                        # Verifica se pode ser problema de formatação
-                        if (df[col] % 100 == 0).all():  # Todos terminam em 00
-                            df[col] = df[col] / 100  # Corrige casas decimais
+                    df[col] = processar_valor_coluna(df[col])
             
-            # Padronização de outras colunas
+            # Padroniza outras colunas importantes
             if 'PROJETO' in df.columns:
                 df['PROJETO'] = df['PROJETO'].astype(str).str.strip().str.upper()
-                df['PROJETO'] = df['PROJETO'].str.replace(r'\s+', ' ', regex=True)
             
             if 'NOME' in df.columns:
                 df['NOME'] = df['NOME'].astype(str).str.strip().str.title()
-                df['NOME'] = df['NOME'].str.replace(r'\s+', ' ', regex=True)
             
             # Identifica se é arquivo de pagamentos
-            is_pagamento = any(col in df.columns for col in ['VALOR_PAGAMENTO', 'VALOR_PAGTO', 'PAGAMENTO'])
+            pagamento_cols = ['VALOR_PAGAMENTO', 'VALORPAGTO', 'PAGAMENTO', 'VALOR_TOTAL']
+            is_pagamento = any(col in df.columns for col in pagamento_cols)
             
             if is_pagamento:
+                # Adiciona metadados
                 df['ARQUIVO_ORIGEM'] = file.name
                 df['DATA_CARREGAMENTO'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                all_pendencias.append(df)
+                all_pagamentos.append(df)
             else:
-                dataframes[f"Cadastro_{file.name}"] = df
+                dataframes[f"CADASTRO_{file.name}"] = df
                 
         except Exception as e:
-            st.error(f"❌ Erro ao processar {file.name}: {str(e)[:100]}")
+            error_msg = f"Erro ao processar {file.name}: {str(e)[:200]}"
+            errors.append(error_msg)
+            continue
     
-    if all_pendencias:
-        # Concatena todas as pendências
-        df_final = pd.concat(all_pendencias, ignore_index=True)
-        
-        # Remove duplicatas
-        colunas_chave = [col for col in ['CODIGO', 'CPF', 'MATRICULA', 'NOME', 'PROJETO'] if col in df_final.columns]
-        if colunas_chave:
-            df_final = df_final.drop_duplicates(subset=colunas_chave, keep='first')
-        
-        # Cria coluna de status
-        if 'VALOR_PAGAMENTO' in df_final.columns:
-            df_final['STATUS_PAGAMENTO'] = np.where(df_final['VALOR_PAGAMENTO'] > 0, 'PAGO', 'PENDENTE')
-        else:
-            df_final['STATUS_PAGAMENTO'] = 'PENDENTE'
-        
-        # Calcula valor pendente
-        if all(col in df_final.columns for col in ['VALOR_TOTAL', 'VALOR_PAGAMENTO', 'VALOR_DESCONTO']):
-            df_final['VALOR_PENDENTE'] = df_final['VALOR_TOTAL'] - df_final['VALOR_PAGAMENTO'] - df_final['VALOR_DESCONTO'].fillna(0)
-        elif 'VALOR_TOTAL' in df_final.columns and 'VALOR_PAGAMENTO' in df_final.columns:
-            df_final['VALOR_PENDENTE'] = df_final['VALOR_TOTAL'] - df_final['VALOR_PAGAMENTO']
-        else:
-            df_final['VALOR_PENDENTE'] = 0
-        
-        dataframes['DADOS_CONSOLIDADOS_PAGAMENTOS'] = df_final
-        st.session_state['is_processed'] = True
+    # Processa dados consolidados se houver pagamentos
+    if all_pagamentos:
+        try:
+            df_final = pd.concat(all_pagamentos, ignore_index=True, sort=False)
+            
+            # Remove duplicatas completas
+            df_final = df_final.drop_duplicates()
+            
+            # Garante colunas essenciais
+            if 'VALOR_PAGAMENTO' not in df_final.columns:
+                # Procura por colunas alternativas
+                for col in df_final.columns:
+                    if 'PAG' in col.upper() and 'VALOR' in col.upper():
+                        df_final = df_final.rename(columns={col: 'VALOR_PAGAMENTO'})
+                        break
+            
+            if 'VALOR_TOTAL' not in df_final.columns:
+                # Cria se não existir
+                df_final['VALOR_TOTAL'] = df_final.get('VALOR_PAGAMENTO', 0)
+            
+            # Cria coluna de status
+            if 'VALOR_PAGAMENTO' in df_final.columns:
+                df_final['STATUS_PAGAMENTO'] = np.where(
+                    df_final['VALOR_PAGAMENTO'] > 0, 
+                    'PAGO', 
+                    'PENDENTE'
+                )
+            else:
+                df_final['STATUS_PAGAMENTO'] = 'PENDENTE'
+            
+            # Calcula valor pendente
+            if all(col in df_final.columns for col in ['VALOR_TOTAL', 'VALOR_PAGAMENTO']):
+                desconto = df_final.get('VALOR_DESCONTO', 0)
+                df_final['VALOR_PENDENTE'] = df_final['VALOR_TOTAL'] - df_final['VALOR_PAGAMENTO'] - desconto
+            
+            dataframes['DADOS_CONSOLIDADOS'] = df_final
+            
+        except Exception as e:
+            errors.append(f"Erro ao consolidar dados: {str(e)}")
     
-    return dataframes
+    error_message = "\n".join(errors) if errors else None
+    return dataframes, error_message
 
 def create_download_link(df, filename, file_format):
-    """Gera link de download para DataFrame."""
+    """Cria link de download com tratamento de erros."""
     try:
+        if df.empty:
+            return None, None, "DataFrame vazio"
+        
         if file_format == "CSV (.csv)":
             csv = df.to_csv(index=False, sep=';', encoding='latin1', decimal=',')
-            return csv, "text/csv"
+            return csv, "text/csv", None
         
         elif file_format == "Excel (.xlsx)":
             output = BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
                 df.to_excel(writer, index=False, sheet_name='Dados')
-            
             output.seek(0)
-            return output.read(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            return output.read(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", None
         
-        return None, None
+        return None, None, "Formato não suportado"
     except Exception as e:
-        st.error(f"Erro ao criar arquivo: {str(e)}")
-        return None, None
+        return None, None, f"Erro ao criar arquivo: {str(e)}"
 
-def create_summary_card(title, value, delta=None, icon="📊", help_text=""):
-    """Cria um card de resumo estilizado."""
-    colors = get_theme_colors()
-    
-    delta_html = ""
-    if delta:
-        delta_color = "green" if delta > 0 else "red"
-        delta_html = f'<div style="color: {delta_color}; font-size: 0.9em; margin-top: 5px;">{delta}</div>'
-    
-    return f"""
-    <div class="custom-card">
-        <div style="display: flex; align-items: center; margin-bottom: 10px;">
-            <div style="font-size: 1.5em; margin-right: 10px;">{icon}</div>
-            <h3 style="margin: 0;">{title}</h3>
-        </div>
-        <div style="font-size: 1.8em; font-weight: 700; color: {colors['primary']};">
-            {value}
-        </div>
-        {delta_html}
-        <div style="font-size: 0.85em; color: var(--text-secondary); margin-top: 10px;">
-            {help_text}
-        </div>
-    </div>
-    """
+def get_dataframe_safe(key, default_key=None):
+    """Obtém DataFrame de forma segura do session state."""
+    try:
+        dataframes = st.session_state.get('dataframes', {})
+        
+        # Tenta obter pela chave principal
+        if key in dataframes:
+            df = dataframes[key]
+            if df is not None and not df.empty:
+                return df
+        
+        # Tenta chave alternativa
+        if default_key and default_key in dataframes:
+            df = dataframes[default_key]
+            if df is not None and not df.empty:
+                return df
+        
+        # Procura por qualquer DataFrame que contenha 'CONSOLIDADO' ou 'PAGAMENTO'
+        for df_key, df in dataframes.items():
+            if df is not None and not df.empty:
+                if 'CONSOLIDADO' in df_key.upper() or 'PAGAMENTO' in df_key.upper():
+                    return df
+        
+        # Retorna o primeiro DataFrame não vazio
+        for df_key, df in dataframes.items():
+            if df is not None and not df.empty:
+                return df
+        
+        return None
+    except:
+        return None
 
 # ============================================
 # LAYOUT PRINCIPAL
 # ============================================
 
-st.markdown("<p class='main-header'>💰 SMDET - POT Monitoramento de Pagamento de Benefícios</p>", unsafe_allow_html=True)
-
-# Barra de status no topo
-col_status1, col_status2, col_status3, col_status4 = st.columns(4)
-with col_status1:
-    if st.session_state['is_processed']:
-        st.markdown("✅ **Status:** Dados Processados")
-    else:
-        st.markdown("⏳ **Status:** Aguardando Dados")
-with col_status2:
-    if 'dataframes' in st.session_state:
-        total_files = len(st.session_state['dataframes'])
-        st.markdown(f"📁 **Arquivos:** {total_files}")
-with col_status3:
-    st.markdown(f"👤 **Usuário:** Sistema")
-with col_status4:
-    current_time = datetime.now().strftime("%d/%m/%Y %H:%M")
-    st.markdown(f"🕒 **Horário:** {current_time}")
-
-# ============================================
-# SIDEBAR OTIMIZADA
-# ============================================
-with st.sidebar:
-    st.markdown("### 📥 CARREGAMENTO DE DADOS")
+try:
+    st.markdown("<p class='main-header'>💰 SMDET - POT Monitoramento de Pagamento de Benefícios</p>", unsafe_allow_html=True)
     
-    # Upload de arquivos com melhor UX
-    uploaded_files = st.file_uploader(
-        "**Arraste ou clique para selecionar arquivos**",
-        type=['csv', 'txt', 'xlsx', 'xls'],
-        accept_multiple_files=True,
-        help="Formatos suportados: CSV, TXT, Excel"
-    )
+    # Barra de status
+    with st.container():
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            status = "✅ Processado" if st.session_state.get('is_processed') else "⏳ Aguardando"
+            st.markdown(f"**Status:** {status}")
+        with col2:
+            file_count = len(st.session_state.get('uploaded_files', []))
+            st.markdown(f"**Arquivos:** {file_count}")
+        with col3:
+            data_count = len(st.session_state.get('dataframes', {}))
+            st.markdown(f"**Datasets:** {data_count}")
+        with col4:
+            current_time = datetime.now().strftime("%d/%m/%Y %H:%M")
+            st.markdown(f"**Hora:** {current_time}")
     
-    if uploaded_files:
-        file_list = "\n".join([f"• {f.name} ({f.size/1024:.1f} KB)" for f in uploaded_files[:5]])
-        if len(uploaded_files) > 5:
-            file_list += f"\n• ... e mais {len(uploaded_files) - 5} arquivos"
+    # ============================================
+    # SIDEBAR
+    # ============================================
+    with st.sidebar:
+        st.markdown("### 📥 CARREGAMENTO DE DADOS")
         
-        with st.expander(f"📋 Arquivos Selecionados ({len(uploaded_files)})", expanded=True):
-            st.markdown(file_list)
-    
-    # Botão de processamento
-    if st.button("🚀 PROCESSAR DADOS", type="primary", use_container_width=True, 
-                help="Clique para processar todos os arquivos carregados"):
+        uploaded_files = st.file_uploader(
+            "Selecione arquivos (CSV, TXT, Excel)",
+            type=['csv', 'txt', 'xlsx', 'xls'],
+            accept_multiple_files=True,
+            key="file_uploader"
+        )
+        
+        # Atualiza lista de arquivos
         if uploaded_files:
-            with st.spinner("Processando arquivos..."):
-                limite = st.session_state['config'].get('limite_registros', 100000)
-                st.session_state['dataframes'] = load_and_process_files(uploaded_files, limite)
-                
-                if st.session_state['is_processed']:
-                    st.success(f"✅ {len(uploaded_files)} arquivo(s) processado(s)!")
-                    st.balloons()
-                else:
-                    st.warning("⚠️ Arquivos carregados, mas sem dados de pagamentos identificados.")
-        else:
-            st.error("❌ Selecione pelo menos um arquivo.")
-    
-    st.markdown("---")
-    
-    # Status do sistema
-    st.markdown("### 📊 STATUS DO SISTEMA")
-    
-    if st.session_state['is_processed']:
-        df_pagamentos = st.session_state['dataframes'].get('DADOS_CONSOLIDADOS_PAGAMENTOS')
-        if df_pagamentos is not None:
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("Registros", formatar_numero(len(df_pagamentos)))
-            with col2:
-                st.metric("Projetos", df_pagamentos['PROJETO'].nunique())
-    
-    # Ações rápidas
-    st.markdown("### ⚡ AÇÕES RÁPIDAS")
-    
-    col_btn1, col_btn2 = st.columns(2)
-    with col_btn1:
-        if st.button("🗑️ Limpar Dados", use_container_width=True, 
-                    help="Remove todos os dados carregados"):
-            st.session_state['dataframes'] = {}
-            st.session_state['is_processed'] = False
-            st.session_state['filtros_ativos'] = {}
-            st.cache_data.clear()
-            st.success("✅ Dados limpos!")
-            st.rerun()
-    
-    with col_btn2:
-        if st.button("🔄 Recarregar", use_container_width=True,
-                    help="Recarrega a página mantendo dados"):
-            st.rerun()
-    
-    # Tutorial rápido
-    if st.session_state['config'].get('mostrar_tutoriais', True):
-        with st.expander("❓ Como usar o sistema", expanded=False):
-            st.markdown("""
-            **Passo a passo:**
-            1. **Carregue** arquivos CSV/TXT
-            2. **Processe** os dados
-            3. **Analise** no Dashboard
-            4. **Filtre** conforme necessidade
-            5. **Exporte** relatórios
+            st.session_state['uploaded_files'] = uploaded_files
             
-            **Dica:** Use temas escuros/claros conforme preferência nas configurações.
-            """)
+            with st.expander(f"📋 Arquivos selecionados ({len(uploaded_files)})", expanded=True):
+                for file in uploaded_files[:5]:
+                    size_kb = len(file.getvalue()) / 1024
+                    st.markdown(f"• `{file.name}` ({size_kb:.1f} KB)")
+                if len(uploaded_files) > 5:
+                    st.markdown(f"• ... e mais {len(uploaded_files) - 5} arquivos")
+        
+        # Configurações de processamento
+        st.markdown("### ⚙️ CONFIGURAÇÕES")
+        
+        limite_registros = st.number_input(
+            "Limite de registros por arquivo:",
+            min_value=1000,
+            max_value=500000,
+            value=st.session_state['config'].get('limite_registros', 100000),
+            step=1000
+        )
+        
+        auto_validar = st.checkbox(
+            "Validação automática",
+            value=st.session_state['config'].get('auto_validar', True)
+        )
+        
+        # Botão de processamento
+        if st.button("🚀 PROCESSAR DADOS", type="primary", use_container_width=True):
+            if uploaded_files:
+                with st.spinner("Processando..."):
+                    try:
+                        dataframes, error_message = load_and_process_files(
+                            uploaded_files, 
+                            limite_registros
+                        )
+                        
+                        if error_message:
+                            st.error(f"⚠️ Foram encontrados erros:\n{error_message}")
+                        
+                        if dataframes:
+                            st.session_state['dataframes'] = dataframes
+                            st.session_state['is_processed'] = True
+                            st.session_state['config']['limite_registros'] = limite_registros
+                            st.session_state['config']['auto_validar'] = auto_validar
+                            
+                            df_principal = get_dataframe_safe('DADOS_CONSOLIDADOS')
+                            if df_principal is not None:
+                                record_count = len(df_principal)
+                                st.success(f"✅ Processamento concluído! {record_count:,} registros carregados.")
+                                st.balloons()
+                            else:
+                                st.warning("⚠️ Dados processados, mas nenhum dataset principal encontrado.")
+                        else:
+                            st.error("❌ Não foi possível processar os arquivos.")
+                    except Exception as e:
+                        st.error(f"❌ Erro durante o processamento: {str(e)}")
+            else:
+                st.error("❌ Selecione arquivos para processar.")
+        
+        st.markdown("---")
+        
+        # Ações rápidas
+        st.markdown("### ⚡ AÇÕES RÁPIDAS")
+        
+        col_a1, col_a2 = st.columns(2)
+        with col_a1:
+            if st.button("🗑️ Limpar Dados", use_container_width=True):
+                for key in ['dataframes', 'is_processed', 'filtros_ativos']:
+                    if key in st.session_state:
+                        st.session_state[key] = {} if key == 'dataframes' else False
+                st.success("✅ Dados limpos!")
+                st.rerun()
+        
+        with col_a2:
+            if st.button("🔄 Recarregar", use_container_width=True):
+                st.rerun()
+        
+        # Informações do sistema
+        st.markdown("---")
+        st.markdown("""
+        <div style="text-align: center; font-size: 0.9em; color: #666;">
+        <strong>SMDET - POT</strong><br>
+        Sistema de Monitoramento<br>
+        Versão 2.2.0
+        </div>
+        """, unsafe_allow_html=True)
     
-    st.markdown("---")
-    st.markdown("""
-    <div style="text-align: center; color: var(--text-secondary); font-size: 0.85em;">
-    <strong>SMDET - POT</strong><br>
-    Sistema de Monitoramento<br>
-    Versão 2.1.0
-    </div>
-    """, unsafe_allow_html=True)
-
-# ============================================
-# ABAS PRINCIPAIS
-# ============================================
-tab1, tab2, tab3, tab4 = st.tabs([
-    "📊 DASHBOARD", 
-    "📁 DADOS", 
-    "🔍 ANÁLISE", 
-    "⚙️ CONFIGURAÇÕES"
-])
-
-# ============================================
-# ABA 1: DASHBOARD
-# ============================================
-with tab1:
-    st.markdown("## 📊 Dashboard de Monitoramento")
+    # ============================================
+    # ABAS PRINCIPAIS
+    # ============================================
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "📊 DASHBOARD", 
+        "📁 DADOS", 
+        "🔍 ANÁLISE", 
+        "⚙️ CONFIGURAÇÕES"
+    ])
     
-    if not st.session_state['is_processed']:
-        col_empty1, col_empty2, col_empty3 = st.columns([1, 2, 1])
-        with col_empty2:
+    # ============================================
+    # ABA 1: DASHBOARD
+    # ============================================
+    with tab1:
+        st.markdown("## 📊 Dashboard de Monitoramento")
+        
+        df_principal = get_dataframe_safe('DADOS_CONSOLIDADOS')
+        
+        if df_principal is None or df_principal.empty:
             st.info("""
             ### 👋 Bem-vindo ao Dashboard!
             
             Para começar:
-            1. Carregue arquivos na barra lateral 📥
-            2. Clique em **PROCESSAR DADOS** 🚀
-            3. Visualize as métricas aqui 📊
+            1. 📥 Carregue arquivos na barra lateral
+            2. 🚀 Clique em **PROCESSAR DADOS**
+            3. 📊 Visualize as métricas aqui
             
-            **Dica:** Suporte a CSV, TXT e Excel.
-            """, icon="ℹ️")
-    else:
-        df_pagamentos = st.session_state['dataframes'].get('DADOS_CONSOLIDADOS_PAGAMENTOS')
-        
-        if df_pagamentos is not None:
-            # Métricas principais em cards
-            total_registros = len(df_pagamentos)
-            total_projetos = df_pagamentos['PROJETO'].nunique()
-            qtd_pagamentos = (df_pagamentos['VALOR_PAGAMENTO'] > 0).sum()
-            valor_total_pago = df_pagamentos['VALOR_PAGAMENTO'].sum()
-            valor_total = df_pagamentos['VALOR_TOTAL'].sum() if 'VALOR_TOTAL' in df_pagamentos.columns else valor_total_pago
-            valor_pendente = valor_total - valor_total_pago
-            
-            # Cards principais
-            col_c1, col_c2, col_c3, col_c4 = st.columns(4)
-            
-            with col_c1:
-                st.markdown(create_summary_card(
-                    "Total de Registros",
-                    formatar_numero(total_registros),
-                    icon="📋",
-                    help_text="Total de registros processados"
-                ), unsafe_allow_html=True)
-            
-            with col_c2:
-                st.markdown(create_summary_card(
-                    "Projetos Ativos",
-                    formatar_numero(total_projetos),
-                    icon="🏗️",
-                    help_text="Quantidade de projetos diferentes"
-                ), unsafe_allow_html=True)
-            
-            with col_c3:
-                st.markdown(create_summary_card(
-                    "Pagamentos Realizados",
-                    formatar_numero(qtd_pagamentos),
-                    icon="💰",
-                    help_text="Quantidade de pagamentos efetuados"
-                ), unsafe_allow_html=True)
-            
-            with col_c4:
-                st.markdown(create_summary_card(
-                    "Valor Total Pago",
-                    formatar_valor_brl(valor_total_pago),
-                    icon="💳",
-                    help_text="Soma de todos os pagamentos"
-                ), unsafe_allow_html=True)
-            
-            st.markdown("---")
-            
-            # Gráficos
-            col_g1, col_g2 = st.columns(2)
-            
-            with col_g1:
-                st.markdown("### 📈 Distribuição por Status")
-                if 'STATUS_PAGAMENTO' in df_pagamentos.columns:
-                    status_counts = df_pagamentos['STATUS_PAGAMENTO'].value_counts()
-                    
-                    # Gráfico de pizza com cores temáticas
-                    colors = get_theme_colors()
-                    fig_status = px.pie(
-                        values=status_counts.values,
-                        names=status_counts.index,
-                        title='',
-                        color=status_counts.index,
-                        color_discrete_map={
-                            'PAGO': colors['success'],
-                            'PENDENTE': colors['warning']
-                        },
-                        hole=0.4
-                    )
-                    
-                    fig_status.update_traces(
-                        textposition='inside',
-                        textinfo='percent+label',
-                        textfont_size=14,
-                        marker=dict(line=dict(color='white', width=2))
-                    )
-                    
-                    fig_status.update_layout(
-                        showlegend=True,
-                        legend=dict(
-                            orientation="h",
-                            yanchor="bottom",
-                            y=-0.1,
-                            xanchor="center",
-                            x=0.5
-                        ),
-                        height=400
-                    )
-                    
-                    st.plotly_chart(fig_status, use_container_width=True)
-            
-            with col_g2:
-                st.markdown("### 🏗️ Valores por Projeto")
-                if 'PROJETO' in df_pagamentos.columns:
-                    projeto_summary = df_pagamentos.groupby('PROJETO').agg({
-                        'VALOR_TOTAL': 'sum',
-                        'VALOR_PAGAMENTO': 'sum',
-                        'NOME': 'count'
-                    }).reset_index()
-                    
-                    projeto_summary = projeto_summary.sort_values('VALOR_TOTAL', ascending=False).head(15)
-                    
-                    fig_projeto = px.bar(
-                        projeto_summary,
-                        x='PROJETO',
-                        y='VALOR_TOTAL',
-                        title='',
-                        color='VALOR_TOTAL',
-                        color_continuous_scale=px.colors.sequential.Blues,
-                        text_auto='.2s'
-                    )
-                    
-                    fig_projeto.update_layout(
-                        xaxis_tickangle=-45,
-                        xaxis_title="Projeto",
-                        yaxis_title="Valor Total (R$)",
-                        showlegend=False,
-                        height=400
-                    )
-                    
-                    fig_projeto.update_traces(
-                        texttemplate='R$ %{value:,.0f}',
-                        textposition='outside'
-                    )
-                    
-                    st.plotly_chart(fig_projeto, use_container_width=True)
-            
-            # Tabela de resumo
-            st.markdown("---")
-            st.markdown("### 📋 Resumo por Projeto")
-            
-            with st.expander("Visualizar Tabela Detalhada", expanded=True):
-                resumo = df_pagamentos.groupby('PROJETO').agg({
-                    'NOME': 'count',
-                    'VALOR_TOTAL': 'sum',
-                    'VALOR_PAGAMENTO': 'sum',
-                    'VALOR_PENDENTE': 'sum',
-                    'STATUS_PAGAMENTO': lambda x: (x == 'PAGO').sum()
-                }).reset_index()
-                
-                resumo.columns = ['Projeto', 'Beneficiários', 'Valor Total', 'Valor Pago', 'Valor Pendente', 'Pagamentos Realizados']
-                
-                # Calcular porcentagem
-                resumo['% Pago'] = (resumo['Valor Pago'] / resumo['Valor Total'] * 100).round(2)
-                
-                # Formatar valores
-                for col in ['Valor Total', 'Valor Pago', 'Valor Pendente']:
-                    resumo[col] = resumo[col].apply(formatar_valor_brl)
-                
-                # Adicionar badges de status
-                resumo['Status'] = resumo['% Pago'].apply(
-                    lambda x: "🟢 Completo" if x >= 100 else "🟡 Parcial" if x > 0 else "🔴 Pendente"
-                )
-                
-                st.dataframe(
-                    resumo.sort_values('Valor Total', key=lambda x: x.str.replace('R\$ ', '').str.replace('.', '').str.replace(',', '.').astype(float), ascending=False),
-                    use_container_width=True,
-                    height=400
-                )
-        
+            **Formatos suportados:** CSV, TXT, Excel
+            """)
         else:
-            st.warning("Nenhum dado de pagamento encontrado.")
-
-# ============================================
-# ABA 2: DADOS E EXPORTAÇÃO
-# ============================================
-with tab2:
-    st.markdown("## 📁 Dados Carregados e Exportação")
+            # Métricas principais
+            try:
+                total_registros = len(df_principal)
+                total_projetos = df_principal.get('PROJETO', pd.Series([0])).nunique()
+                
+                # Conta pagamentos
+                if 'VALOR_PAGAMENTO' in df_principal.columns:
+                    qtd_pagamentos = (df_principal['VALOR_PAGAMENTO'] > 0).sum()
+                    valor_total_pago = df_principal['VALOR_PAGAMENTO'].sum()
+                else:
+                    qtd_pagamentos = 0
+                    valor_total_pago = 0
+                
+                # Calcula valores totais
+                if 'VALOR_TOTAL' in df_principal.columns:
+                    valor_total = df_principal['VALOR_TOTAL'].sum()
+                else:
+                    valor_total = valor_total_pago
+                
+                valor_pendente = valor_total - valor_total_pago
+                
+                # Cards de métricas
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    st.metric(
+                        "Total de Registros",
+                        formatar_numero(total_registros),
+                        help="Quantidade total de registros processados"
+                    )
+                
+                with col2:
+                    st.metric(
+                        "Projetos Ativos",
+                        formatar_numero(total_projetos),
+                        help="Número de projetos diferentes"
+                    )
+                
+                with col3:
+                    st.metric(
+                        "Pagamentos Realizados",
+                        formatar_numero(qtd_pagamentos),
+                        help="Quantidade de pagamentos efetuados"
+                    )
+                
+                with col4:
+                    st.metric(
+                        "Valor Total Pago",
+                        formatar_valor_brl(valor_total_pago),
+                        help="Soma de todos os valores pagos"
+                    )
+                
+                st.markdown("---")
+                
+                # Gráficos
+                col_g1, col_g2 = st.columns(2)
+                
+                with col_g1:
+                    st.markdown("### 📈 Distribuição por Status")
+                    if 'STATUS_PAGAMENTO' in df_principal.columns:
+                        status_counts = df_principal['STATUS_PAGAMENTO'].value_counts()
+                        
+                        fig_status = px.pie(
+                            values=status_counts.values,
+                            names=status_counts.index,
+                            title='Status de Pagamento',
+                            color=status_counts.index,
+                            color_discrete_map={
+                                'PAGO': '#10B981',
+                                'PENDENTE': '#F59E0B'
+                            },
+                            hole=0.4
+                        )
+                        
+                        fig_status.update_traces(
+                            textposition='inside',
+                            textinfo='percent+label'
+                        )
+                        
+                        st.plotly_chart(fig_status, use_container_width=True)
+                    else:
+                        st.info("Coluna de status não encontrada")
+                
+                with col_g2:
+                    st.markdown("### 🏗️ Valores por Projeto")
+                    if 'PROJETO' in df_principal.columns and 'VALOR_TOTAL' in df_principal.columns:
+                        projeto_summary = df_principal.groupby('PROJETO')['VALOR_TOTAL'].sum()
+                        projeto_summary = projeto_summary.sort_values(ascending=False).head(10)
+                        
+                        fig_projeto = px.bar(
+                            x=projeto_summary.index,
+                            y=projeto_summary.values,
+                            title='Top 10 Projetos por Valor',
+                            labels={'x': 'Projeto', 'y': 'Valor Total (R$)'},
+                            color=projeto_summary.values,
+                            color_continuous_scale='Blues'
+                        )
+                        
+                        fig_projeto.update_layout(xaxis_tickangle=-45)
+                        st.plotly_chart(fig_projeto, use_container_width=True)
+                    else:
+                        st.info("Dados insuficientes para gráfico de projetos")
+                
+                # Tabela de resumo
+                st.markdown("---")
+                st.markdown("### 📋 Resumo por Projeto")
+                
+                if 'PROJETO' in df_principal.columns:
+                    try:
+                        resumo = df_principal.groupby('PROJETO').agg({
+                            'NOME': 'count',
+                            'VALOR_TOTAL': 'sum',
+                            'VALOR_PAGAMENTO': 'sum'
+                        }).reset_index()
+                        
+                        resumo.columns = ['Projeto', 'Beneficiários', 'Valor Total', 'Valor Pago']
+                        
+                        # Calcula valor pendente e porcentagem
+                        resumo['Valor Pendente'] = resumo['Valor Total'] - resumo['Valor Pago']
+                        resumo['% Pago'] = (resumo['Valor Pago'] / resumo['Valor Total'] * 100).round(2)
+                        
+                        # Formata valores
+                        resumo['Valor Total'] = resumo['Valor Total'].apply(formatar_valor_brl)
+                        resumo['Valor Pago'] = resumo['Valor Pago'].apply(formatar_valor_brl)
+                        resumo['Valor Pendente'] = resumo['Valor Pendente'].apply(formatar_valor_brl)
+                        
+                        st.dataframe(
+                            resumo.sort_values('Projeto'),
+                            use_container_width=True,
+                            height=400
+                        )
+                    except Exception as e:
+                        st.warning(f"Não foi possível gerar resumo: {str(e)}")
+                else:
+                    st.info("Coluna 'PROJETO' não encontrada nos dados")
+                    
+            except Exception as e:
+                st.error(f"Erro ao gerar dashboard: {str(e)}")
     
-    if not st.session_state['is_processed']:
-        st.info("Carregue e processe dados na barra lateral para visualizar informações detalhadas.")
-    else:
-        df_pagamentos = st.session_state['dataframes'].get('DADOS_CONSOLIDADOS_PAGAMENTOS')
+    # ============================================
+    # ABA 2: DADOS E EXPORTAÇÃO
+    # ============================================
+    with tab2:
+        st.markdown("## 📁 Dados Carregados e Exportação")
         
-        if df_pagamentos is not None:
-            # Estatísticas rápidas
-            col_stats1, col_stats2, col_stats3, col_stats4 = st.columns(4)
-            with col_stats1:
-                st.metric("Registros", formatar_numero(len(df_pagamentos)))
-            with col_stats2:
-                st.metric("Colunas", len(df_pagamentos.columns))
-            with col_stats3:
-                st.metric("Valor Total", formatar_valor_brl(df_pagamentos['VALOR_TOTAL'].sum()))
-            with col_stats4:
-                st.metric("Última Atualização", datetime.now().strftime("%H:%M"))
+        df_principal = get_dataframe_safe('DADOS_CONSOLIDADOS')
+        
+        if df_principal is None or df_principal.empty:
+            st.info("Nenhum dado disponível para visualização. Carregue e processe dados primeiro.")
+        else:
+            # Estatísticas
+            col_s1, col_s2, col_s3 = st.columns(3)
+            with col_s1:
+                st.metric("Registros", formatar_numero(len(df_principal)))
+            with col_s2:
+                st.metric("Colunas", len(df_principal.columns))
+            with col_s3:
+                if 'VALOR_TOTAL' in df_principal.columns:
+                    st.metric("Valor Total", formatar_valor_brl(df_principal['VALOR_TOTAL'].sum()))
             
             # Visualização dos dados
             st.markdown("### 👁️ Visualização dos Dados")
             
-            # Filtro rápido para visualização
-            col_filter1, col_filter2, col_filter3 = st.columns(3)
-            with col_filter1:
-                show_columns = st.multiselect(
-                    "Colunas para exibir:",
-                    df_pagamentos.columns.tolist(),
-                    default=df_pagamentos.columns.tolist()[:8]
-                )
-            
-            with col_filter2:
-                rows_to_show = st.slider(
+            # Configuração da visualização
+            col_v1, col_v2 = st.columns(2)
+            with col_v1:
+                linhas_por_pagina = st.slider(
                     "Linhas por página:",
                     min_value=10,
                     max_value=200,
@@ -1020,462 +790,332 @@ with tab2:
                     step=10
                 )
             
-            with col_filter3:
-                # Paginação
-                total_pages = max(1, len(df_pagamentos) // rows_to_show + (1 if len(df_pagamentos) % rows_to_show > 0 else 0))
-                page_number = st.number_input(
+            with col_v2:
+                total_paginas = max(1, len(df_principal) // linhas_por_pagina + 
+                                  (1 if len(df_principal) % linhas_por_pagina > 0 else 0))
+                pagina = st.number_input(
                     "Página:",
                     min_value=1,
-                    max_value=total_pages,
-                    value=st.session_state.get('pagina_atual', 1),
+                    max_value=total_paginas,
+                    value=1,
                     step=1
                 )
-                st.session_state['pagina_atual'] = page_number
             
-            # Exibir dados com paginação
-            start_idx = (page_number - 1) * rows_to_show
-            end_idx = min(start_idx + rows_to_show, len(df_pagamentos))
+            # Seleção de colunas
+            colunas_disponiveis = df_principal.columns.tolist()
+            colunas_selecionadas = st.multiselect(
+                "Selecione colunas para exibir:",
+                colunas_disponiveis,
+                default=colunas_disponiveis[:min(8, len(colunas_disponiveis))]
+            )
             
-            if show_columns:
-                df_display = df_pagamentos[show_columns].iloc[start_idx:end_idx]
+            if colunas_selecionadas:
+                # Calcula intervalo para paginação
+                inicio = (pagina - 1) * linhas_por_pagina
+                fim = min(inicio + linhas_por_pagina, len(df_principal))
                 
-                # Adicionar formatação condicional para valores
-                styled_df = df_display.style.format({
-                    'VALOR_TOTAL': lambda x: formatar_valor_brl(x),
-                    'VALOR_PAGAMENTO': lambda x: formatar_valor_brl(x),
-                    'VALOR_PENDENTE': lambda x: formatar_valor_brl(x)
-                })
+                # Exibe dados
+                df_exibir = df_principal[colunas_selecionadas].iloc[inicio:fim]
                 
-                st.dataframe(styled_df, use_container_width=True, height=500)
+                # Formata valores monetários
+                colunas_monetarias = [col for col in df_exibir.columns 
+                                    if 'VALOR' in col.upper()]
+                for col in colunas_monetarias:
+                    if pd.api.types.is_numeric_dtype(df_exibir[col]):
+                        df_exibir[col] = df_exibir[col].apply(formatar_valor_brl)
                 
-                st.caption(f"Mostrando linhas {start_idx + 1} a {end_idx} de {len(df_pagamentos):,} (Página {page_number}/{total_pages})")
+                st.dataframe(df_exibir, use_container_width=True, height=500)
+                
+                st.caption(f"Mostrando linhas {inicio + 1} a {fim} de {len(df_principal):,} "
+                          f"(Página {pagina}/{total_paginas})")
             
-            # Seção de exportação
+            # Exportação
             st.markdown("---")
             st.markdown("### 💾 Exportação de Dados")
             
-            col_exp1, col_exp2, col_exp3 = st.columns(3)
+            col_e1, col_e2 = st.columns(2)
             
-            with col_exp1:
-                export_format = st.selectbox(
+            with col_e1:
+                formato = st.selectbox(
                     "Formato de exportação:",
                     ["Excel (.xlsx)", "CSV (.csv)"],
                     index=0
                 )
             
-            with col_exp2:
-                # Filtro para exportação
-                if 'PROJETO' in df_pagamentos.columns:
-                    projetos = ['Todos'] + df_pagamentos['PROJETO'].unique().tolist()
-                    projeto_export = st.selectbox(
-                        "Filtrar por projeto:",
-                        projetos
-                    )
-                    
-                    if projeto_export != 'Todos':
-                        df_export = df_pagamentos[df_pagamentos['PROJETO'] == projeto_export]
-                        nome_base = f"dados_{projeto_export.lower().replace(' ', '_')}"
-                    else:
-                        df_export = df_pagamentos
-                        nome_base = "dados_consolidados"
-                else:
-                    df_export = df_pagamentos
-                    nome_base = "dados_consolidados"
-            
-            with col_exp3:
-                # Opções adicionais
-                incluir_index = st.checkbox("Incluir índice", value=False)
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            with col_e2:
                 nome_arquivo = st.text_input(
                     "Nome do arquivo:",
-                    value=f"{nome_base}_{timestamp}"
+                    value=f"dados_smdet_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
                 )
             
-            # Botões de exportação
-            col_btn_exp1, col_btn_exp2 = st.columns(2)
-            
-            with col_btn_exp1:
-                if st.button("📥 Exportar Dados Completos", type="primary", use_container_width=True):
-                    with st.spinner("Gerando arquivo..."):
-                        data, mime_type = create_download_link(df_export, nome_arquivo, export_format)
-                        
-                        if data:
-                            extensao = "xlsx" if export_format.startswith("Excel") else "csv"
-                            st.download_button(
-                                label="⬇️ Clique para Baixar",
-                                data=data,
-                                file_name=f"{nome_arquivo}.{extensao}",
-                                mime=mime_type,
-                                type="primary",
-                                use_container_width=True
-                            )
-            
-            with col_btn_exp2:
-                if st.button("📊 Exportar Resumo", use_container_width=True):
-                    # Cria resumo para exportação
-                    if 'PROJETO' in df_pagamentos.columns:
-                        resumo_export = df_pagamentos.groupby('PROJETO').agg({
-                            'NOME': 'count',
-                            'VALOR_TOTAL': 'sum',
-                            'VALOR_PAGAMENTO': 'sum'
-                        }).reset_index()
-                        
-                        resumo_export.columns = ['Projeto', 'Qtd_Beneficiarios', 'Valor_Total', 'Valor_Pago']
-                        resumo_export['%_Pago'] = (resumo_export['Valor_Pago'] / resumo_export['Valor_Total'] * 100).round(2)
-                        
-                        output = BytesIO()
-                        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                            resumo_export.to_excel(writer, sheet_name='Resumo', index=False)
-                        
+            if st.button("📥 Exportar Dados", type="primary", use_container_width=True):
+                with st.spinner("Gerando arquivo..."):
+                    data, mime_type, error = create_download_link(df_principal, nome_arquivo, formato)
+                    
+                    if data and mime_type:
+                        extensao = "xlsx" if formato.startswith("Excel") else "csv"
                         st.download_button(
-                            label="⬇️ Baixar Resumo (Excel)",
-                            data=output.getvalue(),
-                            file_name=f"resumo_{timestamp}.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            label="⬇️ Clique para Baixar",
+                            data=data,
+                            file_name=f"{nome_arquivo}.{extensao}",
+                            mime=mime_type,
+                            type="primary",
                             use_container_width=True
                         )
-        
-        # Outros arquivos carregados
-        outros_arquivos = {k: v for k, v in st.session_state['dataframes'].items() 
-                         if k != 'DADOS_CONSOLIDADOS_PAGAMENTOS'}
-        
-        if outros_arquivos:
-            st.markdown("---")
-            st.markdown("### 📄 Outros Arquivos Carregados")
+                        st.success("✅ Arquivo pronto para download!")
+                    else:
+                        st.error(f"❌ {error}")
             
-            for nome, df in outros_arquivos.items():
-                with st.expander(f"{nome} ({len(df):,} registros)"):
-                    st.dataframe(df.head(), use_container_width=True)
-
-# ============================================
-# ABA 3: ANÁLISE DETALHADA
-# ============================================
-with tab3:
-    st.markdown("## 🔍 Análise Detalhada")
+            # Outros datasets
+            outros_datasets = {k: v for k, v in st.session_state.get('dataframes', {}).items() 
+                             if k != 'DADOS_CONSOLIDADOS' and v is not None and not v.empty}
+            
+            if outros_datasets:
+                st.markdown("---")
+                st.markdown("### 📄 Outros Datasets")
+                
+                for nome, df in outros_datasets.items():
+                    with st.expander(f"{nome} ({len(df):,} registros)"):
+                        st.dataframe(df.head(), use_container_width=True)
     
-    if not st.session_state['is_processed']:
-        st.info("Processe dados primeiro para acessar ferramentas de análise.")
-    else:
-        df_pagamentos = st.session_state['dataframes']['DADOS_CONSOLIDADOS_PAGAMENTOS']
+    # ============================================
+    # ABA 3: ANÁLISE DETALHADA
+    # ============================================
+    with tab3:
+        st.markdown("## 🔍 Análise Detalhada")
         
-        # Filtros avançados
-        st.markdown("### 🎯 Filtros Avançados")
+        df_principal = get_dataframe_safe('DADOS_CONSOLIDADOS')
         
-        col_filt1, col_filt2, col_filt3 = st.columns(3)
-        
-        with col_filt1:
-            # Filtro por projeto
-            projetos = ['Todos'] + sorted(df_pagamentos['PROJETO'].unique().tolist())
-            projeto_filtro = st.selectbox(
-                "Projeto:",
-                projetos,
-                key="filtro_projeto"
-            )
-        
-        with col_filt2:
-            # Filtro por status
-            status_opcoes = ['Todos', 'PAGO', 'PENDENTE']
-            status_filtro = st.selectbox(
-                "Status:",
-                status_opcoes,
-                key="filtro_status"
-            )
-        
-        with col_filt3:
-            # Filtro por valor
-            if 'VALOR_TOTAL' in df_pagamentos.columns:
-                min_val = float(df_pagamentos['VALOR_TOTAL'].min())
-                max_val = float(df_pagamentos['VALOR_TOTAL'].max())
-                valor_filtro = st.slider(
-                    "Faixa de valores:",
-                    min_val, max_val,
-                    (min_val, max_val),
-                    key="filtro_valor"
-                )
-        
-        # Aplicar filtros
-        df_filtrado = df_pagamentos.copy()
-        
-        if projeto_filtro != 'Todos':
-            df_filtrado = df_filtrado[df_filtrado['PROJETO'] == projeto_filtro]
-        
-        if status_filtro != 'Todos':
-            df_filtrado = df_filtrado[df_filtrado['STATUS_PAGAMENTO'] == status_filtro]
-        
-        if 'VALOR_TOTAL' in df_pagamentos.columns:
-            df_filtrado = df_filtrado[
-                (df_filtrado['VALOR_TOTAL'] >= valor_filtro[0]) & 
-                (df_filtrado['VALOR_TOTAL'] <= valor_filtro[1])
-            ]
-        
-        # Mostrar resultados
-        st.markdown(f"### 📊 Resultados: {len(df_filtrado):,} registros encontrados")
-        
-        if len(df_filtrado) == 0:
-            st.warning("Nenhum registro encontrado com os filtros aplicados.")
+        if df_principal is None or df_principal.empty:
+            st.info("Processe dados primeiro para acessar ferramentas de análise.")
         else:
-            # Métricas dos dados filtrados
-            col_met1, col_met2, col_met3, col_met4 = st.columns(4)
+            # Filtros
+            st.markdown("### 🎯 Filtros de Análise")
             
-            with col_met1:
-                valor_total_filtrado = df_filtrado['VALOR_TOTAL'].sum()
-                st.metric("Valor Total", formatar_valor_brl(valor_total_filtrado))
+            col_f1, col_f2 = st.columns(2)
             
-            with col_met2:
-                valor_pago_filtrado = df_filtrado['VALOR_PAGAMENTO'].sum()
-                st.metric("Valor Pago", formatar_valor_brl(valor_pago_filtrado))
+            with col_f1:
+                # Filtro por projeto
+                if 'PROJETO' in df_principal.columns:
+                    projetos = ['Todos'] + sorted(df_principal['PROJETO'].dropna().unique().tolist())
+                    projeto_selecionado = st.selectbox("Projeto:", projetos)
+                else:
+                    projeto_selecionado = 'Todos'
             
-            with col_met3:
-                valor_pendente_filtrado = valor_total_filtrado - valor_pago_filtrado
-                st.metric("Valor Pendente", formatar_valor_brl(valor_pendente_filtrado))
+            with col_f2:
+                # Filtro por status
+                if 'STATUS_PAGAMENTO' in df_principal.columns:
+                    status_opcoes = ['Todos'] + sorted(df_principal['STATUS_PAGAMENTO'].dropna().unique().tolist())
+                    status_selecionado = st.selectbox("Status:", status_opcoes)
+                else:
+                    status_selecionado = 'Todos'
             
-            with col_met4:
-                st.metric("Beneficiários Únicos", df_filtrado['NOME'].nunique())
+            # Aplicar filtros
+            df_filtrado = df_principal.copy()
             
-            # Visualização dos dados filtrados
-            st.markdown("### 📋 Dados Filtrados")
+            if projeto_selecionado != 'Todos' and 'PROJETO' in df_filtrado.columns:
+                df_filtrado = df_filtrado[df_filtrado['PROJETO'] == projeto_selecionado]
             
-            # Seleção de colunas para exibição
-            colunas_disponiveis = df_filtrado.columns.tolist()
-            colunas_padrao = ['NOME', 'PROJETO', 'VALOR_TOTAL', 'VALOR_PAGAMENTO', 'STATUS_PAGAMENTO']
-            colunas_selecionadas = st.multiselect(
-                "Selecione colunas para visualizar:",
-                colunas_disponiveis,
-                default=[c for c in colunas_padrao if c in colunas_disponiveis]
-            )
+            if status_selecionado != 'Todos' and 'STATUS_PAGAMENTO' in df_filtrado.columns:
+                df_filtrado = df_filtrado[df_filtrado['STATUS_PAGAMENTO'] == status_selecionado]
             
-            if colunas_selecionadas:
-                st.dataframe(
-                    df_filtrado[colunas_selecionadas].head(100),
-                    use_container_width=True,
-                    height=400
-                )
+            st.markdown(f"### 📊 Resultados: {len(df_filtrado):,} registros encontrados")
             
-            # Análises específicas
-            st.markdown("---")
-            st.markdown("### 📈 Análises Específicas")
-            
-            tab_analise1, tab_analise2, tab_analise3 = st.tabs(["📊 Distribuição", "🏆 Top Projetos", "📅 Evolução"])
-            
-            with tab_analise1:
-                # Distribuição por agência
-                if 'AGENCIA' in df_filtrado.columns:
-                    st.markdown("#### Distribuição por Agência")
-                    
-                    agencia_counts = df_filtrado['AGENCIA'].value_counts().head(15).reset_index()
-                    agencia_counts.columns = ['Agência', 'Quantidade']
-                    
-                    fig_agencia = px.bar(
-                        agencia_counts,
-                        x='Agência',
-                        y='Quantidade',
-                        color='Quantidade',
-                        color_continuous_scale=px.colors.sequential.Viridis
-                    )
-                    
-                    fig_agencia.update_layout(
-                        xaxis_tickangle=-45,
+            if df_filtrado.empty:
+                st.warning("Nenhum registro encontrado com os filtros aplicados.")
+            else:
+                # Métricas dos dados filtrados
+                col_m1, col_m2, col_m3 = st.columns(3)
+                
+                with col_m1:
+                    if 'VALOR_TOTAL' in df_filtrado.columns:
+                        valor_total = df_filtrado['VALOR_TOTAL'].sum()
+                        st.metric("Valor Total", formatar_valor_brl(valor_total))
+                
+                with col_m2:
+                    if 'VALOR_PAGAMENTO' in df_filtrado.columns:
+                        valor_pago = df_filtrado['VALOR_PAGAMENTO'].sum()
+                        st.metric("Valor Pago", formatar_valor_brl(valor_pago))
+                
+                with col_m3:
+                    if 'NOME' in df_filtrado.columns:
+                        beneficiarios = df_filtrado['NOME'].nunique()
+                        st.metric("Beneficiários Únicos", formatar_numero(beneficiarios))
+                
+                # Visualização dos dados filtrados
+                st.markdown("### 📋 Dados Filtrados")
+                
+                colunas_importantes = ['NOME', 'PROJETO', 'VALOR_TOTAL', 'VALOR_PAGAMENTO', 'STATUS_PAGAMENTO']
+                colunas_disponiveis = [col for col in colunas_importantes if col in df_filtrado.columns]
+                
+                if colunas_disponiveis:
+                    st.dataframe(
+                        df_filtrado[colunas_disponiveis].head(100),
+                        use_container_width=True,
                         height=400
                     )
-                    
-                    st.plotly_chart(fig_agencia, use_container_width=True)
-            
-            with tab_analise2:
-                # Top projetos por valor
-                st.markdown("#### Top Projetos por Valor")
                 
-                top_projetos = df_filtrado.groupby('PROJETO')['VALOR_TOTAL'].sum().nlargest(10).reset_index()
-                top_projetos.columns = ['Projeto', 'Valor Total']
+                # Análises gráficas
+                st.markdown("---")
+                st.markdown("### 📈 Análises Gráficas")
                 
-                fig_top = px.pie(
-                    top_projetos,
-                    values='Valor Total',
-                    names='Projeto',
-                    hole=0.3
-                )
+                tab_a1, tab_a2 = st.tabs(["📊 Distribuição", "🏆 Top Valores"])
                 
-                st.plotly_chart(fig_top, use_container_width=True)
-            
-            with tab_analise3:
-                # Análise temporal (se houver data)
-                st.markdown("#### Análise de Evolução")
-                
-                # Verifica se há coluna de data
-                colunas_data = [col for col in df_filtrado.columns if 'DATA' in col or 'DT' in col]
-                
-                if colunas_data:
-                    col_data = colunas_data[0]
-                    try:
-                        df_filtrado[col_data] = pd.to_datetime(df_filtrado[col_data], errors='coerce')
-                        evolucao = df_filtrado.groupby(df_filtrado[col_data].dt.to_period('M')).agg({
-                            'VALOR_TOTAL': 'sum',
-                            'VALOR_PAGAMENTO': 'sum'
-                        }).reset_index()
+                with tab_a1:
+                    if 'AGENCIA' in df_filtrado.columns:
+                        st.markdown("#### Distribuição por Agência")
                         
-                        evolucao[col_data] = evolucao[col_data].astype(str)
+                        agencia_counts = df_filtrado['AGENCIA'].value_counts().head(15)
                         
-                        fig_evolucao = px.line(
-                            evolucao,
-                            x=col_data,
-                            y=['VALOR_TOTAL', 'VALOR_PAGAMENTO'],
-                            title='Evolução Mensal'
+                        fig_agencia = px.bar(
+                            x=agencia_counts.index,
+                            y=agencia_counts.values,
+                            title='Top 15 Agências',
+                            labels={'x': 'Agência', 'y': 'Quantidade'}
                         )
                         
-                        st.plotly_chart(fig_evolucao, use_container_width=True)
-                    except:
-                        st.info("Não foi possível analisar dados temporais.")
-                else:
-                    st.info("Nenhuma coluna de data encontrada para análise temporal.")
-
-# ============================================
-# ABA 4: CONFIGURAÇÕES
-# ============================================
-with tab4:
-    st.markdown("## ⚙️ Configurações do Sistema")
-    
-    current_config = st.session_state['config']
-    
-    # Tema visual
-    st.markdown("### 🎨 Aparência")
-    
-    col_theme1, col_theme2 = st.columns(2)
-    
-    with col_theme1:
-        tema_escuro = st.checkbox(
-            "Usar tema escuro (recomendado)",
-            value=current_config.get('tema_escuro', False),
-            help="Aplica tema escuro para melhor visibilidade"
-        )
-    
-    with col_theme2:
-        mostrar_tutoriais = st.checkbox(
-            "Mostrar tutoriais",
-            value=current_config.get('mostrar_tutoriais', True),
-            help="Exibe dicas e orientações no sistema"
-        )
-    
-    # Processamento
-    st.markdown("### ⚡ Processamento")
-    
-    col_proc1, col_proc2, col_proc3 = st.columns(3)
-    
-    with col_proc1:
-        auto_validar = st.checkbox(
-            "Validação automática",
-            value=current_config['auto_validar'],
-            help="Valida dados automaticamente ao carregar"
-        )
-    
-    with col_proc2:
-        manter_historico = st.checkbox(
-            "Manter histórico",
-            value=current_config['manter_historico'],
-            help="Armazena histórico de alterações"
-        )
-    
-    with col_proc3:
-        limite_registros = st.number_input(
-            "Limite de registros:",
-            min_value=1000,
-            max_value=500000,
-            value=current_config['limite_registros'],
-            step=1000,
-            help="Máximo de registros por arquivo"
-        )
-    
-    # Exportação
-    st.markdown("### 💾 Exportação")
-    
-    col_exp1, col_exp2 = st.columns(2)
-    
-    with col_exp1:
-        formato_exportacao = st.selectbox(
-            "Formato padrão:",
-            ["Excel (.xlsx)", "CSV (.csv)"],
-            index=0 if current_config['formato_exportacao'] == "Excel (.xlsx)" else 1
-        )
-    
-    with col_exp2:
-        incluir_graficos = st.checkbox(
-            "Incluir gráficos em relatórios",
-            value=current_config['incluir_graficos'],
-            help="Adiciona visualizações aos relatórios exportados"
-        )
-    
-    # Validação avançada
-    st.markdown("### 🔍 Validação Avançada")
-    
-    with st.expander("Configurações de validação", expanded=False):
-        col_val1, col_val2 = st.columns(2)
-        
-        with col_val1:
-            validar_cpf = st.checkbox("Validar CPF", value=True)
-            validar_valores = st.checkbox("Validar valores", value=True)
-        
-        with col_val2:
-            corrigir_decimais = st.checkbox("Corrigir decimais", value=True)
-            normalizar_nomes = st.checkbox("Normalizar nomes", value=True)
-    
-    # Botões de ação
-    st.markdown("---")
-    
-    col_save1, col_save2, col_save3 = st.columns(3)
-    
-    with col_save1:
-        if st.button("💾 SALVAR CONFIGURAÇÕES", type="primary", use_container_width=True):
-            st.session_state['config'] = {
-                'auto_validar': auto_validar,
-                'manter_historico': manter_historico,
-                'limite_registros': limite_registros,
-                'formato_exportacao': formato_exportacao,
-                'incluir_graficos': incluir_graficos,
-                'tema_escuro': tema_escuro,
-                'mostrar_tutoriais': mostrar_tutoriais,
-                'validar_cpf': validar_cpf,
-                'validar_valores': validar_valores,
-                'corrigir_decimais': corrigir_decimais,
-                'normalizar_nomes': normalizar_nomes
-            }
-            st.success("✅ Configurações salvas com sucesso!")
-            st.rerun()
-    
-    with col_save2:
-        if st.button("🔄 RESTAURAR PADRÕES", use_container_width=True):
-            st.session_state['config'] = {
-                'auto_validar': True,
-                'manter_historico': True,
-                'limite_registros': 100000,
-                'formato_exportacao': "Excel (.xlsx)",
-                'incluir_graficos': True,
-                'tema_escuro': False,
-                'mostrar_tutoriais': True,
-                'validar_cpf': True,
-                'validar_valores': True,
-                'corrigir_decimais': True,
-                'normalizar_nomes': True
-            }
-            st.success("✅ Configurações padrão restauradas!")
-            st.rerun()
-    
-    with col_save3:
-        if st.button("📋 RELATÓRIO DE SISTEMA", use_container_width=True):
-            with st.expander("Informações do Sistema", expanded=True):
-                st.markdown(f"""
-                **Versão:** 2.1.0
-                **Python:** 3.11+
-                **Streamlit:** {st.__version__}
-                **Pandas:** {pd.__version__}
+                        fig_agencia.update_layout(xaxis_tickangle=-45)
+                        st.plotly_chart(fig_agencia, use_container_width=True)
+                    else:
+                        st.info("Coluna 'AGENCIA' não encontrada")
                 
-                **Status:**
-                - Processamento: {'✅ Ativo' if st.session_state['is_processed'] else '⏳ Aguardando'}
-                - Arquivos carregados: {len(st.session_state.get('dataframes', {}))}
-                - Tema: {'🌙 Escuro' if tema_escuro else '☀️ Claro'}
-                
-                **Configurações ativas:**
-                - Limite de registros: {limite_registros:,}
-                - Formato exportação: {formato_exportacao}
-                - Validação: {'✅ Ativa' if auto_validar else '❌ Inativa'}
-                """)
+                with tab_a2:
+                    if 'PROJETO' in df_filtrado.columns and 'VALOR_TOTAL' in df_filtrado.columns:
+                        st.markdown("#### Distribuição de Valores por Projeto")
+                        
+                        projeto_valores = df_filtrado.groupby('PROJETO')['VALOR_TOTAL'].sum()
+                        projeto_valores = projeto_valores.sort_values(ascending=False).head(10)
+                        
+                        fig_valores = px.pie(
+                            values=projeto_valores.values,
+                            names=projeto_valores.index,
+                            title='Top 10 Projetos por Valor'
+                        )
+                        
+                        st.plotly_chart(fig_valores, use_container_width=True)
+                    else:
+                        st.info("Dados insuficientes para análise")
+    
+    # ============================================
+    # ABA 4: CONFIGURAÇÕES
+    # ============================================
+    with tab4:
+        st.markdown("## ⚙️ Configurações do Sistema")
+        
+        config = st.session_state.get('config', {})
+        
+        # Configurações de processamento
+        st.markdown("### ⚡ Processamento")
+        
+        col_c1, col_c2, col_c3 = st.columns(3)
+        
+        with col_c1:
+            novo_limite = st.number_input(
+                "Limite de registros:",
+                min_value=1000,
+                max_value=500000,
+                value=config.get('limite_registros', 100000),
+                step=1000
+            )
+        
+        with col_c2:
+            formato_exp = st.selectbox(
+                "Formato de exportação:",
+                ["Excel (.xlsx)", "CSV (.csv)"],
+                index=0 if config.get('formato_exportacao', '').startswith('Excel') else 1
+            )
+        
+        with col_c3:
+            incluir_graficos = st.checkbox(
+                "Incluir gráficos",
+                value=config.get('incluir_graficos', True)
+            )
+        
+        # Configurações de validação
+        st.markdown("### 🔍 Validação")
+        
+        col_v1, col_v2 = st.columns(2)
+        
+        with col_v1:
+            auto_validar = st.checkbox(
+                "Validação automática",
+                value=config.get('auto_validar', True)
+            )
+        
+        with col_v2:
+            manter_historico = st.checkbox(
+                "Manter histórico",
+                value=config.get('manter_historico', True)
+            )
+        
+        # Botões de ação
+        st.markdown("---")
+        
+        col_b1, col_b2 = st.columns(2)
+        
+        with col_b1:
+            if st.button("💾 Salvar Configurações", type="primary", use_container_width=True):
+                st.session_state['config'] = {
+                    'limite_registros': novo_limite,
+                    'formato_exportacao': formato_exp,
+                    'incluir_graficos': incluir_graficos,
+                    'auto_validar': auto_validar,
+                    'manter_historico': manter_historico
+                }
+                st.success("✅ Configurações salvas!")
+                st.rerun()
+        
+        with col_b2:
+            if st.button("🔄 Restaurar Padrões", use_container_width=True):
+                st.session_state['config'] = {
+                    'auto_validar': True,
+                    'manter_historico': True,
+                    'limite_registros': 100000,
+                    'formato_exportacao': "Excel (.xlsx)",
+                    'incluir_graficos': True
+                }
+                st.success("✅ Configurações padrão restauradas!")
+                st.rerun()
+        
+        # Informações do sistema
+        st.markdown("---")
+        st.markdown("### 📊 Informações do Sistema")
+        
+        with st.expander("Detalhes técnicos", expanded=False):
+            st.markdown(f"""
+            **Versão:** 2.2.0  
+            **Python:** {pd.__version__}  
+            **Streamlit:** {st.__version__}  
+            
+            **Status atual:**  
+            • Dados carregados: {len(st.session_state.get('dataframes', {}))}  
+            • Processado: {'Sim' if st.session_state.get('is_processed') else 'Não'}  
+            • Arquivos: {len(st.session_state.get('uploaded_files', []))}  
+            
+            **Configurações ativas:**  
+            • Limite de registros: {config.get('limite_registros', 100000):,}  
+            • Formato exportação: {config.get('formato_exportacao', 'Excel')}  
+            • Validação automática: {'Sim' if config.get('auto_validar', True) else 'Não'}  
+            """)
+            
+except Exception as e:
+    st.error("### ⚠️ Ocorreu um erro no sistema")
+    st.error(f"**Erro:** {str(e)}")
+    
+    with st.expander("🔧 Detalhes técnicos do erro"):
+        st.code(traceback.format_exc())
+    
+    st.info("""
+    **Soluções sugeridas:**
+    1. Clique em **🗑️ Limpar Dados** na barra lateral
+    2. Recarregue a página
+    3. Tente carregar os arquivos novamente
+    
+    Se o problema persistir, verifique:
+    • Formato dos arquivos (CSV, TXT, Excel)
+    • Tamanho dos arquivos (máximo 100MB)
+    • Estrutura dos dados (colunas esperadas)
+    """)
 
 # ============================================
 # RODAPÉ
@@ -1483,10 +1123,10 @@ with tab4:
 st.markdown("---")
 st.markdown(
     """
-    <div class="footer">
-        <strong>💰 SMDET - POT Monitoramento de Pagamento de Benefícios</strong><br>
-        Sistema desenvolvido para acompanhamento, análise e gestão de pagamentos<br>
-        <small>© 2024 - Versão 2.1.0 | Otimizado para temas claros e escuros</small>
+    <div style="text-align: center; color: #666; padding: 20px; font-size: 0.9em;">
+    <strong>💰 SMDET - POT Monitoramento de Pagamento de Benefícios</strong><br>
+    Sistema desenvolvido para acompanhamento e análise de pagamentos<br>
+    <small>© 2024 - Versão 2.2.0 | Tratamento robusto de erros</small>
     </div>
     """,
     unsafe_allow_html=True
