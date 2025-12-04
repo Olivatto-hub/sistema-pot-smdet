@@ -1,193 +1,250 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
-from datetime import datetime
 import numpy as np
+import time
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
-    page_title="Painel de Controle de Pagamentos",
-    page_icon="💰",
+    page_title="Gestão de Pagamentos - Programa Operação Trabalho",
+    page_icon="💼",
     layout="wide"
 )
 
-# --- FUNÇÕES UTILITÁRIAS ---
+# --- FUNÇÕES DE LIMPEZA E FORMATAÇÃO ---
+def clean_currency(value):
+    """
+    Remove R$, espaços e converte formato BR (1.000,00) para float (1000.00).
+    """
+    if isinstance(value, (int, float, np.number)):
+        return float(value)
+    if isinstance(value, str):
+        clean_str = value.replace('R$', '').replace(' ', '').replace('.', '').replace(',', '.')
+        try:
+            return float(clean_str)
+        except ValueError:
+            return 0.0
+    return 0.0
+
 def format_brl(value):
+    """Formata float para moeda BRL visual."""
     return f"R$ {value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
-# --- GERAÇÃO DE DADOS MOCK (SIMULAÇÃO DE ARQUIVOS) ---
-# Em produção, isso seria substituído pela leitura real dos arquivos .REM ou Excel
+# --- GERAÇÃO DE DADOS (SIMULAÇÃO FIEL AOS 2054 REGISTROS) ---
 @st.cache_data
-def load_data():
-    data = [
-        # Arquivo 1 - Pagamentos Normais
-        {"Arquivo": "ARQ_PAG_001.REM", "Beneficiário": "João Silva", "CPF": "123.456.789-00", "Valor Pagto": 1200.50, "Data": "2023-10-01"},
-        {"Arquivo": "ARQ_PAG_001.REM", "Beneficiário": "Maria Oliveira", "CPF": "234.567.890-11", "Valor Pagto": 2500.00, "Data": "2023-10-01"},
-        {"Arquivo": "ARQ_PAG_001.REM", "Beneficiário": "Transportes LTDA", "CPF": "12.345.678/0001-90", "Valor Pagto": 15800.00, "Data": "2023-10-01"},
-        
-        # Arquivo 2 - Contém um valor suspeito (fraude/delírio)
-        {"Arquivo": "ARQ_PAG_002.REM", "Beneficiário": "Ana Santos", "CPF": "345.678.901-22", "Valor Pagto": 980.00, "Data": "2023-10-02"},
-        {"Arquivo": "ARQ_PAG_002.REM", "Beneficiário": "GOLPE_DETECTADO_TESTE", "CPF": "000.000.000-00", "Valor Pagto": 5748240.96, "Data": "2023-10-02"}, # O valor alto que causava erro
-        {"Arquivo": "ARQ_PAG_002.REM", "Beneficiário": "Carlos Souza", "CPF": "456.789.012-33", "Valor Pagto": 3200.10, "Data": "2023-10-02"},
-        
-        # Arquivo 3 - Pagamentos Recorrentes
-        {"Arquivo": "ARQ_PAG_003.REM", "Beneficiário": "João Silva", "CPF": "123.456.789-00", "Valor Pagto": 1200.50, "Data": "2023-10-05"},
-        {"Arquivo": "ARQ_PAG_003.REM", "Beneficiário": "Consultoria XYZ", "CPF": "98.765.432/0001-10", "Valor Pagto": 8500.00, "Data": "2023-10-05"},
+def load_data_pot():
+    """
+    Gera um dataset simulando o arquivo mestre do Programa Operação Trabalho.
+    Contém 2054 registros, múltiplos projetos e casos de teste para a regra de R$ 5k.
+    """
+    np.random.seed(42) # Semente para reprodutibilidade
+    n_rows = 2054
+    
+    # 1. Projetos do Programa (Simulando arquivos iniciais variados)
+    projetos = [
+        "POT - Redenção", "POT - Oportunidades", "POT - Zeladoria", 
+        "POT - Horta", "POT - Mães Guardiãs"
     ]
-    return pd.DataFrame(data)
+    
+    # 2. Geração de Cartões (Beneficiários Únicos)
+    # Criamos menos cartões que linhas para forçar repetições (múltiplos pagamentos por cartão)
+    unique_cards = np.random.randint(1000000000, 9999999999, size=1800, dtype=np.int64)
+    
+    # Distribui os cartões nas 2054 linhas
+    cards_column = np.random.choice(unique_cards, size=n_rows)
+    
+    # 3. Valores de Pagamento
+    # A maioria recebe valores baixos (bolsas padrão), alguns recebem acumulado
+    base_values = [600.00, 850.00, 920.00, 1200.00, 1500.00]
+    values_column = np.random.choice(base_values, size=n_rows).astype(float)
+    
+    # Adicionar ruído/variações de centavos como nas planilhas reais
+    noise = np.random.random(size=n_rows) * 10 
+    values_column += noise
+    
+    # 4. Inserir casos específicos para testar a regra de > 5000
+    # Forçamos alguns cartões a terem valores altos somados
+    # Cartão X vai receber um pagamento alto
+    cards_column[0] = 1234567890
+    values_column[0] = 5500.00 # Estoura o limite sozinho
+    
+    # Cartão Y vai receber 3 pagamentos que somam > 5000
+    cards_column[1:4] = 9876543210
+    values_column[1] = 2000.00
+    values_column[2] = 2000.00
+    values_column[3] = 1500.00 # Soma 5500 -> Deve cair na malha fina
+    
+    # Montagem do DataFrame
+    df = pd.DataFrame({
+        "Num Cartao": cards_column,
+        "Nome Beneficiário": [f"Beneficiário {i}" for i in range(n_rows)],
+        "Projeto Origem": np.random.choice(projetos, size=n_rows),
+        "Valor Pagto": values_column,
+        "Data Processamento": pd.date_range(start="2023-10-01", periods=n_rows, freq="T"),
+        "Status Planilha": "Importado"
+    })
+    
+    # Converter Num Cartao para string para evitar somar o número do cartão
+    df["Num Cartao"] = df["Num Cartao"].astype(str)
+    
+    return df
 
-# --- SIDEBAR E CONFIGURAÇÕES ---
-st.sidebar.header("⚙️ Configurações de Controle")
+# --- LÓGICA DE NEGÓCIO (A "REGRA DE OURO") ---
+def process_business_rules(df, threshold=5000.00):
+    """
+    Aplica a regra: Agrupar por 'Num Cartao'. 
+    Se Soma(Valor Pagto) > threshold, marca TODOS os registros desse cartão para validação Admin.
+    """
+    if df.empty:
+        return df
 
-# 1. Upload de Arquivos (Simulado)
-uploaded_file = st.sidebar.file_uploader("Carregar Arquivo de Remessa (.REM/.CSV)", type=["csv", "txt", "rem"])
+    # Garantir que estamos usando float limpo
+    # (No mock já é float, mas num upload real precisaria limpar)
+    # df['Valor_Calculo'] = df['Valor Pagto'].apply(clean_currency) 
+    # Como o mock já gera float, usamos direto:
+    df['Valor_Calculo'] = df['Valor Pagto']
 
-# Carrega os dados (simulados se não houver upload)
-df_raw = load_data()
+    # 1. Agrupamento por Cartão (Beneficiário Único)
+    grouped = df.groupby('Num Cartao')['Valor_Calculo'].sum().reset_index()
+    grouped.rename(columns={'Valor_Calculo': 'Soma_Total_Cartao'}, inplace=True)
+    
+    # 2. Determinar Status por Cartão
+    grouped['Status_Validacao'] = grouped['Soma_Total_Cartao'].apply(
+        lambda x: '⚠️ Análise Admin' if x > threshold else '✅ Liberado'
+    )
+    
+    # 3. Cruzar de volta com a base original (Merge)
+    # Isso garante que mantemos os 2054 registros, mas cada um agora sabe o status do seu "dono"
+    df_final = df.merge(grouped[['Num Cartao', 'Soma_Total_Cartao', 'Status_Validacao']], on='Num Cartao', how='left')
+    
+    return df_final
 
-# 2. Filtro de Segurança (Anti-Fraude)
-st.sidebar.markdown("---")
-st.sidebar.subheader("🛡️ Segurança e Compliance")
-limite_seguranca = st.sidebar.number_input(
-    "Limite Máximo por Pagamento (R$)",
-    min_value=0.0,
-    value=20000.00, # Valor padrão seguro
-    step=1000.00,
-    help="Pagamentos acima deste valor serão segregados automaticamente para análise."
+# --- SIDEBAR: CONTROLES ADMIN ---
+st.sidebar.title("🔧 Painel de Controle")
+
+st.sidebar.markdown("### Configurações de Regra")
+limite_teto = st.sidebar.number_input(
+    "Teto Máximo por Cartão (R$)",
+    value=5000.00,
+    step=100.00,
+    help="Valores acumulados por cartão acima deste montante exigirão validação."
 )
 
-# 3. Área Admin TI
 st.sidebar.markdown("---")
-st.sidebar.subheader("🔧 Admin TI")
-if st.sidebar.button("🗑️ Limpar Dados / Cache"):
+st.sidebar.markdown("### Gestão de Dados")
+
+# Botão de Reset Real
+if st.sidebar.button("🗑️ Limpar Cache e Reiniciar Sistema"):
     st.cache_data.clear()
+    if 'data_loaded' in st.session_state:
+        del st.session_state['data_loaded']
     st.rerun()
-    st.sidebar.success("Cache limpo com sucesso!")
 
-# --- PROCESSAMENTO LÓGICO (CORE) ---
+# --- APP PRINCIPAL ---
 
-# Separar o joio do trigo
-# df_aprovados: Pagamentos dentro do limite
-# df_retidos: Pagamentos suspeitos/acima do limite
-df_aprovados = df_raw[df_raw['Valor Pagto'] <= limite_seguranca].copy()
-df_retidos = df_raw[df_raw['Valor Pagto'] > limite_seguranca].copy()
+st.title("Sistema de Gestão Financeira - Programa Operação Trabalho")
+st.markdown(f"**Base de Dados Ativa:** Arquivo Mestre (Simulação dos Arquivos Iniciais)")
 
-# Cálculos Totais (Baseados apenas nos aprovados para evitar o "dobro")
-total_pagar = df_aprovados['Valor Pagto'].sum()
-qtd_beneficiarios = df_aprovados['Beneficiário'].nunique() # Conta únicos, caso a mesma pessoa receba 2x
-qtd_registros = len(df_aprovados)
+# 1. CARREGAMENTO E PROCESSAMENTO
+df_raw = load_data_pot()
+df_processed = process_business_rules(df_raw, threshold=limite_teto)
 
-# Cálculos de Retenção
-total_retido = df_retidos['Valor Pagto'].sum()
-qtd_retidos = len(df_retidos)
+# Separação dos grupos para exibição
+df_analise = df_processed[df_processed['Status_Validacao'] == '⚠️ Análise Admin']
+df_liberados = df_processed[df_processed['Status_Validacao'] == '✅ Liberado']
 
-# --- INTERFACE PRINCIPAL ---
-
-st.title("📊 Dashboard de Controle de Pagamentos")
-st.markdown(f"*Status do Sistema: **Operacional** | Data Base: {datetime.now().strftime('%d/%m/%Y')}*")
-
-# 1. CARDS DE KPI (MÉTRICAS)
+# 2. DASHBOARD (KPIs)
 col1, col2, col3, col4 = st.columns(4)
 
+total_valor = df_processed['Valor_Calculo'].sum()
+total_analise = df_analise['Valor_Calculo'].sum()
+
 with col1:
-    st.metric(
-        label="💰 Valor Total Aprovado",
-        value=format_brl(total_pagar),
-        delta="Confirmado"
-    )
+    st.metric("Total de Registros", len(df_processed), delta="100% dos dados")
 
 with col2:
-    st.metric(
-        label="👥 Beneficiários Únicos",
-        value=qtd_beneficiarios,
-        help="Quantidade de CPF/CNPJs distintos que receberão pagamentos."
-    )
+    st.metric("Valor Total da Folha", format_brl(total_valor))
 
 with col3:
     st.metric(
-        label="📄 Registros Processados",
-        value=qtd_registros,
-        delta=f"{len(df_raw)} Total Lido"
+        "Cartões Únicos", 
+        df_processed['Num Cartao'].nunique(),
+        help="Quantidade de cartões distintos identificados no arquivo."
     )
 
 with col4:
     st.metric(
-        label="🚫 Valor Retido (Suspeito)",
-        value=format_brl(total_retido),
-        delta=f"- {qtd_retidos} itens",
-        delta_color="inverse",
-        help=f"Valores acima do limite de {format_brl(limite_seguranca)}."
+        "Retido para Validação (>5k)", 
+        format_brl(total_analise), 
+        delta=f"{df_analise['Num Cartao'].nunique()} cartões",
+        delta_color="inverse"
     )
 
 st.markdown("---")
 
-# 2. ALERTA DE SEGURANÇA
-if not df_retidos.empty:
-    st.error(f"⚠️ **ATENÇÃO:** Foram detectados {qtd_retidos} pagamentos acima do limite de segurança ({format_brl(limite_seguranca)}). O valor total de {format_brl(total_retido)} foi removido do fluxo de pagamento principal e aguarda aprovação manual.")
-    with st.expander("Verificar Pagamentos Retidos/Suspeitos"):
-        # Formatar coluna para exibição
-        df_display_retidos = df_retidos.copy()
-        df_display_retidos['Valor Pagto'] = df_display_retidos['Valor Pagto'].apply(format_brl)
-        st.dataframe(df_display_retidos, use_container_width=True)
-
-# 3. GRÁFICOS
-
-col_chart_1, col_chart_2 = st.columns(2)
-
-with col_chart_1:
-    st.subheader("Distribuição por Arquivo")
-    # Agrupamento correto para evitar duplicação
-    df_por_arquivo = df_aprovados.groupby("Arquivo")['Valor Pagto'].sum().reset_index()
+# 3. ALERTA DE VALIDAÇÃO (SE HOUVER)
+if not df_analise.empty:
+    st.error(f"""
+    🚨 **Ação Necessária:** Foram detectados {df_analise['Num Cartao'].nunique()} cartões cujo somatório de pagamentos excede R$ {limite_teto:,.2f}.
+    Estes registros totalizam {format_brl(total_analise)} e precisam de validação por perfil Admin/TI.
+    """)
     
-    fig_bar = px.bar(
-        df_por_arquivo,
-        x="Arquivo",
-        y="Valor Pagto",
-        text_auto=True,
-        title="Total a Pagar por Arquivo (R$)",
-        color="Valor Pagto",
-        color_continuous_scale="Blues"
+    with st.expander("🔍 Visualizar Itens em Análise (Detalhado por Cartão)", expanded=True):
+        # Mostra apenas as colunas relevantes para decisão
+        st.dataframe(
+            df_analise[['Num Cartao', 'Nome Beneficiário', 'Projeto Origem', 'Valor Pagto', 'Soma_Total_Cartao']]
+            .sort_values(by='Soma_Total_Cartao', ascending=False),
+            column_config={
+                "Valor Pagto": st.column_config.NumberColumn("Valor do Item", format="R$ %.2f"),
+                "Soma_Total_Cartao": st.column_config.NumberColumn("Acumulado no Cartão", format="R$ %.2f"),
+            },
+            use_container_width=True
+        )
+else:
+    st.success("✅ Todos os pagamentos estão dentro dos limites estabelecidos por cartão.")
+
+# 4. VISÃO GERAL (GRÁFICOS)
+st.subheader("Visão Geral do Processamento")
+tab1, tab2 = st.tabs(["📊 Gráficos Gerenciais", "📋 Base Completa (2054 Registros)"])
+
+with tab1:
+    c1, c2 = st.columns(2)
+    with c1:
+        # Gráfico de Barras: Valor por Projeto
+        df_proj = df_processed.groupby("Projeto Origem")['Valor_Calculo'].sum().reset_index()
+        fig_bar = px.bar(
+            df_proj, 
+            x="Projeto Origem", 
+            y="Valor_Calculo", 
+            title="Distribuição Financeira por Projeto",
+            text_auto=True,
+            color="Valor_Calculo"
+        )
+        fig_bar.update_traces(texttemplate='R$ %{y:,.2s}', textposition='outside')
+        st.plotly_chart(fig_bar, use_container_width=True)
+    
+    with c2:
+        # Gráfico de Pizza: Status da Validação
+        df_status = df_processed['Status_Validacao'].value_counts().reset_index()
+        df_status.columns = ['Status', 'Quantidade']
+        fig_pie = px.pie(
+            df_status, 
+            names='Status', 
+            values='Quantidade', 
+            title=f"Proporção de Registros (Total: {len(df_processed)})",
+            color='Status',
+            color_discrete_map={'✅ Liberado': '#2ecc71', '⚠️ Análise Admin': '#e74c3c'}
+        )
+        st.plotly_chart(fig_pie, use_container_width=True)
+
+with tab2:
+    st.dataframe(
+        df_processed,
+        column_config={
+            "Valor Pagto": st.column_config.NumberColumn("Valor Item", format="R$ %.2f"),
+            "Soma_Total_Cartao": st.column_config.NumberColumn("Total Cartão", format="R$ %.2f"),
+            "Valor_Calculo": None # Esconde coluna auxiliar
+        },
+        use_container_width=True,
+        hide_index=True
     )
-    # Ajuste fino para formato BR no gráfico
-    fig_bar.update_traces(texttemplate='R$ %{y:,.2f}', textposition='outside')
-    fig_bar.update_layout(yaxis_tickformat = ",.2f") # Tenta aproximar formato
-    st.plotly_chart(fig_bar, use_container_width=True)
-
-with col_chart_2:
-    st.subheader("Faixa de Valores (Histograma)")
-    fig_hist = px.histogram(
-        df_aprovados,
-        x="Valor Pagto",
-        nbins=10,
-        title="Concentração dos Pagamentos",
-        color_discrete_sequence=['#00CC96']
-    )
-    # Formatação BR no eixo X
-    fig_hist.update_layout(xaxis_tickprefix="R$ ", yaxis_title="Quantidade de Pagamentos")
-    st.plotly_chart(fig_hist, use_container_width=True)
-
-# 4. TABELA DETALHADA
-st.subheader("📋 Detalhamento de Pagamentos Aprovados")
-
-# Filtro rápido na tabela
-filtro_beneficiario = st.text_input("🔍 Buscar Beneficiário ou CPF:")
-if filtro_beneficiario:
-    df_aprovados = df_aprovados[
-        df_aprovados['Beneficiário'].str.contains(filtro_beneficiario, case=False) | 
-        df_aprovados['CPF'].str.contains(filtro_beneficiario)
-    ]
-
-# Tabela formatada
-df_tabela = df_aprovados.copy()
-df_tabela['Valor Pagto'] = df_tabela['Valor Pagto'].apply(format_brl)
-
-st.dataframe(
-    df_tabela,
-    column_config={
-        "Valor Pagto": st.column_config.TextColumn("Valor Líquido"),
-        "Data": st.column_config.DateColumn("Data Vencimento", format="DD/MM/YYYY")
-    },
-    use_container_width=True,
-    hide_index=True
-)
