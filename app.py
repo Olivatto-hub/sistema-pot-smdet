@@ -1,311 +1,193 @@
 import streamlit as st
 import pandas as pd
-import io
-import unicodedata
-import re
+import plotly.express as px
+import plotly.graph_objects as go
+from datetime import datetime
+import numpy as np
 
-# --- Configuração da Página ---
+# --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
-    page_title="Sistema POT - Processamento de Pagamentos", 
+    page_title="Painel de Controle de Pagamentos",
     page_icon="💰",
     layout="wide"
 )
 
-# --- CSS Personalizado ---
-st.markdown("""
-    <style>
-    .stMetric {
-        background-color: #f0f2f6;
-        padding: 10px;
-        border-radius: 5px;
-        border: 1px solid #e0e0e0;
-    }
-    .css-1d391kg {
-        padding-top: 1rem;
-    }
-    </style>
-    """, unsafe_allow_html=True)
+# --- FUNÇÕES UTILITÁRIAS ---
+def format_brl(value):
+    return f"R$ {value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
-# --- GESTÃO DE ESTADO (SESSÃO) ---
-if 'authenticated' not in st.session_state:
-    st.session_state.authenticated = False
-if 'user_role' not in st.session_state:
-    st.session_state.user_role = None
-if 'df_consolidado' not in st.session_state:
-    st.session_state.df_consolidado = None
+# --- GERAÇÃO DE DADOS MOCK (SIMULAÇÃO DE ARQUIVOS) ---
+# Em produção, isso seria substituído pela leitura real dos arquivos .REM ou Excel
+@st.cache_data
+def load_data():
+    data = [
+        # Arquivo 1 - Pagamentos Normais
+        {"Arquivo": "ARQ_PAG_001.REM", "Beneficiário": "João Silva", "CPF": "123.456.789-00", "Valor Pagto": 1200.50, "Data": "2023-10-01"},
+        {"Arquivo": "ARQ_PAG_001.REM", "Beneficiário": "Maria Oliveira", "CPF": "234.567.890-11", "Valor Pagto": 2500.00, "Data": "2023-10-01"},
+        {"Arquivo": "ARQ_PAG_001.REM", "Beneficiário": "Transportes LTDA", "CPF": "12.345.678/0001-90", "Valor Pagto": 15800.00, "Data": "2023-10-01"},
+        
+        # Arquivo 2 - Contém um valor suspeito (fraude/delírio)
+        {"Arquivo": "ARQ_PAG_002.REM", "Beneficiário": "Ana Santos", "CPF": "345.678.901-22", "Valor Pagto": 980.00, "Data": "2023-10-02"},
+        {"Arquivo": "ARQ_PAG_002.REM", "Beneficiário": "GOLPE_DETECTADO_TESTE", "CPF": "000.000.000-00", "Valor Pagto": 5748240.96, "Data": "2023-10-02"}, # O valor alto que causava erro
+        {"Arquivo": "ARQ_PAG_002.REM", "Beneficiário": "Carlos Souza", "CPF": "456.789.012-33", "Valor Pagto": 3200.10, "Data": "2023-10-02"},
+        
+        # Arquivo 3 - Pagamentos Recorrentes
+        {"Arquivo": "ARQ_PAG_003.REM", "Beneficiário": "João Silva", "CPF": "123.456.789-00", "Valor Pagto": 1200.50, "Data": "2023-10-05"},
+        {"Arquivo": "ARQ_PAG_003.REM", "Beneficiário": "Consultoria XYZ", "CPF": "98.765.432/0001-10", "Valor Pagto": 8500.00, "Data": "2023-10-05"},
+    ]
+    return pd.DataFrame(data)
 
-# --- FUNÇÕES DE LOGIN ---
+# --- SIDEBAR E CONFIGURAÇÕES ---
+st.sidebar.header("⚙️ Configurações de Controle")
 
-def check_login(username, password):
-    users = {
-        "admin": ("admin123", "Administrador"),
-        "operador": ("operador123", "Operador"),
-        "admin.ti@prefeitura.sp.gov.br": ("smdet2025", "Administrador")
-    }
-    if username in users and users[username][0] == password:
-        st.session_state.authenticated = True
-        st.session_state.user_role = users[username][1]
-        st.session_state.username = username
-        return True
-    return False
+# 1. Upload de Arquivos (Simulado)
+uploaded_file = st.sidebar.file_uploader("Carregar Arquivo de Remessa (.REM/.CSV)", type=["csv", "txt", "rem"])
 
-def logout():
-    st.session_state.authenticated = False
-    st.session_state.user_role = None
-    st.session_state.username = None
-    st.session_state.df_consolidado = None # Limpa dados ao sair
+# Carrega os dados (simulados se não houver upload)
+df_raw = load_data()
+
+# 2. Filtro de Segurança (Anti-Fraude)
+st.sidebar.markdown("---")
+st.sidebar.subheader("🛡️ Segurança e Compliance")
+limite_seguranca = st.sidebar.number_input(
+    "Limite Máximo por Pagamento (R$)",
+    min_value=0.0,
+    value=20000.00, # Valor padrão seguro
+    step=1000.00,
+    help="Pagamentos acima deste valor serão segregados automaticamente para análise."
+)
+
+# 3. Área Admin TI
+st.sidebar.markdown("---")
+st.sidebar.subheader("🔧 Admin TI")
+if st.sidebar.button("🗑️ Limpar Dados / Cache"):
+    st.cache_data.clear()
     st.rerun()
+    st.sidebar.success("Cache limpo com sucesso!")
 
-# --- FUNÇÕES DE LIMPEZA E PADRONIZAÇÃO ---
+# --- PROCESSAMENTO LÓGICO (CORE) ---
 
-def remover_acentos(texto):
-    if not isinstance(texto, str): return str(texto)
-    return ''.join(c for c in unicodedata.normalize('NFD', texto) if unicodedata.category(c) != 'Mn')
+# Separar o joio do trigo
+# df_aprovados: Pagamentos dentro do limite
+# df_retidos: Pagamentos suspeitos/acima do limite
+df_aprovados = df_raw[df_raw['Valor Pagto'] <= limite_seguranca].copy()
+df_retidos = df_raw[df_raw['Valor Pagto'] > limite_seguranca].copy()
 
-def sanitizar_texto(texto):
-    if pd.isna(texto): return ""
-    texto = str(texto).strip()
-    try:
-        texto = texto.encode('cp1252').decode('utf-8')
-    except:
-        pass
-    texto = " ".join(texto.split())
-    return texto.title()
+# Cálculos Totais (Baseados apenas nos aprovados para evitar o "dobro")
+total_pagar = df_aprovados['Valor Pagto'].sum()
+qtd_beneficiarios = df_aprovados['Beneficiário'].nunique() # Conta únicos, caso a mesma pessoa receba 2x
+qtd_registros = len(df_aprovados)
 
-def limpar_string_coluna(coluna):
-    coluna = remover_acentos(coluna.lower().strip())
-    coluna = re.sub(r'[^a-z0-9]', '', coluna)
-    return coluna
-
-def limpar_valor_monetario(valor):
-    if isinstance(valor, (pd.Series, list, tuple)): return 0.0
-    if pd.isna(valor): return 0.0
-    valor_str = str(valor).strip().lower().replace('r$', '').strip()
-    if not valor_str: return 0.0
-    try:
-        valor_str = valor_str.replace('.', '').replace(',', '.')
-        return float(valor_str)
-    except ValueError:
-        return 0.0
-
-def normalizar_cabecalhos(df):
-    df.columns = df.columns.str.strip()
-    mapa_colunas = {
-        'Num Cartao': ['numcartao', 'nrocartao', 'numerocartao', 'cartao', 'card', 'nrcartao', 'num'],
-        'Nome': ['nome', 'beneficiario', 'favorecido', 'funcionario', 'nomedobeneficiario'],
-        'CPF': ['cpf', 'cpfbeneficiario', 'doc', 'documento'],
-        'Valor': ['valor', 'valorpagto', 'valorliquido', 'valortotal', 'total', 'liquido', 'vlrliquido'],
-        'Data': ['data', 'dtpagto', 'datapagto', 'datamovimento'],
-        'Gerenciadora': ['gerenciadora', 'banco', 'origem', 'rede']
-    }
-    
-    colunas_renomeadas = {}
-    colunas_originais = list(df.columns)
-    
-    for col_atual in colunas_originais:
-        col_clean = limpar_string_coluna(col_atual)
-        match_encontrado = False
-        for col_padrao, termos_chave in mapa_colunas.items():
-            if match_encontrado: break
-            for termo in termos_chave:
-                if termo in col_clean:
-                    colunas_renomeadas[col_atual] = col_padrao
-                    match_encontrado = True
-                    break
-    
-    if colunas_renomeadas:
-        df = df.rename(columns=colunas_renomeadas)
-    
-    # Remove duplicadas (ex: se tiver Valor Bruto e Liquido e ambos virarem Valor)
-    df = df.loc[:, ~df.columns.duplicated()]
-    return df, colunas_renomeadas
-
-def carregar_arquivo(uploaded_file):
-    filename = uploaded_file.name.lower()
-    try:
-        if filename.endswith('.csv'):
-            try: return pd.read_csv(uploaded_file, sep=';', encoding='utf-8', dtype=str)
-            except: 
-                uploaded_file.seek(0)
-                try: return pd.read_csv(uploaded_file, sep=';', encoding='latin-1', dtype=str)
-                except:
-                    uploaded_file.seek(0)
-                    return pd.read_csv(uploaded_file, sep=',', encoding='utf-8', dtype=str)
-        else:
-            return pd.read_excel(uploaded_file, dtype=str)
-    except Exception as e:
-        raise Exception(f"Erro de leitura: {str(e)}")
-
-def processar_dados(uploaded_file):
-    try:
-        df = carregar_arquivo(uploaded_file)
-        df, mudancas = normalizar_cabecalhos(df)
-        
-        colunas_obrigatorias = ['Num Cartao', 'Nome', 'Valor']
-        faltantes = [c for c in colunas_obrigatorias if c not in df.columns]
-        
-        if faltantes:
-            return None, f"Colunas ausentes: {', '.join(faltantes)}", mudancas
-        
-        df['Valor'] = df['Valor'].apply(limpar_valor_monetario)
-        df['Num Cartao'] = df['Num Cartao'].astype(str).str.replace(r'\D', '', regex=True)
-        df['Nome'] = df['Nome'].apply(sanitizar_texto)
-        if 'Gerenciadora' in df.columns:
-            df['Gerenciadora'] = df['Gerenciadora'].apply(sanitizar_texto)
-        
-        df['Arquivo Origem'] = uploaded_file.name
-        
-        cols_finais = ['Arquivo Origem', 'Num Cartao', 'Nome', 'Valor']
-        opcionais = ['CPF', 'Data', 'Gerenciadora']
-        for col in opcionais:
-            if col in df.columns: cols_finais.append(col)
-        
-        return df[cols_finais], None, mudancas
-    except Exception as e:
-        return None, f"Erro: {str(e)}", {}
+# Cálculos de Retenção
+total_retido = df_retidos['Valor Pagto'].sum()
+qtd_retidos = len(df_retidos)
 
 # --- INTERFACE PRINCIPAL ---
 
-if not st.session_state.authenticated:
-    # --- TELA DE LOGIN ---
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        st.title("🔒 Sistema POT")
-        st.info("Acesso Restrito - Folha de Pagamento")
-        with st.form("login_form"):
-            username = st.text_input("Usuário")
-            password = st.text_input("Senha", type="password")
-            submit = st.form_submit_button("Entrar", use_container_width=True)
-            if submit:
-                if check_login(username, password):
-                    st.rerun()
-                else:
-                    st.error("Credenciais inválidas.")
+st.title("📊 Dashboard de Controle de Pagamentos")
+st.markdown(f"*Status do Sistema: **Operacional** | Data Base: {datetime.now().strftime('%d/%m/%Y')}*")
 
-else:
-    # --- ÁREA LOGADA ---
+# 1. CARDS DE KPI (MÉTRICAS)
+col1, col2, col3, col4 = st.columns(4)
+
+with col1:
+    st.metric(
+        label="💰 Valor Total Aprovado",
+        value=format_brl(total_pagar),
+        delta="Confirmado"
+    )
+
+with col2:
+    st.metric(
+        label="👥 Beneficiários Únicos",
+        value=qtd_beneficiarios,
+        help="Quantidade de CPF/CNPJs distintos que receberão pagamentos."
+    )
+
+with col3:
+    st.metric(
+        label="📄 Registros Processados",
+        value=qtd_registros,
+        delta=f"{len(df_raw)} Total Lido"
+    )
+
+with col4:
+    st.metric(
+        label="🚫 Valor Retido (Suspeito)",
+        value=format_brl(total_retido),
+        delta=f"- {qtd_retidos} itens",
+        delta_color="inverse",
+        help=f"Valores acima do limite de {format_brl(limite_seguranca)}."
+    )
+
+st.markdown("---")
+
+# 2. ALERTA DE SEGURANÇA
+if not df_retidos.empty:
+    st.error(f"⚠️ **ATENÇÃO:** Foram detectados {qtd_retidos} pagamentos acima do limite de segurança ({format_brl(limite_seguranca)}). O valor total de {format_brl(total_retido)} foi removido do fluxo de pagamento principal e aguarda aprovação manual.")
+    with st.expander("Verificar Pagamentos Retidos/Suspeitos"):
+        # Formatar coluna para exibição
+        df_display_retidos = df_retidos.copy()
+        df_display_retidos['Valor Pagto'] = df_display_retidos['Valor Pagto'].apply(format_brl)
+        st.dataframe(df_display_retidos, use_container_width=True)
+
+# 3. GRÁFICOS
+
+col_chart_1, col_chart_2 = st.columns(2)
+
+with col_chart_1:
+    st.subheader("Distribuição por Arquivo")
+    # Agrupamento correto para evitar duplicação
+    df_por_arquivo = df_aprovados.groupby("Arquivo")['Valor Pagto'].sum().reset_index()
     
-    # Menu Lateral
-    with st.sidebar:
-        st.title(f"👤 {st.session_state.user_role}")
-        st.caption(f"Logado como: {st.session_state.username}")
-        
-        st.divider()
-        menu_opcao = st.radio(
-            "Navegação", 
-            ["📂 Upload & Consolidação", "📊 Dashboard Financeiro", "⚙️ Configurações"]
-        )
-        st.divider()
-        if st.button("Sair do Sistema", use_container_width=True):
-            logout()
+    fig_bar = px.bar(
+        df_por_arquivo,
+        x="Arquivo",
+        y="Valor Pagto",
+        text_auto=True,
+        title="Total a Pagar por Arquivo (R$)",
+        color="Valor Pagto",
+        color_continuous_scale="Blues"
+    )
+    # Ajuste fino para formato BR no gráfico
+    fig_bar.update_traces(texttemplate='R$ %{y:,.2f}', textposition='outside')
+    fig_bar.update_layout(yaxis_tickformat = ",.2f") # Tenta aproximar formato
+    st.plotly_chart(fig_bar, use_container_width=True)
 
-    # --- PÁGINA 1: UPLOAD & CONSOLIDAÇÃO ---
-    if menu_opcao == "📂 Upload & Consolidação":
-        st.title("📂 Processamento de Arquivos")
-        st.markdown("Faça o upload das planilhas para padronização e consolidação.")
-        
-        uploaded_files = st.file_uploader(
-            "Selecione arquivos CSV ou Excel", 
-            accept_multiple_files=True,
-            type=['csv', 'xlsx', 'xls']
-        )
-        
-        if uploaded_files:
-            if st.button("Processar Arquivos", type="primary"):
-                dfs_validos = []
-                bar = st.progress(0)
-                
-                for i, arquivo in enumerate(uploaded_files):
-                    df_proc, erro, mudancas = processar_dados(arquivo)
-                    
-                    if erro:
-                        st.error(f"❌ {arquivo.name}: {erro}")
-                    else:
-                        dfs_validos.append(df_proc)
-                        with st.expander(f"✅ {arquivo.name} - Processado com sucesso"):
-                            c1, c2 = st.columns(2)
-                            c1.info(f"Colunas detectadas: {len(df_proc.columns)}")
-                            c2.metric("Total do Arquivo", f"R$ {df_proc['Valor'].sum():,.2f}")
-                            if mudancas:
-                                st.caption(f"Adaptações: {mudancas}")
-                    
-                    bar.progress((i + 1) / len(uploaded_files))
-                
-                if dfs_validos:
-                    df_final = pd.concat(dfs_validos, ignore_index=True)
-                    st.session_state.df_consolidado = df_final # Salva na sessão
-                    st.success("Processamento concluído! Vá para o Dashboard para ver os resultados.")
-                    st.balloons()
-        
-        # Mostra prévia se já houver dados processados
-        if st.session_state.df_consolidado is not None:
-            st.divider()
-            st.subheader("Prévia dos Dados Consolidados")
-            st.dataframe(st.session_state.df_consolidado.head(10), use_container_width=True)
-            st.info(f"Total de {len(st.session_state.df_consolidado)} registros carregados em memória.")
+with col_chart_2:
+    st.subheader("Faixa de Valores (Histograma)")
+    fig_hist = px.histogram(
+        df_aprovados,
+        x="Valor Pagto",
+        nbins=10,
+        title="Concentração dos Pagamentos",
+        color_discrete_sequence=['#00CC96']
+    )
+    # Formatação BR no eixo X
+    fig_hist.update_layout(xaxis_tickprefix="R$ ", yaxis_title="Quantidade de Pagamentos")
+    st.plotly_chart(fig_hist, use_container_width=True)
 
-    # --- PÁGINA 2: DASHBOARD ---
-    elif menu_opcao == "📊 Dashboard Financeiro":
-        st.title("📊 Dashboard Financeiro")
-        
-        if st.session_state.df_consolidado is None:
-            st.warning("⚠️ Nenhum dado carregado. Vá para a aba 'Upload & Consolidação' primeiro.")
-        else:
-            df = st.session_state.df_consolidado
-            
-            # KPI Cards
-            col1, col2, col3, col4 = st.columns(4)
-            
-            valor_total = df['Valor'].sum()
-            qtd_beneficiarios = df['Num Cartao'].nunique()
-            qtd_registros = len(df)
-            media_pgto = valor_total / qtd_registros if qtd_registros > 0 else 0
-            
-            col1.metric("Valor Total da Folha", f"R$ {valor_total:,.2f}")
-            col2.metric("Beneficiários Únicos", qtd_beneficiarios)
-            col3.metric("Total de Registros", qtd_registros)
-            col4.metric("Ticket Médio", f"R$ {media_pgto:,.2f}")
-            
-            st.divider()
-            
-            # Gráficos e Tabelas
-            c_chart, c_table = st.columns([2, 1])
-            
-            with c_chart:
-                st.subheader("Distribuição por Arquivo de Origem")
-                df_grouped = df.groupby('Arquivo Origem')['Valor'].sum().reset_index()
-                st.bar_chart(df_grouped, x='Arquivo Origem', y='Valor', color='#0068c9')
-            
-            with c_table:
-                st.subheader("Resumo por Arquivo")
-                st.dataframe(
-                    df.groupby('Arquivo Origem').agg(
-                        Qtd=('Num Cartao', 'count'),
-                        Total=('Valor', 'sum')
-                    ).style.format({'Total': 'R$ {:,.2f}'}),
-                    use_container_width=True
-                )
+# 4. TABELA DETALHADA
+st.subheader("📋 Detalhamento de Pagamentos Aprovados")
 
-            # Área de Download
-            st.divider()
-            st.subheader("📥 Exportação de Dados")
-            
-            df_export = df.copy()
-            # Formata para Excel BR
-            df_export['Valor'] = df_export['Valor'].apply(lambda x: f"{x:.2f}".replace('.', ','))
-            csv = df_export.to_csv(index=False, sep=';', encoding='utf-8-sig')
-            
-            st.download_button(
-                label="Baixar Relatório Completo (.csv)",
-                data=csv,
-                file_name="relatorio_pagamentos_consolidado.csv",
-                mime="text/csv",
-                type="primary"
-            )
+# Filtro rápido na tabela
+filtro_beneficiario = st.text_input("🔍 Buscar Beneficiário ou CPF:")
+if filtro_beneficiario:
+    df_aprovados = df_aprovados[
+        df_aprovados['Beneficiário'].str.contains(filtro_beneficiario, case=False) | 
+        df_aprovados['CPF'].str.contains(filtro_beneficiario)
+    ]
 
-    # --- PÁGINA 3: CONFIGURAÇÕES (Placeholder) ---
-    elif menu_opcao == "⚙️ Configurações":
-        st.title("⚙️ Configurações do Sistema")
-        st.info("Funcionalidades de administração de usuários e logs seriam implementadas aqui.")
-        st.text_input("Email para relatórios automáticos")
-        st.button("Salvar Preferências")
+# Tabela formatada
+df_tabela = df_aprovados.copy()
+df_tabela['Valor Pagto'] = df_tabela['Valor Pagto'].apply(format_brl)
+
+st.dataframe(
+    df_tabela,
+    column_config={
+        "Valor Pagto": st.column_config.TextColumn("Valor Líquido"),
+        "Data": st.column_config.DateColumn("Data Vencimento", format="DD/MM/YYYY")
+    },
+    use_container_width=True,
+    hide_index=True
+)
