@@ -77,6 +77,14 @@ st.markdown("""
 # ⚙️ FUNÇÕES DE UTILIDADE E PROCESSAMENTO
 # ============================================
 
+# Lista de colunas esperadas para o processamento, incluindo as originais e as renomeadas
+REQUIRED_COLS = {
+    'Num Cartao': 'Num Cartao', 'Valor Total': 'Valor Total', 'Valor Desconto': 'Valor Desconto', 
+    'Valor Pagto': 'Valor Pagto', 'Data Pagto': 'Data Pagto', 'Valor Dia': 'Valor Dia', 
+    'Dias a apagar': 'Dias a apagar', 'Gerenciadora': 'Gerenciadora', 'Nome': 'Nome', 'CPF': 'CPF', 
+    'Ordem': 'Ordem', 'Projeto': 'Projeto'
+}
+
 # Função para inicializar configurações padrão
 def initialize_config():
     if 'config' not in st.session_state:
@@ -84,7 +92,6 @@ def initialize_config():
             'auto_validar': True,
             'manter_historico': True,
             'limite_registros': 100000,
-            # Removido PDF do formato de exportação para evitar ModuleNotFoundError
             'formato_exportacao': 'Excel (.xlsx)', 
             'incluir_graficos': False 
         }
@@ -100,25 +107,30 @@ def initialize_config():
 def apply_filters(df, filters):
     df_filtered = df.copy()
     
-    # Filtro de Projeto
-    if filters['projeto'] and filters['projeto'] != 'All':
-        df_filtered = df_filtered[df_filtered['Projeto'].isin(filters['projeto'])]
+    # Garante a existência da coluna antes de filtrar
+    if 'Projeto' in df_filtered.columns:
+        if filters['projeto'] and filters['projeto'] != 'All':
+            df_filtered = df_filtered[df_filtered['Projeto'].isin(filters['projeto'])]
     
-    # Filtro de Gerenciadora
-    if filters['gerenciadora'] and filters['gerenciadora'] != 'All':
-        df_filtered = df_filtered[df_filtered['Gerenciadora'].isin(filters['gerenciadora'])]
+    if 'Gerenciadora' in df_filtered.columns:
+        if filters['gerenciadora'] and filters['gerenciadora'] != 'All':
+            df_filtered = df_filtered[df_filtered['Gerenciadora'].isin(filters['gerenciadora'])]
         
-    # Filtro de Valor Pagto Mínimo
-    df_filtered = df_filtered[df_filtered['Valor Pagto'] >= filters['valor_min']]
-    
-    # Filtro de Valor Pagto Máximo
-    df_filtered = df_filtered[df_filtered['Valor Pagto'] <= filters['valor_max']]
+    # Filtro de Valor Pagto (assume que a coluna Valor Pagto existe e é numérica após load_data)
+    if 'Valor Pagto' in df_filtered.columns:
+        df_filtered = df_filtered[df_filtered['Valor Pagto'] >= filters['valor_min']]
+        df_filtered = df_filtered[df_filtered['Valor Pagto'] <= filters['valor_max']]
 
     # Filtro de Data
-    if filters['data_inicio'] and filters['data_fim']:
+    if 'Data Pagto' in df_filtered.columns and filters['data_inicio'] and filters['data_fim']:
         data_col = pd.to_datetime(df_filtered['Data Pagto'], format='%d/%m/%Y', errors='coerce')
+        # Filtra apenas linhas onde a data foi convertida com sucesso E está no intervalo
+        valid_dates = data_col.notna()
+        df_filtered = df_filtered[valid_dates].copy() # Trabalha apenas com datas válidas
+        data_col_valid = data_col[valid_dates]
+        
         df_filtered = df_filtered[
-            (data_col >= filters['data_inicio']) & (data_col <= filters['data_fim'])
+            (data_col_valid >= filters['data_inicio']) & (data_col_valid <= filters['data_fim'])
         ]
     
     return df_filtered
@@ -127,16 +139,14 @@ def apply_filters(df, filters):
 @st.cache_data(show_spinner="Processando dados e realizando validações iniciais...")
 def load_data(uploaded_file):
     try:
-        # Tenta ler o arquivo CSV com delimitador ';' e encoding 'utf-8' (mais comum)
+        # Tenta ler o arquivo CSV
         df = pd.read_csv(uploaded_file, sep=';', encoding='utf-8', on_bad_lines='skip')
     except UnicodeDecodeError:
         try:
-            # Tenta 'latin-1' (compatível com Windows/pt-br)
-            uploaded_file.seek(0) # Volta o ponteiro do arquivo para o início
+            uploaded_file.seek(0)
             df = pd.read_csv(uploaded_file, sep=';', encoding='latin-1', on_bad_lines='skip')
             st.warning("⚠️ Arquivo lido usando encoding 'latin-1' para corrigir problemas de caracteres.")
         except Exception as e:
-            # Caso não funcione com latin-1, reporta o erro original
             st.error(f"Erro ao ler o arquivo: {e}")
             return pd.DataFrame()
     except Exception as e:
@@ -144,37 +154,51 @@ def load_data(uploaded_file):
         return pd.DataFrame()
 
     # Normalização dos nomes das colunas
-    df.columns = df.columns.str.strip().str.replace(' ', '_').str.replace('ã', 'a').str.replace('ç', 'c')
-    
-    # Renomear para os nomes esperados
-    col_map = {
-        'Num_Cartao': 'Num Cartao', 'Valor_Total': 'Valor Total', 'Valor_Desconto': 'Valor Desconto', 
-        'Valor_Pagto': 'Valor Pagto', 'Data_Pagto': 'Data Pagto', 'Valor_Dia': 'Valor Dia', 
-        'Dias_a_apagar': 'Dias a apagar', 'Gerenciadora': 'Gerenciadora', 'Nome': 'Nome', 'CPF': 'CPF', 'Ordem': 'Ordem', 'Projeto': 'Projeto'
-    }
-    df.rename(columns=col_map, inplace=True)
+    # 1. Renomeia para o formato esperado (sem acentos/espaços)
+    df.columns = df.columns.str.strip()
+    col_mapping = {}
+    for col_name in df.columns:
+        normalized_name = col_name.replace(' ', '_').replace('ã', 'a').replace('ç', 'c').replace('.', '').replace('/', '').replace('\\', '').strip()
+        # Mapeamento reverso para os nomes finais esperados
+        if normalized_name.lower() in [key.lower().replace(' ', '_').replace('ã', 'a').replace('ç', 'c') for key in REQUIRED_COLS.keys()]:
+            # Encontra o nome esperado original
+            for final_name, _ in REQUIRED_COLS.items():
+                if normalized_name.lower() == final_name.lower().replace(' ', '_').replace('ã', 'a').replace('ç', 'c'):
+                    col_mapping[col_name] = final_name
+                    break
+        else:
+             # Mantém o nome original se não for uma coluna mapeada
+            col_mapping[col_name] = col_name 
 
-    # Conversão de colunas numéricas
-    for col in ['Valor Total', 'Valor Desconto', 'Valor Pagto', 'Valor Dia']:
-        # Remove R$ and . and replace , with .
-        df[col] = df[col].astype(str).str.replace('R$', '', regex=False).str.replace('.', '', regex=False).str.replace(',', '.', regex=False).str.replace(' ', '', regex=False)
-        # Handle empty/NaN/invalid values before conversion
-        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0) # Convert to numeric
+    df.rename(columns=col_mapping, inplace=True)
     
-    # Desduplicação
+    # Colunas que DEVEM ser tratadas como numéricas (mesmo que com prefixo R$)
+    numeric_cols_to_process = ['Valor Total', 'Valor Desconto', 'Valor Pagto', 'Valor Dia']
+    
+    for col in numeric_cols_to_process:
+        if col in df.columns:
+            # Remove R$, . e substitui , por .
+            df[col] = df[col].astype(str).str.replace('R$', '', regex=False).str.replace('.', '', regex=False).str.replace(',', '.', regex=False).str.replace(' ', '', regex=False)
+            # Converte para numérico, tratando erros como NaN e preenchendo NaN com 0
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0) 
+
+    # Desduplicação (Apenas se as colunas existirem)
     dedup_cols = ['Ordem', 'CPF', 'Valor Pagto', 'Data Pagto']
-    initial_count = len(df)
-    
     if all(col in df.columns for col in dedup_cols):
+        initial_count = len(df)
         df.drop_duplicates(subset=dedup_cols, keep='first', inplace=True)
         final_count = len(df)
-        
         if initial_count != final_count:
             st.warning(f"⚠️ {initial_count - final_count} linhas duplicadas foram removidas. Total: {final_count}.")
     else:
         st.warning("Colunas necessárias para desduplicação (Ordem, CPF, Valor Pagto, Data Pagto) não encontradas.")
-
-
+    
+    # 🚨 PONTO CRÍTICO DE VALIDAÇÃO 🚨
+    # Garante que as colunas essenciais para o filtro existam
+    if 'Projeto' not in df.columns or 'Gerenciadora' not in df.columns or 'Valor Pagto' not in df.columns or 'Data Pagto' not in df.columns:
+        st.error("As colunas 'Projeto', 'Gerenciadora', 'Valor Pagto' e 'Data Pagto' são obrigatórias e não foram identificadas corretamente na base após o processamento. Verifique o cabeçalho do seu arquivo.")
+        return pd.DataFrame()
+        
     # Adicionar coluna de Mês/Ano para análise temporal
     df['Mes_Ano'] = pd.to_datetime(df['Data Pagto'], format='%d/%m/%Y', errors='coerce').dt.to_period('M')
     
@@ -253,8 +277,11 @@ uploaded_file = st.sidebar.file_uploader(
 
 if uploaded_file and 'data' not in st.session_state:
     st.session_state['data'] = load_data(uploaded_file)
-    # Força a re-execução para garantir que os filtros iniciais sejam aplicados
-    # Após o carregamento, o fluxo abaixo fará o cálculo inicial.
+    # Se o DataFrame estiver vazio após o load_data, exibe uma mensagem de erro e interrompe
+    if st.session_state['data'].empty:
+        st.session_state.pop('data', None) # Remove a chave 'data' para não entrar no loop
+        st.stop()
+    st.rerun() # Força a re-execução para entrar no fluxo principal com os dados
 
 if 'data' in st.session_state and not st.session_state['data'].empty:
     df = st.session_state['data']
@@ -262,7 +289,8 @@ if 'data' in st.session_state and not st.session_state['data'].empty:
     # Informações básicas na sidebar
     st.sidebar.markdown("### 📊 STATUS DA BASE")
     st.sidebar.metric("Linhas Carregadas", len(df))
-    st.sidebar.metric("Projetos Únicos", df['Projeto'].nunique())
+    if 'Projeto' in df.columns:
+        st.sidebar.metric("Projetos Únicos", df['Projeto'].nunique())
     
     # Botão de Limpar Dados
     if st.sidebar.button("🧹 Limpar dados carregados", type="secondary", use_container_width=True):
@@ -291,109 +319,120 @@ df = st.session_state['data']
 st.sidebar.markdown("### 🔍 FILTROS DE ANÁLISE")
 
 # Definir valores padrão para os filtros
-unique_projects = sorted(df['Projeto'].unique())
-unique_gerenciadoras = sorted(df['Gerenciadora'].dropna().unique())
-valor_min, valor_max = float(df['Valor Pagto'].min()), float(df['Valor Pagto'].max())
-data_col_dt = pd.to_datetime(df['Data Pagto'], format='%d/%m/%Y', errors='coerce').dropna()
-min_date = data_col_dt.min().date() if not data_col_dt.empty else datetime.now().date()
-max_date = data_col_dt.max().date() if not data_col_dt.empty else datetime.now().date()
-
-# Recupera filtros armazenados ou define padrões
-if 'filters' not in st.session_state:
-    st.session_state['filters'] = {
-        'projeto': unique_projects,
-        'gerenciadora': unique_gerenciadoras,
-        'valor_min': valor_min,
-        'valor_max': valor_max,
-        'data_inicio': min_date,
-        'data_fim': max_date
-    }
-
-stored_filters = st.session_state['filters']
-
-
-# Filtro de Múltipla Seleção (Projeto)
-selected_projects = st.sidebar.multiselect(
-    "Projetos:",
-    options=unique_projects,
-    default=stored_filters.get('projeto', unique_projects),
-    help="Selecione os projetos para análise."
-)
-
-# Filtro de Múltipla Seleção (Gerenciadora)
-selected_gerenciadoras = st.sidebar.multiselect(
-    "Gerenciadoras:",
-    options=unique_gerenciadoras,
-    default=stored_filters.get('gerenciadora', unique_gerenciadoras),
-    help="Selecione as gerenciadoras para análise."
-)
-
-# Filtro de Range de Valor
-selected_min_value, selected_max_value = st.sidebar.slider(
-    "Valor de Pagamento (R$):",
-    min_value=valor_min,
-    max_value=valor_max,
-    value=(stored_filters.get('valor_min', valor_min), stored_filters.get('valor_max', valor_max)),
-    step=100.0,
-    format='R$ %.2f'
-)
-
-# Filtro de Range de Data
-try:
-    # Garante que as datas padrão estejam dentro do range de min_date e max_date
-    default_start = stored_filters.get('data_inicio', min_date)
-    default_end = stored_filters.get('data_fim', max_date)
+# 🚨 PONTO DE CORREÇÃO: Usar validação para evitar quebra 🚨
+if 'Projeto' in df.columns and 'Gerenciadora' in df.columns and 'Valor Pagto' in df.columns and 'Data Pagto' in df.columns:
+    unique_projects = sorted(df['Projeto'].unique())
+    unique_gerenciadoras = sorted(df['Gerenciadora'].dropna().unique())
+    valor_min, valor_max = float(df['Valor Pagto'].min()), float(df['Valor Pagto'].max())
     
-    # Ajusta as datas padrão se elas estiverem fora do intervalo atual da base
-    if default_start < min_date: default_start = min_date
-    if default_end > max_date: default_end = max_date
-    
-    selected_date_range = st.sidebar.date_input(
-        "Período de Pagamento:",
-        value=(default_start, default_end),
-        min_value=min_date,
-        max_value=max_date
-    )
-    if len(selected_date_range) == 2:
-        start_date = selected_date_range[0]
-        end_date = selected_date_range[1]
+    # Processamento seguro de datas
+    data_col_dt = pd.to_datetime(df['Data Pagto'], format='%d/%m/%Y', errors='coerce').dropna()
+    if not data_col_dt.empty:
+        min_date = data_col_dt.min().date()
+        max_date = data_col_dt.max().date()
     else:
+        # Fallback para data atual se a coluna Data Pagto for inválida/vazia
+        min_date = datetime(2020, 1, 1).date()
+        max_date = datetime.now().date()
+    
+    # Recupera filtros armazenados ou define padrões
+    if 'filters' not in st.session_state:
+        st.session_state['filters'] = {
+            'projeto': unique_projects,
+            'gerenciadora': unique_gerenciadoras,
+            'valor_min': valor_min,
+            'valor_max': valor_max,
+            'data_inicio': min_date,
+            'data_fim': max_date
+        }
+
+    stored_filters = st.session_state['filters']
+
+
+    # Filtro de Múltipla Seleção (Projeto)
+    selected_projects = st.sidebar.multiselect(
+        "Projetos:",
+        options=unique_projects,
+        default=stored_filters.get('projeto', unique_projects),
+        help="Selecione os projetos para análise."
+    )
+
+    # Filtro de Múltipla Seleção (Gerenciadora)
+    selected_gerenciadoras = st.sidebar.multiselect(
+        "Gerenciadoras:",
+        options=unique_gerenciadoras,
+        default=stored_filters.get('gerenciadora', unique_gerenciadoras),
+        help="Selecione as gerenciadoras para análise."
+    )
+
+    # Filtro de Range de Valor
+    selected_min_value, selected_max_value = st.sidebar.slider(
+        "Valor de Pagamento (R$):",
+        min_value=valor_min,
+        max_value=valor_max,
+        value=(stored_filters.get('valor_min', valor_min), stored_filters.get('valor_max', valor_max)),
+        step=100.0,
+        format='R$ %.2f'
+    )
+
+    # Filtro de Range de Data
+    try:
+        # Garante que as datas padrão estejam dentro do range de min_date e max_date
+        default_start = stored_filters.get('data_inicio', min_date)
+        default_end = stored_filters.get('data_fim', max_date)
+        
+        # Ajusta as datas padrão se elas estiverem fora do intervalo atual da base
+        if default_start < min_date: default_start = min_date
+        if default_end > max_date: default_end = max_date
+        
+        selected_date_range = st.sidebar.date_input(
+            "Período de Pagamento:",
+            value=(default_start, default_end),
+            min_value=min_date,
+            max_value=max_date
+        )
+        if len(selected_date_range) == 2:
+            start_date = selected_date_range[0]
+            end_date = selected_date_range[1]
+        else:
+            start_date, end_date = None, None
+    except Exception:
         start_date, end_date = None, None
-except Exception:
-    start_date, end_date = None, None
-    st.sidebar.error("Problema ao carregar o filtro de datas. Verifique a coluna 'Data Pagto'.")
+        st.sidebar.error("Problema ao carregar o filtro de datas. Verifique a coluna 'Data Pagto'.")
+        
+    # Dicionário dos filtros atuais dos widgets
+    current_filters = {
+        'projeto': selected_projects,
+        'gerenciadora': selected_gerenciadoras,
+        'valor_min': selected_min_value,
+        'valor_max': selected_max_value,
+        'data_inicio': start_date,
+        'data_fim': end_date
+    }
+    
+    # Botão para aplicar filtros
+    if st.sidebar.button("✅ APLICAR FILTROS E RECALCULAR", type="primary", use_container_width=True):
+        st.session_state['filters'] = current_filters
+        st.session_state['df_analise'] = apply_filters(df, current_filters)
+        st.session_state['df_pendencias'] = st.session_state['df_analise'][st.session_state['df_analise']['Pendencia'] == True].copy()
+        st.success("Filtros aplicados e análise recalculada!")
+        st.rerun() 
+        
+    # === LÓGICA DE CÁLCULO INICIAL OU APÓS RECARGA ===
+    # Se o df_analise não foi populado, aplica os filtros iniciais.
+    if st.session_state['df_analise'].empty or len(st.session_state['df_analise']) == 0:
+        st.session_state['df_analise'] = apply_filters(df, current_filters)
+        st.session_state['df_pendencias'] = st.session_state['df_analise'][st.session_state['df_analise']['Pendencia'] == True].copy()
 
+    df_analise = st.session_state['df_analise']
+    df_pendencias = st.session_state['df_pendencias']
 
-# Dicionário dos filtros atuais dos widgets
-current_filters = {
-    'projeto': selected_projects,
-    'gerenciadora': selected_gerenciadoras,
-    'valor_min': selected_min_value,
-    'valor_max': selected_max_value,
-    'data_inicio': start_date,
-    'data_fim': end_date
-}
-
-# Botão para aplicar filtros
-if st.sidebar.button("✅ APLICAR FILTROS E RECALCULAR", type="primary", use_container_width=True):
-    # Ao clicar no botão, armazena os filtros e recalcula a análise
-    st.session_state['filters'] = current_filters
-    st.session_state['df_analise'] = apply_filters(df, current_filters)
-    st.session_state['df_pendencias'] = st.session_state['df_analise'][st.session_state['df_analise']['Pendencia'] == True].copy()
-    st.success("Filtros aplicados e análise recalculada!")
-    st.rerun() # Força o Streamlit a atualizar todo o dashboard
-
-
-# === LÓGICA DE CÁLCULO INICIAL OU APÓS RECARGA ===
-# Se o df_analise não foi populado OU o arquivo foi recém-carregado/limpo, 
-# aplica os filtros iniciais baseados nos defaults dos widgets.
-if st.session_state['df_analise'].empty or 'data' in st.session_state and not st.session_state['df_analise'].equals(df):
-    st.session_state['df_analise'] = apply_filters(df, current_filters)
-    st.session_state['df_pendencias'] = st.session_state['df_analise'][st.session_state['df_analise']['Pendencia'] == True].copy()
-
-
-df_analise = st.session_state['df_analise']
-df_pendencias = st.session_state['df_pendencias']
+else:
+    # Se alguma coluna obrigatória estiver faltando, usa DataFrames vazios para evitar quebra
+    df_analise = pd.DataFrame()
+    df_pendencias = pd.DataFrame()
+    st.info("Aguardando o carregamento correto da base de dados. Verifique as mensagens de erro.")
+    st.stop()
 
 # ============================================
 # 🖥️ VISUALIZAÇÃO PRINCIPAL (ABAS)
@@ -408,7 +447,8 @@ aba_dashboard, aba_processamento, aba_pendencias, aba_config = st.tabs([
 # ===========================================
 with aba_dashboard:
     if df_analise.empty:
-        st.warning("Nenhum dado corresponde aos filtros aplicados. Tente ajustar os filtros na barra lateral.")
+        st.warning("Nenhum dado corresponde aos filtros aplicados ou a base de dados não foi carregada corretamente. Tente ajustar os filtros na barra lateral.")
+        # Se df_analise está vazio, não tente calcular métricas
         st.stop()
 
     col1, col2, col3, col4 = st.columns(4)
@@ -416,7 +456,7 @@ with aba_dashboard:
     # Cálculo dos KPIs
     total_pago = df_analise['Valor Pagto'].sum()
     num_pagamentos = len(df_analise) 
-    num_beneficiarios = df_analise['CPF'].nunique()
+    num_beneficiarios = df_analise['CPF'].nunique() if 'CPF' in df_analise.columns else 0
     num_pendencias = len(df_pendencias)
     
     # Métricas Principais
@@ -440,62 +480,64 @@ with aba_dashboard:
     
     st.markdown("---")
     
-    # 2. Análise por Projeto e Gerenciadora
-    col_g1, col_g2 = st.columns([1, 2])
-    
-    with col_g1:
-        st.markdown('<p class="chart-title">Distribuição por Gerenciadora</p>', unsafe_allow_html=True)
-        fig_pie = create_gerenciadora_pie_chart(df_analise)
-        st.plotly_chart(fig_pie, use_container_width=True)
+    # 2. Análise por Projeto e Gerenciadora (Apenas se as colunas existirem)
+    if 'Gerenciadora' in df_analise.columns and 'Projeto' in df_analise.columns:
+        col_g1, col_g2 = st.columns([1, 2])
         
-    with col_g2:
-        st.markdown('<p class="chart-title">🏛️ VALORES TOTAIS POR PROJETO</p>', unsafe_allow_html=True)
+        with col_g1:
+            st.markdown('<p class="chart-title">Distribuição por Gerenciadora</p>', unsafe_allow_html=True)
+            fig_pie = create_gerenciadora_pie_chart(df_analise)
+            st.plotly_chart(fig_pie, use_container_width=True)
+            
+        with col_g2:
+            st.markdown('<p class="chart-title">🏛️ VALORES TOTAIS POR PROJETO</p>', unsafe_allow_html=True)
+            
+            df_proj = df_analise.groupby('Projeto').agg(
+                Valor_Total_Pago=('Valor Pagto', 'sum'),
+                Valor_Total_Bruto=('Valor Total', 'sum'),
+                Total_Beneficiarios=('CPF', 'nunique'),
+                Media_Pagto=('Valor Pagto', 'mean')
+            ).reset_index()
+            
+            # Renaming for display
+            df_proj.columns = ['Projeto', 'Valor Total Pago', 'Valor Total Bruto', 'Total de Beneficiários', 'Média de Pagamento']
+            
+            fig_bar = create_project_bar_chart(df_proj)
+            st.plotly_chart(fig_bar, use_container_width=True)
+            
+        st.markdown("---")
+
+    # 3. Análise Temporal (Apenas se a coluna Mes_Ano existir)
+    if 'Mes_Ano' in df_analise.columns:
+        st.markdown("### 📈 ANÁLISE TEMPORAL (PAGAMENTO MÊS/ANO)")
         
-        df_proj = df_analise.groupby('Projeto').agg(
+        df_tempo = df_analise.groupby('Mes_Ano').agg(
             Valor_Total_Pago=('Valor Pagto', 'sum'),
-            Valor_Total_Bruto=('Valor Total', 'sum'),
-            Total_Beneficiarios=('CPF', 'nunique'),
-            Media_Pagto=('Valor Pagto', 'mean')
+            Total_Pagamentos=('Ordem', 'nunique')
         ).reset_index()
         
-        # Renaming for display
-        df_proj.columns = ['Projeto', 'Valor Total Pago', 'Valor Total Bruto', 'Total de Beneficiários', 'Média de Pagamento']
+        df_tempo['Mes_Ano_str'] = df_tempo['Mes_Ano'].astype(str)
         
-        fig_bar = create_project_bar_chart(df_proj)
-        st.plotly_chart(fig_bar, use_container_width=True)
+        fig_line = px.line(
+            df_tempo,
+            x='Mes_Ano_str',
+            y='Valor_Total_Pago',
+            title='Evolução Mensal do Valor Total Pago',
+            markers=True,
+            text='Valor_Total_Pago'
+        )
         
-    st.markdown("---")
-
-    # 3. Análise Temporal
-    st.markdown("### 📈 ANÁLISE TEMPORAL (PAGAMENTO MÊS/ANO)")
-    
-    df_tempo = df_analise.groupby('Mes_Ano').agg(
-        Valor_Total_Pago=('Valor Pagto', 'sum'),
-        Total_Pagamentos=('Ordem', 'nunique')
-    ).reset_index()
-    
-    df_tempo['Mes_Ano_str'] = df_tempo['Mes_Ano'].astype(str)
-    
-    fig_line = px.line(
-        df_tempo,
-        x='Mes_Ano_str',
-        y='Valor_Total_Pago',
-        title='Evolução Mensal do Valor Total Pago',
-        markers=True,
-        text='Valor_Total_Pago'
-    )
-    
-    fig_line.update_traces(
-        texttemplate='R$ %{text:,.2s}', 
-        textposition="top center",
-        line=dict(color=px.colors.qualitative.Dark24[0], width=3),
-    )
-    fig_line.update_layout(
-        xaxis_title="Mês/Ano",
-        yaxis_title="Valor Total Pago (R$)",
-        xaxis_tickangle=-45
-    )
-    st.plotly_chart(fig_line, use_container_width=True)
+        fig_line.update_traces(
+            texttemplate='R$ %{text:,.2s}', 
+            textposition="top center",
+            line=dict(color=px.colors.qualitative.Dark24[0], width=3),
+        )
+        fig_line.update_layout(
+            xaxis_title="Mês/Ano",
+            yaxis_title="Valor Total Pago (R$)",
+            xaxis_tickangle=-45
+        )
+        st.plotly_chart(fig_line, use_container_width=True)
 
 # ===========================================
 # 🛠️ Aba Processamento e Exportação
@@ -565,7 +607,12 @@ with aba_pendencias:
         st.success("🎉 Nenhum registro com pendência de validação básica encontrado na seleção atual.")
     else:
         st.metric("Total de Pendências", len(df_pendencias))
-        st.dataframe(df_pendencias[['Ordem', 'Nome', 'CPF', 'Valor Pagto', 'Data Pagto', 'Projeto', 'Gerenciadora', 'Pendencia']], 
+        
+        # Filtra apenas as colunas que existem no df_pendencias
+        display_cols = ['Ordem', 'Nome', 'CPF', 'Valor Pagto', 'Data Pagto', 'Projeto', 'Gerenciadora', 'Pendencia']
+        cols_to_display = [col for col in display_cols if col in df_pendencias.columns]
+        
+        st.dataframe(df_pendencias[cols_to_display], 
                      use_container_width=True)
         
         st.markdown("---")
