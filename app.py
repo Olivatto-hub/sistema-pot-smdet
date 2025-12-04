@@ -12,13 +12,17 @@ import time
 # 1. CONFIGURAÇÕES E SEGURANÇA
 # ==============================================================================
 st.set_page_config(
-    page_title="SGM-POT | Sistema de Gerenciamento",
+    page_title="SMDET-POT | Sistema de Gestão",
     page_icon="🏛️",
     layout="wide"
 )
 
 # Senha padrão: 'smdet2025'
 SENHA_PADRAO_HASH = hashlib.sha256("smdet2025".encode()).hexdigest()
+
+# TRAVA DE SEGURANÇA FINANCEIRA
+# Qualquer linha no CSV com valor acima disso será considerada "Linha de Total" ou erro e será ignorada.
+TETO_MAXIMO_BENEFICIO = 5000.00 
 
 def hash_senha(senha):
     return hashlib.sha256(senha.encode()).hexdigest()
@@ -39,7 +43,7 @@ def init_db():
     c.execute('''CREATE TABLE IF NOT EXISTS usuarios (
         email TEXT PRIMARY KEY, nome TEXT, senha_hash TEXT, perfil TEXT, trocar_senha BOOLEAN)''')
     
-    # Cria usuário Admin padrão se não existir
+    # Cria usuário Admin TI padrão se não existir
     c.execute("SELECT * FROM usuarios WHERE email = 'admin.ti@prefeitura.sp.gov.br'")
     if not c.fetchone():
         c.execute("INSERT INTO usuarios VALUES (?, ?, ?, ?, ?)", 
@@ -128,27 +132,36 @@ def processar_dataframe(df, nome_arquivo, ano_selecionado):
     c = conn.cursor()
     projeto_inf, mes_inf = inferir_metadados(nome_arquivo)
     
-    # === CORREÇÃO CRÍTICA DO VALOR DOBRADO ===
-    # 1. Normalizar colunas primeiro para achar 'num_cartao'
+    # 1. Normalizar colunas
     df = normalizar_colunas(df)
     
-    # 2. Verificar se colunas essenciais existem
+    # 2. Validação Básica de Estrutura
     if 'num_cartao' not in df.columns or 'nome' not in df.columns:
         conn.close()
         return 0, 0.0, "Erro: Colunas 'Num Cartao' ou 'Nome' não encontradas."
 
-    # 3. Filtro Rigoroso: Remove linhas onde Num Cartão não é numérico
-    # Isso elimina linhas de "Total", rodapés e cabeçalhos repetidos
+    # 3. FILTRO RIGOROSO (Anti-Duplicação e Anti-Total)
+    # Remove linhas onde cartão é NaN (cabeçalhos, rodapés, linhas vazias)
+    # Primeiro forçamos conversão numérica, textos viram NaN
     df['num_cartao_limpo'] = pd.to_numeric(df['num_cartao'], errors='coerce')
     df_clean = df.dropna(subset=['num_cartao_limpo']).copy()
     
-    # 4. Filtro Adicional: Remove se Nome for NaN ou vazio
+    # Filtro Adicional: Remove se Nome for NaN ou vazio
     df_clean = df_clean.dropna(subset=['nome'])
     
     total_registros = 0
     valor_acumulado = 0.0
     
     for _, row in df_clean.iterrows():
+        # Limpeza e Tratamento do Valor
+        valor_float = limpar_moeda(row.get('valor_liquido', 0))
+        
+        # === TRAVA DE SEGURANÇA FINANCEIRA ===
+        # Se o valor for maior que o teto (R$ 5.000,00), ignoramos a linha
+        # pois certamente é uma linha de totalização ou erro de digitação.
+        if valor_float > TETO_MAXIMO_BENEFICIO:
+            continue
+
         # Identificação (CPF ou RG)
         cpf_raw = str(row.get('cpf', ''))
         cpf_limpo = re.sub(r'\D', '', cpf_raw)
@@ -178,11 +191,10 @@ def processar_dataframe(df, nome_arquivo, ano_selecionado):
                 data_atualizacao=excluded.data_atualizacao
         ''', (identificador, nome, str(row.get('rg','')), projeto_inf, datetime.now()))
         
-        # B. Processa Pagamento
-        valor_float = limpar_moeda(row.get('valor_liquido', 0))
-        
+        # B. Processa Pagamento (Se valor > 0)
         if valor_float > 0:
             # Verifica se este pagamento JÁ EXISTE para evitar duplicidade de importação
+            # Chave de unicidade: CPF + Mês + Ano + Projeto + Valor (para garantir)
             c.execute('''
                 SELECT id FROM pagamentos 
                 WHERE cpf_beneficiario=? AND mes_referencia=? AND ano_referencia=? AND projeto=?
@@ -213,7 +225,7 @@ def tela_login():
     st.markdown("<br><br>", unsafe_allow_html=True)
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
-        st.markdown("<h2 style='text-align: center;'>🔐 Acesso SGM-POT</h2>", unsafe_allow_html=True)
+        st.markdown("<h2 style='text-align: center;'>🔐 Acesso SMDET-POT</h2>", unsafe_allow_html=True)
         with st.form("login"):
             email = st.text_input("E-mail Institucional")
             senha = st.text_input("Senha", type="password")
@@ -264,7 +276,7 @@ def tela_upload():
                 bar.progress((i+1)/len(files))
 
 def tela_dashboard():
-    st.header("📊 Painel de Controle")
+    st.header("📊 Sistema de Gestão e Monitoramento de Pagamentos POT")
     st.markdown("---")
     
     conn = init_db()
@@ -318,18 +330,23 @@ def tela_dashboard():
         st.write(df['status'].value_counts())
 
     st.subheader("Detalhamento dos Pagamentos")
-    # Correção do Erro de Coluna: Agora usamos as colunas certas do SQL
     st.dataframe(df[['nome_beneficiario', 'projeto', 'valor_liquido', 'status', 'mes_referencia']].head(1000))
 
 def tela_admin():
     st.header("⚙️ Administração do Sistema")
     st.markdown("---")
     
-    tab1, tab2 = st.tabs(["Usuários", "Banco de Dados"])
+    # Verifica Perfil para mostrar abas
+    usuario_atual = st.session_state['usuario']
+    
+    if usuario_atual['perfil'] == 'ADMIN_TI':
+        tab1, tab2 = st.tabs(["Gestão de Usuários", "Manutenção de Banco"])
+    else:
+        tab1, = st.tabs(["Gestão de Usuários"]) # Admin Área só vê Usuários
     
     with tab1:
         with st.form("novo_user"):
-            st.subheader("Cadastrar Usuário")
+            st.subheader("Cadastrar Novo Usuário")
             nome = st.text_input("Nome")
             email = st.text_input("E-mail (@prefeitura)")
             perfil = st.selectbox("Perfil", ["USUARIO", "ADMIN_AREA"])
@@ -351,14 +368,15 @@ def tela_admin():
         st.dataframe(pd.read_sql("SELECT nome, email, perfil FROM usuarios", conn))
         conn.close()
 
-    with tab2:
-        st.error("⚠️ **Zona de Perigo**")
-        st.warning("Esta ação apagará TODOS os dados de pagamentos e beneficiários. Use apenas para reiniciar o sistema.")
-        if st.button("LIMPAR TODO O BANCO DE DADOS", type="primary"):
-            if limpar_banco_dados():
-                st.success("Banco limpo com sucesso!")
-                time.sleep(2)
-                st.rerun()
+    if usuario_atual['perfil'] == 'ADMIN_TI':
+        with tab2:
+            st.error("⚠️ **Zona de Perigo (TI)**")
+            st.warning("Esta ação apagará TODOS os dados de pagamentos e beneficiários. Use apenas para reiniciar o sistema.")
+            if st.button("LIMPAR TODO O BANCO DE DADOS", type="primary"):
+                if limpar_banco_dados():
+                    st.success("Banco limpo com sucesso!")
+                    time.sleep(2)
+                    st.rerun()
 
 # ==============================================================================
 # 5. CONTROLE DE NAVEGAÇÃO
@@ -389,8 +407,9 @@ else:
     else:
         # Menu Lateral
         with st.sidebar:
-            st.title("SGM-POT")
+            st.title("SMDET-POT")
             st.write(f"👤 {st.session_state['usuario']['nome']}")
+            st.caption(f"Perfil: {st.session_state['usuario']['perfil']}")
             st.markdown("---")
             menu = st.radio("Navegação", ["Dashboard", "Importação", "Administração", "Sair"])
             
