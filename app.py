@@ -54,10 +54,19 @@ def init_db():
     c.execute('''CREATE TABLE IF NOT EXISTS beneficiarios (
         cpf TEXT PRIMARY KEY, nome TEXT, rg TEXT, projeto_atual TEXT, data_atualizacao DATETIME)''')
 
-    # Tabela de Pagamentos
+    # Tabela de Pagamentos (Adicionada coluna gerenciadora)
+    # Verifica se a coluna gerenciadora existe, se não, adiciona (migração)
+    try:
+        c.execute("SELECT gerenciadora FROM pagamentos LIMIT 1")
+    except sqlite3.OperationalError:
+        try:
+            c.execute("ALTER TABLE pagamentos ADD COLUMN gerenciadora TEXT")
+        except:
+            pass # Tabela pode não existir ainda, será criada abaixo
+
     c.execute('''CREATE TABLE IF NOT EXISTS pagamentos (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        cpf_beneficiario TEXT, num_cartao TEXT, projeto TEXT, 
+        cpf_beneficiario TEXT, num_cartao TEXT, projeto TEXT, gerenciadora TEXT,
         mes_referencia TEXT, ano_referencia INTEGER,
         valor_liquido REAL, data_pagamento TEXT, status TEXT, 
         arquivo_origem TEXT, data_importacao DATETIME,
@@ -92,7 +101,9 @@ def normalizar_colunas(df):
         'Nome': 'nome', 'NOME': 'nome', 'Nome do beneficiário': 'nome',
         'RG': 'rg', 'CPF': 'cpf',
         'Valor Pagto': 'valor_liquido', 'ValorPagto': 'valor_liquido', 'Valor Pagto ': 'valor_liquido',
-        'Projeto': 'projeto', 'Data Pagto': 'data_pagto', 'DataPagto': 'data_pagto'
+        'Valor Total': 'valor_bruto', # Mapeamos mas não usaremos para soma
+        'Projeto': 'projeto', 'Data Pagto': 'data_pagto', 'DataPagto': 'data_pagto',
+        'Gerenciadora': 'gerenciadora', 'GERENCIADORA': 'gerenciadora'
     }
     df.rename(columns=mapa, inplace=True)
     return df
@@ -111,10 +122,13 @@ def limpar_moeda(valor):
 def inferir_metadados(filename):
     fn = filename.upper()
     projeto = "GERAL"
+    
+    # Inferência de Projeto
     if "ADS" in fn: projeto = "ADS"
     elif "ZELADORES" in fn: projeto = "ZELADORES"
     elif "ESPORTE" in fn: projeto = "ESPORTE"
     elif "GAE" in fn: projeto = "GAE"
+    elif "ABAE" in fn: projeto = "BUSCA ATIVA" # Correção solicitada
     elif "ABASTECE" in fn: projeto = "ABASTECE"
     elif "DEFESA" in fn: projeto = "DEFESA CIVIL"
     elif "TELECENTRO" in fn: projeto = "TELECENTRO"
@@ -140,27 +154,51 @@ def processar_dataframe(df, nome_arquivo, ano_selecionado):
         conn.close()
         return 0, 0.0, "Erro: Colunas 'Num Cartao' ou 'Nome' não encontradas."
 
-    # 3. FILTRO RIGOROSO (Anti-Duplicação e Anti-Total)
-    # Remove linhas onde cartão é NaN (cabeçalhos, rodapés, linhas vazias)
-    # Primeiro forçamos conversão numérica, textos viram NaN
-    df['num_cartao_limpo'] = pd.to_numeric(df['num_cartao'], errors='coerce')
-    df_clean = df.dropna(subset=['num_cartao_limpo']).copy()
+    # 3. Remover registros anteriores DESTE MESMO ARQUIVO para evitar duplicação em re-upload
+    c.execute("DELETE FROM pagamentos WHERE arquivo_origem = ?", (nome_arquivo,))
+
+    # 4. FILTRO RIGOROSO (Anti-Total e Anti-Vazio)
     
-    # Filtro Adicional: Remove se Nome for NaN ou vazio
+    # a) Converter Num Cartao para numérico (força erros/textos a virarem NaN)
+    df['num_cartao_limpo'] = pd.to_numeric(df['num_cartao'], errors='coerce')
+    
+    # b) Descartar linhas onde Num Cartao é NaN ou 0
+    df_clean = df.dropna(subset=['num_cartao_limpo']).copy()
+    df_clean = df_clean[df_clean['num_cartao_limpo'] > 0]
+    
+    # c) Descartar linhas onde Nome é vazio
     df_clean = df_clean.dropna(subset=['nome'])
+    
+    # d) Preparar Valor Líquido e Aplicar Teto
+    # Garante que pegamos a coluna 'valor_liquido' (Valor Pagto) e não 'valor_bruto' (Valor Total)
+    if 'valor_liquido' not in df_clean.columns:
+         conn.close()
+         return 0, 0.0, "Erro: Coluna 'Valor Pagto' não encontrada."
+         
+    df_clean['vlr_tratado'] = df_clean['valor_liquido'].apply(limpar_moeda)
+    
+    # === FILTRO CRÍTICO ===
+    # Filtra valores inválidos (<= 0) ou linhas de Total (> 5000)
+    df_clean = df_clean[
+        (df_clean['vlr_tratado'] > 0) & 
+        (df_clean['vlr_tratado'] < TETO_MAXIMO_BENEFICIO)
+    ]
     
     total_registros = 0
     valor_acumulado = 0.0
     
     for _, row in df_clean.iterrows():
-        # Limpeza e Tratamento do Valor
-        valor_float = limpar_moeda(row.get('valor_liquido', 0))
-        
-        # === TRAVA DE SEGURANÇA FINANCEIRA ===
-        # Se o valor for maior que o teto (R$ 5.000,00), ignoramos a linha
-        # pois certamente é uma linha de totalização ou erro de digitação.
-        if valor_float > TETO_MAXIMO_BENEFICIO:
-            continue
+        # Definição do Projeto (Prioriza a coluna da planilha, depois o nome do arquivo)
+        proj_linha = str(row.get('projeto', '')).strip().upper()
+        if proj_linha and proj_linha not in ['NAN', 'NONE', '']:
+            projeto_final = proj_linha
+        else:
+            projeto_final = projeto_inf
+
+        # Definição da Gerenciadora
+        gerenciadora = str(row.get('gerenciadora', 'N/D')).strip().upper()
+        if gerenciadora in ['NAN', 'NONE', '']:
+            gerenciadora = 'N/D'
 
         # Identificação (CPF ou RG)
         cpf_raw = str(row.get('cpf', ''))
@@ -177,10 +215,10 @@ def processar_dataframe(df, nome_arquivo, ano_selecionado):
                 identificador = rg_limpo
         
         if not identificador: 
-            continue # Pula se não identificar a pessoa
+            continue 
 
         nome = str(row.get('nome', 'Beneficiário')).upper()
-        if "TOTAL" in nome: continue # Segurança extra contra linhas de total
+        if "TOTAL" in nome: continue # Segurança extra
         
         # A. Atualiza/Cria Beneficiário
         c.execute('''
@@ -188,30 +226,33 @@ def processar_dataframe(df, nome_arquivo, ano_selecionado):
             VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(cpf) DO UPDATE SET
                 nome=excluded.nome,
+                projeto_atual=excluded.projeto_atual,
                 data_atualizacao=excluded.data_atualizacao
-        ''', (identificador, nome, str(row.get('rg','')), projeto_inf, datetime.now()))
+        ''', (identificador, nome, str(row.get('rg','')), projeto_final, datetime.now()))
         
-        # B. Processa Pagamento (Se valor > 0)
-        if valor_float > 0:
-            # Verifica se este pagamento JÁ EXISTE para evitar duplicidade de importação
-            # Chave de unicidade: CPF + Mês + Ano + Projeto + Valor (para garantir)
+        # B. Processa Pagamento
+        valor_float = row['vlr_tratado']
+        
+        # Verifica duplicidade REAL (Pessoa + Mês + Ano + Projeto já pagos?)
+        # Isso previne duplicidade mesmo se o arquivo tiver nome diferente
+        c.execute('''
+            SELECT id FROM pagamentos 
+            WHERE cpf_beneficiario=? AND mes_referencia=? AND ano_referencia=? AND projeto=?
+        ''', (identificador, mes_inf, ano_selecionado, projeto_final))
+        
+        if not c.fetchone():
             c.execute('''
-                SELECT id FROM pagamentos 
-                WHERE cpf_beneficiario=? AND mes_referencia=? AND ano_referencia=? AND projeto=?
-            ''', (identificador, mes_inf, ano_selecionado, projeto_inf))
+                INSERT INTO pagamentos (
+                    cpf_beneficiario, num_cartao, projeto, gerenciadora,
+                    mes_referencia, ano_referencia,
+                    valor_liquido, data_pagamento, status, arquivo_origem, data_importacao
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (identificador, str(int(row['num_cartao_limpo'])), projeto_final, gerenciadora,
+                  mes_inf, ano_selecionado, valor_float, str(row.get('data_pagto', '')),
+                  'Processando', nome_arquivo, datetime.now()))
             
-            if not c.fetchone():
-                c.execute('''
-                    INSERT INTO pagamentos (
-                        cpf_beneficiario, num_cartao, projeto, mes_referencia, ano_referencia,
-                        valor_liquido, data_pagamento, status, arquivo_origem, data_importacao
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (identificador, str(int(row['num_cartao_limpo'])), projeto_inf,
-                      mes_inf, ano_selecionado, valor_float, str(row.get('data_pagto', '')),
-                      'Processando', nome_arquivo, datetime.now()))
-                
-                total_registros += 1
-                valor_acumulado += valor_float
+            total_registros += 1
+            valor_acumulado += valor_float
 
     conn.commit()
     conn.close()
@@ -258,7 +299,7 @@ def tela_upload():
             
             for i, f in enumerate(files):
                 try:
-                    # Detecta separador
+                    # Detecta separador e lê
                     content = f.getvalue().decode("utf-8", errors='replace')
                     sep = ';' if ';' in content.split('\n')[0] else ','
                     
@@ -268,7 +309,7 @@ def tela_upload():
                     if "Erro" in status:
                         log_container.error(f"❌ {f.name}: {status}")
                     else:
-                        log_container.success(f"✅ {f.name}: {qtd} pagamentos novos inseridos (Total: R$ {val:,.2f})")
+                        log_container.success(f"✅ {f.name}: {qtd} pagamentos inseridos (Total: R$ {val:,.2f})")
                         
                 except Exception as e:
                     log_container.error(f"❌ Erro crítico em {f.name}: {e}")
@@ -289,7 +330,7 @@ def tela_dashboard():
     
     # Query Base
     sql = """
-        SELECT p.projeto, p.valor_liquido, p.status, p.mes_referencia, p.cpf_beneficiario, b.nome as nome_beneficiario
+        SELECT p.projeto, p.gerenciadora, p.valor_liquido, p.status, p.mes_referencia, p.cpf_beneficiario, b.nome as nome_beneficiario
         FROM pagamentos p
         LEFT JOIN beneficiarios b ON p.cpf_beneficiario = b.cpf
         WHERE p.ano_referencia = ?
@@ -330,19 +371,19 @@ def tela_dashboard():
         st.write(df['status'].value_counts())
 
     st.subheader("Detalhamento dos Pagamentos")
-    st.dataframe(df[['nome_beneficiario', 'projeto', 'valor_liquido', 'status', 'mes_referencia']].head(1000))
+    st.dataframe(df[['nome_beneficiario', 'projeto', 'gerenciadora', 'valor_liquido', 'status', 'mes_referencia']].head(1000))
 
 def tela_admin():
     st.header("⚙️ Administração do Sistema")
     st.markdown("---")
     
-    # Verifica Perfil para mostrar abas
     usuario_atual = st.session_state['usuario']
     
+    # Abas condicionais
     if usuario_atual['perfil'] == 'ADMIN_TI':
         tab1, tab2 = st.tabs(["Gestão de Usuários", "Manutenção de Banco"])
     else:
-        tab1, = st.tabs(["Gestão de Usuários"]) # Admin Área só vê Usuários
+        tab1, = st.tabs(["Gestão de Usuários"])
     
     with tab1:
         with st.form("novo_user"):
@@ -371,7 +412,7 @@ def tela_admin():
     if usuario_atual['perfil'] == 'ADMIN_TI':
         with tab2:
             st.error("⚠️ **Zona de Perigo (TI)**")
-            st.warning("Esta ação apagará TODOS os dados de pagamentos e beneficiários. Use apenas para reiniciar o sistema.")
+            st.warning("Esta ação apagará TODOS os dados. Use com cautela.")
             if st.button("LIMPAR TODO O BANCO DE DADOS", type="primary"):
                 if limpar_banco_dados():
                     st.success("Banco limpo com sucesso!")
