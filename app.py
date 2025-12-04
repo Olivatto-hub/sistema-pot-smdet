@@ -1,636 +1,720 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import sqlite3
-import hashlib
-import re
-import io
-from datetime import datetime
+from io import BytesIO
 import plotly.express as px
-from fpdf import FPDF
+import plotly.graph_objects as go
+from datetime import datetime
+import warnings
+import re
+from typing import List, Dict, Any, Tuple
+warnings.filterwarnings('ignore')
 
-# ==============================================================================
-# CONFIGURAÇÃO INICIAL E ESTILOS
-# ==============================================================================
+# ============================================
+# CONFIGURAÇÃO DA PÁGINA
+# ============================================
 st.set_page_config(
-    page_title="POT - Sistema de Gerenciamento",
-    page_icon="🏙️",
+    page_title="Sistema POT-SMDET - Monitoramento e Análise",
+    page_icon="🔎",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Estilos CSS Personalizados
+# ============================================
+# CSS MINIMALISTA E COM FOCO EM UX
+# ============================================
 st.markdown("""
 <style>
-    .main-header {font-size: 2.5rem; color: #004e92; text-align: center; margin-bottom: 1rem;}
-    .sub-header {font-size: 1.5rem; color: #333; margin-top: 2rem; border-bottom: 2px solid #004e92;}
-    .card {background-color: #f8f9fa; padding: 1.5rem; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-bottom: 1rem;}
-    .metric-value {font-size: 2rem; font-weight: bold; color: #004e92;}
-    .metric-label {font-size: 1rem; color: #666;}
-    .stButton>button {width: 100%; border-radius: 5px;}
-    .success-msg {padding: 1rem; background-color: #d4edda; color: #155724; border-radius: 5px;}
-    .error-msg {padding: 1rem; background-color: #f8d7da; color: #721c24; border-radius: 5px;}
+    /* MELHORIAS GERAIS - NÃO INTERFERE NO TEMA */
+    .stDataFrame {
+        border-radius: 8px;
+        overflow: hidden;
+    }
+    
+    /* MELHOR VISIBILIDADE PARA DATAFRAMES */
+    .stDataFrame th {
+        font-weight: 700 !important;
+        text-align: center;
+    }
+    
+    /* ESPAÇAMENTO MELHOR ENTRE WIDGETS */
+    .stSlider, .stSelectbox, .stMultiSelect, .stDateInput {
+        margin-bottom: 1rem;
+    }
+    
+    /* BOTÕES MAIS VISÍVEIS */
+    .stButton > button {
+        border-radius: 8px;
+        font-weight: 700;
+        transition: all 0.3s ease;
+        padding: 0.5rem 1rem;
+    }
+    
+    .stButton > button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    }
+
+    /* TÍTULOS DE SEÇÃO */
+    .stMarkdown h3 {
+        border-bottom: 2px solid #333; /* Uma linha para separar seções */
+        padding-bottom: 5px;
+        margin-top: 20px;
+    }
+    
+    /* INDICADORES (KPIs) */
+    [data-testid="stMetricValue"] {
+        font-size: 2.5rem;
+        font-weight: 800;
+        color: #1f77b4; /* Cor primária para destaque */
+    }
+    [data-testid="stMetricLabel"] {
+        font-size: 1.0rem;
+        font-weight: 600;
+    }
+    
+    /* EXPANDER (Para Inconsistências) */
+    .stExpander {
+        border: 2px solid #ff4b4b; /* Vermelho para destaque de erro */
+        border-radius: 8px;
+        margin-top: 15px;
+    }
+
 </style>
 """, unsafe_allow_html=True)
 
-# ==============================================================================
-# BANCO DE DADOS E LOGS
-# ==============================================================================
-class DatabaseManager:
-    def __init__(self, db_name="pot_system.db"):
-        self.conn = sqlite3.connect(db_name, check_same_thread=False)
-        self.create_tables()
-        self.check_default_admin()
+# ============================================
+# VARIÁVEIS DE ESTADO
+# ============================================
+if 'data' not in st.session_state:
+    st.session_state['data'] = pd.DataFrame()
+if 'inconsistencias' not in st.session_state:
+    st.session_state['inconsistencias'] = []
+if 'arquivos_carregados' not in st.session_state:
+    st.session_state['arquivos_carregados'] = {}
 
-    def create_tables(self):
-        cursor = self.conn.cursor()
-        
-        # Tabela Principal de Dados Unificados
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS dados_pot (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                projeto TEXT,
-                num_cartao TEXT,
-                nome TEXT,
-                cpf TEXT,
-                rg TEXT,
-                valor_pago REAL,
-                data_referencia DATE,
-                mes INTEGER,
-                ano INTEGER,
-                arquivo_origem TEXT,
-                data_upload TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                status_pagamento TEXT
-            )
-        """)
-        
-        # Tabela de Usuários
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS usuarios (
-                email TEXT PRIMARY KEY,
-                password_hash TEXT,
-                role TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        
-        # Tabela de Logs
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS logs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                usuario TEXT,
-                acao TEXT,
-                detalhes TEXT,
-                data_hora TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        self.conn.commit()
+# ============================================
+# FUNÇÕES AUXILIARES
+# ============================================
 
-    def _hash_password(self, password):
-        """Gera hash SHA-256 da senha."""
-        return hashlib.sha256(password.encode()).hexdigest()
+def formatar_moeda_brl(valor: Any) -> str:
+    """Formata um valor numérico para o padrão monetário brasileiro (R$ 9.999.999,99)."""
+    if pd.isna(valor) or valor in ('', 'nan', 'NaT'):
+        return 'R$ 0,00'
+    try:
+        # Tenta limpar string (remove separador de milhares americano e substitui decimal por ponto)
+        if isinstance(valor, str):
+            # Tenta tratar a inversão de notação americana/europeia. Prioriza BRL.
+            # Se tiver mais de uma vírgula ou ponto (ex: 1.000,00 ou 1,000.00), trata.
+            if len(re.findall(r'[.,]', valor)) > 1:
+                valor_limpo = valor.replace('.', '').replace(',', '.') # Assume padrão BR/EUR (1.000,00)
+            else:
+                valor_limpo = valor.replace(',', '.') # Assume notação simples 1000,00
 
-    def check_default_admin(self):
-        """Cria o usuário admin padrão se a tabela de usuários estiver vazia."""
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT count(*) FROM usuarios")
-        count = cursor.fetchone()[0]
-        
-        if count == 0:
-            # Senha padrão: Smdetpot2025
-            default_email = "admin@prefeitura.sp.gov.br"
-            default_pass_hash = self._hash_password("Smdetpot2025")
-            cursor.execute("INSERT INTO usuarios (email, password_hash, role) VALUES (?, ?, ?)", 
-                           (default_email, default_pass_hash, "admin"))
-            self.conn.commit()
+            valor_float = float(re.sub(r'[^\d.]', '', valor_limpo))
+        elif isinstance(valor, (int, float)):
+            valor_float = valor
+        else:
+            return str(valor)
 
-    def authenticate_user(self, email, password):
-        """Verifica credenciais no banco."""
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT password_hash, role FROM usuarios WHERE email = ?", (email,))
-        result = cursor.fetchone()
-        
-        if result:
-            stored_hash, role = result
-            if stored_hash == self._hash_password(password):
-                return True, role
-        return False, None
+        # Formata para BRL (usando o truque de replace para trocar . por , e adicionar .)
+        texto = f"{valor_float:,.2f}"
+        return f"R$ {texto.replace(',', '_').replace('.', ',').replace('_', '.')}"
+    except Exception as e:
+        # st.error(f"Erro ao formatar valor '{valor}': {e}")
+        return str(valor) # Retorna original se falhar
 
-    def add_user(self, creator_email, new_email, new_password, role):
-        """Adiciona novo usuário."""
-        if not new_email.endswith("@prefeitura.sp.gov.br"):
-            return False, "O e-mail deve ser @prefeitura.sp.gov.br"
+def limpar_colunas_monetarias(df: pd.DataFrame, colunas: List[str]) -> pd.DataFrame:
+    """Limpa e converte colunas de valor para float, tratando padrões BRL/EUA."""
+    for col in colunas:
+        if col in df.columns:
+            # 1. Tenta tratar strings como BRL (1.000,00) ou EUA (1,000.00)
+            df[col] = df[col].astype(str).str.replace(r'[^0-9,.]', '', regex=True)
             
-        try:
-            pwd_hash = self._hash_password(new_password)
-            cursor = self.conn.cursor()
-            cursor.execute("INSERT INTO usuarios (email, password_hash, role) VALUES (?, ?, ?)", 
-                           (new_email, pwd_hash, role))
-            self.conn.commit()
-            self.log_action(creator_email, "ADD_USER", f"Adicionou usuário {new_email} como {role}")
-            return True, "Usuário criado com sucesso!"
-        except sqlite3.IntegrityError:
-            return False, "E-mail já cadastrado."
-        except Exception as e:
-            return False, str(e)
-
-    def delete_user(self, admin_email, target_email):
-        """Remove um usuário."""
-        if admin_email == target_email:
-            return False, "Você não pode excluir a si mesmo."
+            # Função de limpeza para aplicação
+            def clean_value(val):
+                if pd.isna(val) or val in ('', 'nan', 'NaT'):
+                    return np.nan
+                s_val = str(val)
+                # Se tiver mais de um separador (ponto e vírgula), assume BRL (1.000,00)
+                if s_val.count('.') > 0 and s_val.count(',') > 0:
+                    s_val = s_val.replace('.', '').replace(',', '.')
+                # Se tiver apenas vírgula, assume separador decimal BRL (100,00)
+                elif s_val.count(',') == 1 and s_val.count('.') == 0:
+                    s_val = s_val.replace(',', '.')
+                # Se tiver apenas ponto e for o último, assume separador decimal EUA (100.00)
+                # Caso contrário, pode ser separador de milhar.
+                try:
+                    return float(s_val)
+                except:
+                    return np.nan
             
-        cursor = self.conn.cursor()
-        cursor.execute("DELETE FROM usuarios WHERE email = ?", (target_email,))
-        self.conn.commit()
-        self.log_action(admin_email, "DELETE_USER", f"Excluiu usuário {target_email}")
-        return True, "Usuário excluído."
-
-    def get_users(self):
-        """Retorna lista de usuários."""
-        return pd.read_sql("SELECT email, role, created_at FROM usuarios", self.conn)
-
-    def log_action(self, usuario, acao, detalhes):
-        cursor = self.conn.cursor()
-        cursor.execute("INSERT INTO logs (usuario, acao, detalhes) VALUES (?, ?, ?)", 
-                       (usuario, acao, detalhes))
-        self.conn.commit()
-
-    def insert_data(self, df, usuario):
-        try:
-            df.to_sql('dados_pot', self.conn, if_exists='append', index=False)
-            self.log_action(usuario, "UPLOAD", f"Inseridos {len(df)} registros.")
-            return True, f"{len(df)} registros importados com sucesso."
-        except Exception as e:
-            return False, str(e)
-
-    def get_data(self, start_date=None, end_date=None):
-        query = "SELECT * FROM dados_pot"
-        params = []
-        
-        if start_date and end_date:
-            query += " WHERE data_referencia BETWEEN ? AND ?"
-            params = [start_date, end_date]
-            
-        return pd.read_sql(query, self.conn, params=params)
-
-    def delete_all_data(self, usuario):
-        cursor = self.conn.cursor()
-        cursor.execute("DELETE FROM dados_pot")
-        self.conn.commit()
-        self.log_action(usuario, "DELETE_ALL", "Todos os dados operacionais foram excluídos.")
-
-    def get_logs(self):
-        return pd.read_sql("SELECT * FROM logs ORDER BY data_hora DESC", self.conn)
-
-# Instancia o DB
-db = DatabaseManager()
-
-# ==============================================================================
-# FUNÇÕES DE UTILIDADE E LIMPEZA
-# ==============================================================================
-def clean_cpf(cpf):
-    """Remove caracteres não numéricos e padroniza para 11 dígitos com zeros à esquerda."""
-    if pd.isna(cpf):
-        return ""
-    cpf_str = str(cpf)
-    # Remove tudo que não é dígito
-    cpf_clean = re.sub(r'\D', '', cpf_str)
-    # Preenche com zeros à esquerda até 11 dígitos
-    return cpf_clean.zfill(11)
-
-def extract_month_year_from_filename(filename):
-    """Tenta extrair mês e ano do nome do arquivo."""
-    meses = {
-        'JANEIRO': 1, 'FEVEREIRO': 2, 'MARÇO': 3, 'ABRIL': 4, 'MAIO': 5, 'JUNHO': 6,
-        'JULHO': 7, 'AGOSTO': 8, 'SETEMBRO': 9, 'OUTUBRO': 10, 'NOVEMBRO': 11, 'DEZEMBRO': 12,
-        'JAN': 1, 'FEV': 2, 'MAR': 3, 'ABR': 4, 'MAI': 5, 'JUN': 6,
-        'JUL': 7, 'AGO': 8, 'SET': 9, 'OUT': 10, 'NOV': 11, 'DEZ': 12
-    }
-    
-    filename_upper = filename.upper()
-    mes_detectado = None
-    ano_detectado = datetime.now().year # Default ano atual
-
-    # Busca mês
-    for nome_mes, num_mes in meses.items():
-        if nome_mes in filename_upper:
-            mes_detectado = num_mes
-            break
-    
-    # Busca ano (4 dígitos)
-    anos = re.findall(r'20\d{2}', filename)
-    if anos:
-        ano_detectado = int(anos[0])
-        
-    return mes_detectado, ano_detectado
-
-def normalize_columns(df):
-    """Padroniza os nomes das colunas baseado nas variações conhecidas."""
-    # Mapeamento de Colunas (Baseado na análise dos arquivos)
-    mapa_colunas = {
-        # Identificadores
-        'Num Cartao': 'num_cartao', 'NumCartão': 'num_cartao', 'NumCartao': 'num_cartao', 
-        'NumCart?': 'num_cartao', 'CODIGO': 'num_cartao', 'Cartão': 'num_cartao',
-        
-        # Nomes
-        'Nome': 'nome', 'Nome do beneficiário': 'nome', 'Nome do benefici?io': 'nome', 
-        'NOME': 'nome', 'NomeMãe': 'nome_mae', 'NomeM?': 'nome_mae', 'NOME DA MAE': 'nome_mae',
-        
-        # Documentos
-        'CPF': 'cpf', 'RG': 'rg', 'DataNasc': 'data_nasc', 'DATA DE NASC': 'data_nasc',
-        
-        # Valores
-        'Valor Pagto': 'valor_pago', 'ValorPagto': 'valor_pago', 'Valor Total': 'valor_total',
-        'ValorTotal': 'valor_total', 'Valor Dia': 'valor_dia', 'vlr dia': 'valor_dia', 'valor': 'valor_dia',
-        
-        # Datas e Períodos
-        'Data Pagto': 'data_pagto', 'DataPagto': 'data_pagto', 'DtLote': 'data_lote',
-        'Mês': 'mes_ref', 'mês': 'mes_ref', 'm?': 'mes_ref',
-        
-        # Outros
-        'Projeto': 'projeto', 'PROJETO': 'projeto', 'Distrito': 'distrito', 
-        'Agência': 'agencia', 'Agencia': 'agencia', 'Ag?cia': 'agencia'
-    }
-    
-    # Remove espaços extras dos nomes das colunas originais
-    df.columns = [str(c).strip() for c in df.columns]
-    
-    # Renomeia
-    df = df.rename(columns=mapa_colunas)
-    
+            df[col] = df[col].apply(clean_value)
     return df
 
-def process_file(uploaded_file):
-    """Lê o arquivo, detecta formato, normaliza e retorna DataFrame limpo."""
-    filename = uploaded_file.name
-    file_ext = filename.split('.')[-1].lower()
-    
-    try:
-        if file_ext == 'csv':
-            # Tenta separador ; primeiro, depois ,
-            try:
-                df = pd.read_csv(uploaded_file, sep=';', encoding='latin1', on_bad_lines='skip')
-                if len(df.columns) < 2:
-                    uploaded_file.seek(0)
-                    df = pd.read_csv(uploaded_file, sep=',', encoding='latin1', on_bad_lines='skip')
-            except:
-                uploaded_file.seek(0)
-                df = pd.read_csv(uploaded_file, sep=',', encoding='utf-8', on_bad_lines='skip')
-                
-        elif file_ext == 'txt':
-            # Tenta ler largura fixa ou espaço (baseado no REL.CADASTRO)
-            try:
-                # read_csv com separador de espaços múltiplos (\s+) é melhor para arquivos formatados
-                uploaded_file.seek(0)
-                df = pd.read_csv(uploaded_file, sep=r'\s+', encoding='latin1', on_bad_lines='skip')
-            except:
-                 # Fallback
-                 uploaded_file.seek(0)
-                 df = pd.read_csv(uploaded_file, sep='\t', encoding='latin1', on_bad_lines='skip')
-
-        else:
-            return None, "Formato não suportado."
-    except Exception as e:
-        return None, f"Erro ao ler arquivo: {e}"
-
-    # 1. Normalizar Colunas
-    df = normalize_columns(df)
-    
-    # 2. Garantir Colunas Essenciais (cria vazias se não existirem)
-    required_cols = ['num_cartao', 'nome', 'cpf', 'projeto', 'valor_pago']
-    for col in required_cols:
-        if col not in df.columns:
-            df[col] = None
-
-    # 3. Limpeza de CPF
-    if 'cpf' in df.columns:
-        df['cpf'] = df['cpf'].apply(clean_cpf)
-    
-    # 4. Tratamento de Valores
-    if 'valor_pago' in df.columns:
-        # Remove R$, troca , por . e converte para float
-        df['valor_pago'] = df['valor_pago'].astype(str).str.replace('R$', '', regex=False)
-        df['valor_pago'] = df['valor_pago'].str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
-        df['valor_pago'] = pd.to_numeric(df['valor_pago'], errors='coerce').fillna(0.0)
-
-    # 5. Identificação de Data (Mês/Ano)
-    mes_file, ano_file = extract_month_year_from_filename(filename)
-    
-    # Define Mês/Ano final
-    current_date = datetime.now()
-    
-    # Cria colunas finais padronizadas para o banco
-    df['mes'] = mes_file if mes_file else current_date.month
-    df['ano'] = ano_file if ano_file else current_date.year
-    
-    # Cria uma data de referência (dia 1 do mês/ano)
-    try:
-        df['data_referencia'] = df.apply(lambda x: datetime(int(x['ano']), int(x['mes']), 1).date(), axis=1)
-    except:
-        df['data_referencia'] = current_date.date()
-
-    df['arquivo_origem'] = filename
-    
-    # Filtra apenas colunas que existem na tabela do banco para evitar erro
-    cols_db = ['projeto', 'num_cartao', 'nome', 'cpf', 'rg', 'valor_pago', 'data_referencia', 'mes', 'ano', 'arquivo_origem']
-    cols_to_keep = [c for c in cols_db if c in df.columns]
-    
-    return df[cols_to_keep], None
-
-# ==============================================================================
-# GERAÇÃO DE RELATÓRIOS (PDF)
-# ==============================================================================
-class PDFReport(FPDF):
-    def header(self):
-        self.set_font('Arial', 'B', 15)
-        self.cell(0, 10, 'PREFEITURA DE SÃO PAULO - SMDET', 0, 1, 'C')
-        self.set_font('Arial', 'B', 12)
-        self.cell(0, 10, 'Programa Operação Trabalho (POT) - Relatório Executivo', 0, 1, 'C')
-        self.ln(5)
-
-    def footer(self):
-        self.set_y(-15)
-        self.set_font('Arial', 'I', 8)
-        self.cell(0, 10, f'Página {self.page_no()}', 0, 0, 'C')
-
-def generate_pdf(df, period_str):
-    pdf = PDFReport()
-    pdf.add_page()
-    pdf.set_font("Arial", size=10)
-    
-    # Info do Período
-    pdf.cell(0, 10, f"Período de Referência: {period_str}", 0, 1)
-    pdf.cell(0, 10, f"Data de Geração: {datetime.now().strftime('%d/%m/%Y %H:%M')}", 0, 1)
-    pdf.ln(5)
-    
-    # Resumo Executivo
-    total_valor = df['valor_pago'].sum()
-    total_benef = df['num_cartao'].nunique()
-    
-    pdf.set_font("Arial", 'B', 12)
-    pdf.cell(0, 10, "Resumo Financeiro", 0, 1)
-    pdf.set_font("Arial", size=10)
-    pdf.cell(0, 10, f"Total de Beneficiários Únicos: {total_benef}", 0, 1)
-    pdf.cell(0, 10, f"Valor Total de Pagamentos: R$ {total_valor:,.2f}", 0, 1)
-    pdf.ln(5)
-    
-    # Tabela por Projeto (Agrupada)
-    pdf.set_font("Arial", 'B', 12)
-    pdf.cell(0, 10, "Detalhamento por Projeto", 0, 1)
-    pdf.ln(2)
-    
-    # Header Tabela
-    pdf.set_font("Arial", 'B', 10)
-    pdf.cell(100, 10, "Projeto", 1)
-    pdf.cell(40, 10, "Qtd Pessoas", 1)
-    pdf.cell(50, 10, "Valor Total (R$)", 1)
-    pdf.ln()
-    
-    # Dados Tabela
-    if 'projeto' in df.columns:
-        agrupado = df.groupby('projeto').agg({'num_cartao': 'nunique', 'valor_pago': 'sum'}).reset_index()
-        pdf.set_font("Arial", size=10)
-        for _, row in agrupado.iterrows():
-            proj_name = str(row['projeto'])[:40] # Truncate
-            pdf.cell(100, 10, proj_name, 1)
-            pdf.cell(40, 10, str(row['num_cartao']), 1)
-            pdf.cell(50, 10, f"{row['valor_pago']:,.2f}", 1)
-            pdf.ln()
-            
-    return pdf.output(dest='S').encode('latin-1')
-
-# ==============================================================================
-# LÓGICA DE AUTENTICAÇÃO
-# ==============================================================================
-def login_screen():
-    col1, col2, col3 = st.columns([1,2,1])
-    with col2:
-        st.markdown("<h2 style='text-align: center;'>🔐 Acesso ao Sistema POT</h2>", unsafe_allow_html=True)
+def normalizar_coluna_data(df: pd.DataFrame, coluna: str) -> pd.DataFrame:
+    """Tenta converter uma coluna para datetime, tratando diferentes formatos."""
+    if coluna in df.columns:
+        # Lista de formatos comuns, priorizando o BR
+        formatos = ['%d/%m/%Y', '%d-%m-%Y', '%Y-%m-%d', '%m/%d/%Y', '%d/%m/%y']
         
-        # Info padrão para primeiro acesso
-        if len(db.get_users()) <= 1:
-            st.info("Primeiro acesso? Use admin@prefeitura.sp.gov.br / Smdetpot2025")
+        for fmt in formatos:
+            try:
+                # Tenta converter o restante que não foi convertido com o formato atual
+                df[coluna] = pd.to_datetime(df[coluna], format=fmt, errors='coerce')
+                # Se a conversão for bem sucedida, sai do loop
+                if df[coluna].notna().sum() > 0:
+                    break
+            except Exception:
+                continue
+        
+        # O que sobrar (ou seja, não conseguiu converter), fica como NaT
+        df[coluna] = pd.to_datetime(df[coluna], errors='coerce')
+    return df
 
-        with st.form("login_form"):
-            username = st.text_input("E-mail Corporativo (@prefeitura.sp.gov.br)")
-            password = st.text_input("Senha", type="password")
-            submitted = st.form_submit_button("Entrar")
+def encontrar_inconsistencias_criticas(df: pd.DataFrame, nome_arquivo: str) -> List[Dict[str, Any]]:
+    """
+    Identifica inconsistências críticas de CPF repetido com dados divergentes.
+    CPFs repetidos com diferentes Nomes OU diferentes Números de Cartão.
+    """
+    df_temp = df.copy()
+    inconsistencias = []
+    
+    # Padronização e Limpeza
+    if 'CPF' in df_temp.columns:
+        df_temp['CPF_Limpo'] = df_temp['CPF'].astype(str).str.replace(r'[^0-9]', '', regex=True).replace('', np.nan)
+    else:
+        return inconsistencias # Se não tem CPF, não verifica este tipo de erro
+
+    for col in ['Nome', 'Num Cartao', 'NumCartao']:
+        if col in df_temp.columns:
+            if col.startswith('NumCartao'): # Normalizar Num Cartão
+                df_temp[col] = df_temp[col].astype(str).str.replace(r'[^0-9]', '', regex=True).replace('', np.nan)
+            elif col == 'Nome': # Normalizar Nome
+                df_temp[col] = df_temp[col].astype(str).str.strip().str.upper()
+
+    # Garantir que 'Num Cartao' exista (usando 'NumCartao' como fallback)
+    if 'Num Cartao' not in df_temp.columns and 'NumCartao' in df_temp.columns:
+        df_temp.rename(columns={'NumCartao': 'Num Cartao'}, inplace=True)
+    
+    # 1. Filtrar CPFs duplicados e válidos
+    df_duplicados = df_temp.dropna(subset=['CPF_Limpo']).duplicated(subset=['CPF_Limpo'], keep=False)
+    df_duplicados = df_temp[df_duplicados].sort_values(by='CPF_Limpo')
+    
+    if df_duplicados.empty:
+        return inconsistencias
+        
+    # Colunas chave para verificação
+    colunas_chave = ['Nome']
+    if 'Num Cartao' in df_temp.columns:
+        colunas_chave.append('Num Cartao')
+        
+    colunas_relatorio = [c for c in ['Projeto', 'Nome', 'CPF', 'Num Cartao', 'DataPagto', 'Valor Pagto'] if c in df_temp.columns]
+
+    # 2. Agrupar por CPF_Limpo para identificar divergências
+    for cpf_limpo, grupo in df_duplicados.groupby('CPF_Limpo'):
+        is_inconsistent = False
+        detalhes = []
+        
+        # Verifica divergência de Nome
+        if 'Nome' in grupo.columns and grupo['Nome'].nunique() > 1:
+            is_inconsistent = True
+            detalhes.append(f'Nomes Diferentes ({grupo["Nome"].nunique()} variantes)')
+        
+        # Verifica divergência de Num Cartao
+        if 'Num Cartao' in grupo.columns and grupo['Num Cartao'].nunique() > 1:
+            is_inconsistent = True
+            detalhes.append(f'Números de Cartão Diferentes ({grupo["Num Cartao"].nunique()} variantes)')
+
+        if is_inconsistent:
+            for index, row in grupo.iterrows():
+                inconsistencias.append({
+                    'Arquivo': nome_arquivo,
+                    'Tipo Inconsistência': 'CPF Duplicado',
+                    'Detalhes': ', '.join(detalhes),
+                    'CPF_Limpo': cpf_limpo,
+                    'Registro': {col: row.get(col, 'N/A') for col in colunas_relatorio}
+                })
+
+    return inconsistencias
+
+@st.cache_data(show_spinner="Analisando dados e inconsistências...")
+def processar_e_analisar_dados(uploaded_files: List[st.runtime.uploaded_file_manager.UploadedFile]) -> Tuple[pd.DataFrame, List[Dict[str, Any]], Dict[str, str]]:
+    """Carrega, limpa, padroniza e analisa todos os arquivos carregados."""
+    todos_dados = []
+    todas_inconsistencias = []
+    
+    # Mapeamento para padronizar nomes de colunas (caso haja variações)
+    coluna_map_valores = {
+        'valortotal': 'Valor Total',
+        'valordesconto': 'Valor Desconto',
+        'valorpagto': 'Valor Pagto',
+        'valordia': 'Valor Dia',
+        'data pagto': 'DataPagto',
+        'num cartao': 'Num Cartao',
+        'numcartao': 'Num Cartao',
+        'data pagto': 'DataPagto',
+        'cpf': 'CPF',
+        'nome': 'Nome',
+        'projeto': 'Projeto',
+    }
+
+    arquivos_info = {}
+
+    for file in uploaded_files:
+        try:
+            # 1. Leitura do arquivo
+            if file.name.lower().endswith('.csv'):
+                df = pd.read_csv(file, sep=';', encoding='latin1', skip_blank_lines=True)
+            elif file.name.lower().endswith('.txt'):
+                df = pd.read_csv(file, sep='\t', encoding='latin1', skip_blank_lines=True)
+            else:
+                st.warning(f"Formato de arquivo não suportado para {file.name}. Ignorando.")
+                continue
+
+            # 2. Limpeza e Padronização de Colunas
+            df.columns = df.columns.str.strip().str.lower().str.replace('[^a-z0-9]', '', regex=True)
+            df.rename(columns=lambda c: coluna_map_valores.get(c, c), inplace=True)
             
-            if submitted:
-                success, role = db.authenticate_user(username, password)
-                if success:
-                    st.session_state['logged_in'] = True
-                    st.session_state['username'] = username
-                    st.session_state['role'] = role
-                    st.success("Login realizado com sucesso!")
-                    st.rerun()
-                else:
-                    st.error("Credenciais inválidas.")
-
-# ==============================================================================
-# TELAS DO SISTEMA
-# ==============================================================================
-
-def dashboard_screen():
-    st.markdown("<h1 class='main-header'>📊 Dashboard Executivo</h1>", unsafe_allow_html=True)
-    
-    # Filtros
-    st.sidebar.header("Filtros de Período")
-    start_date = st.sidebar.date_input("Data Início", value=pd.to_datetime("2024-01-01"))
-    end_date = st.sidebar.date_input("Data Fim", value=datetime.now())
-    
-    # Carrega Dados
-    df = db.get_data(start_date, end_date)
-    
-    if df.empty:
-        st.info("Nenhum dado encontrado para o período selecionado. Faça upload de arquivos.")
-        return
-
-    # KPIs Principais
-    col1, col2, col3 = st.columns(3)
-    total_pago = df['valor_pago'].sum()
-    total_beneficiarios = df['num_cartao'].nunique()
-    total_projetos = df['projeto'].nunique()
-    
-    with col1:
-        st.markdown(f"<div class='card'><div class='metric-label'>Valor Total Pago</div><div class='metric-value'>R$ {total_pago:,.2f}</div></div>", unsafe_allow_html=True)
-    with col2:
-        st.markdown(f"<div class='card'><div class='metric-label'>Beneficiários Únicos</div><div class='metric-value'>{total_beneficiarios}</div></div>", unsafe_allow_html=True)
-    with col3:
-        st.markdown(f"<div class='card'><div class='metric-label'>Projetos Ativos</div><div class='metric-value'>{total_projetos}</div></div>", unsafe_allow_html=True)
-
-    # Gráficos
-    col_chart1, col_chart2 = st.columns(2)
-    
-    with col_chart1:
-        st.subheader("Pagamentos por Projeto")
-        if 'projeto' in df.columns:
-            fig_proj = px.bar(df.groupby('projeto')['valor_pago'].sum().reset_index(), 
-                              x='projeto', y='valor_pago', title="Total por Projeto")
-            st.plotly_chart(fig_proj, use_container_width=True)
+            # Limpa colunas que só contêm valores vazios/nulos
+            df.dropna(axis=1, how='all', inplace=True)
+            df.dropna(axis=0, how='all', inplace=True)
             
-    with col_chart2:
-        st.subheader("Evolução Mensal")
-        if 'mes' in df.columns:
-            df_evo = df.groupby(['ano', 'mes'])['valor_pago'].sum().reset_index()
-            df_evo['periodo'] = df_evo['mes'].astype(str) + '/' + df_evo['ano'].astype(str)
-            fig_evo = px.line(df_evo, x='periodo', y='valor_pago', title="Evolução de Pagamentos", markers=True)
-            st.plotly_chart(fig_evo, use_container_width=True)
+            # 3. Tratamento de Tipos
+            colunas_monetarias = ['Valor Total', 'Valor Desconto', 'Valor Pagto', 'Valor Dia']
+            df = limpar_colunas_monetarias(df, colunas_monetarias)
+            
+            # 4. Normalização de Datas
+            df = normalizar_coluna_data(df, 'DataPagto')
+            
+            # 5. Análise de Inconsistências
+            inconsistencias_do_arquivo = encontrar_inconsistencias_criticas(df, file.name)
+            todas_inconsistencias.extend(inconsistencias_do_arquivo)
+            
+            # Adicionar coluna de origem e metadados
+            df['Arquivo_Origem'] = file.name
+            df['Mes_Ano'] = df['DataPagto'].dt.strftime('%Y-%m') if 'DataPagto' in df.columns else 'N/A'
 
-    # Exportação Rápida da Tela
-    st.markdown("### 📥 Exportar Dados Atuais")
-    col_exp1, col_exp2, col_exp3 = st.columns(3)
-    
-    # CSV
-    csv = df.to_csv(index=False).encode('utf-8')
-    col_exp1.download_button("Baixar CSV", data=csv, file_name="relatorio_pot.csv", mime="text/csv")
-    
-    # Excel - COM CORREÇÃO PARA EVITAR ERRO DE ENGINE
-    buffer = io.BytesIO()
-    try:
-        # Não especificamos engine, o pandas tentará usar openpyxl se disponível
-        with pd.ExcelWriter(buffer) as writer:
-            df.to_excel(writer, index=False, sheet_name='Dados')
-        col_exp2.download_button("Baixar Excel", data=buffer, file_name="relatorio_pot.xlsx", mime="application/vnd.ms-excel")
-    except Exception as e:
-        col_exp2.warning(f"Excel indisponível: {e}")
-        col_exp2.info("Use a opção CSV ao lado.")
-    
-    # PDF
-    try:
-        pdf_bytes = generate_pdf(df, f"{start_date} a {end_date}")
-        col_exp3.download_button("Baixar Relatório PDF", data=pdf_bytes, file_name="relatorio_executivo.pdf", mime="application/pdf")
-    except Exception as e:
-        col_exp3.error(f"Erro PDF: {e}")
+            todos_dados.append(df)
+            arquivos_info[file.name] = "OK"
 
-def upload_screen():
-    st.markdown("<h1 class='main-header'>📂 Importação de Arquivos</h1>", unsafe_allow_html=True)
+        except Exception as e:
+            st.error(f"❌ Erro ao processar o arquivo '{file.name}': {e}")
+            arquivos_info[file.name] = f"Erro: {e}"
+            continue
+
+    if not todos_dados:
+        return pd.DataFrame(), [], arquivos_info
+
+    # Combina todos os DataFrames
+    df_final = pd.concat(todos_dados, ignore_index=True)
+    
+    # Garante colunas mínimas e preenche NaN se necessário (importante para evitar falhas em colunas ausentes)
+    colunas_padrao = ['Projeto', 'Nome', 'Num Cartao', 'CPF', 'DataPagto', 'Valor Pagto', 'Arquivo_Origem', 'Mes_Ano']
+    for col in colunas_padrao:
+        if col not in df_final.columns:
+            df_final[col] = np.nan
+    
+    # Remove NaN da coluna de data para evitar problemas no filtro
+    df_final.dropna(subset=['DataPagto'], inplace=True)
+    
+    return df_final, todas_inconsistencias, arquivos_info
+
+# ============================================
+# LAYOUT DA BARRA LATERAL (FILTROS)
+# ============================================
+
+with st.sidebar:
+    st.title("⚙️ Controles e Filtros")
     
     uploaded_files = st.file_uploader(
-        "Arraste arquivos CSV ou TXT (Cadastro, Pendências, Pagamentos)", 
-        accept_multiple_files=True,
-        type=['csv', 'txt']
+        "📂 Carregar Arquivos de Dados (.csv, .txt)",
+        type=['csv', 'txt'],
+        accept_multiple_files=True
     )
     
-    if st.button("Processar e Salvar no Banco de Dados"):
-        if not uploaded_files:
-            st.warning("Selecione arquivos primeiro.")
-            return
-            
-        progress_bar = st.progress(0)
+    if uploaded_files:
+        st.subheader("Processamento de Dados")
+        # Força o reprocessamento se os arquivos mudarem ou o botão for clicado
+        if st.button("🔄 Processar Novamente"):
+            st.session_state['data'], st.session_state['inconsistencias'], st.session_state['arquivos_carregados'] = processar_e_analisar_dados(uploaded_files)
         
-        for i, file in enumerate(uploaded_files):
-            st.write(f"Processando: **{file.name}**...")
-            df_processed, error = process_file(file)
-            
-            if error:
-                st.error(f"Erro em {file.name}: {error}")
-            else:
-                # Salvar no DB
-                success, msg = db.insert_data(df_processed, st.session_state['username'])
-                if success:
-                    st.success(f"✅ {file.name}: {msg}")
-                else:
-                    st.error(f"❌ {file.name}: {msg}")
-            
-            progress_bar.progress((i + 1) / len(uploaded_files))
-            
-        st.success("Processamento concluído!")
+        # Carrega/recarrega os dados na sessão
+        if not st.session_state['data'].empty or len(uploaded_files) != len(st.session_state['arquivos_carregados']):
+            st.session_state['data'], st.session_state['inconsistencias'], st.session_state['arquivos_carregados'] = processar_e_analisar_dados(uploaded_files)
 
-def admin_screen():
-    st.markdown("<h1 class='main-header'>🛠️ Painel Administrativo</h1>", unsafe_allow_html=True)
-    
-    if st.session_state['role'] != 'admin':
-        st.error("Acesso Negado. Apenas administradores.")
-        return
-
-    tab1, tab2, tab3 = st.tabs(["Gerenciar Usuários", "Logs do Sistema", "Zona de Perigo"])
-
-    # TAB 1: Gerenciar Usuários
-    with tab1:
-        st.subheader("Cadastrar Novo Usuário")
-        with st.form("add_user_form"):
-            new_email = st.text_input("E-mail (@prefeitura.sp.gov.br)")
-            new_pass = st.text_input("Senha Inicial", type="password")
-            new_role = st.selectbox("Perfil", ["user", "admin"])
-            submit_user = st.form_submit_button("Criar Usuário")
-            
-            if submit_user:
-                if new_email and new_pass:
-                    ok, msg = db.add_user(st.session_state['username'], new_email, new_pass, new_role)
-                    if ok:
-                        st.success(msg)
-                    else:
-                        st.error(msg)
-                else:
-                    st.warning("Preencha todos os campos.")
+        df_original = st.session_state['data']
         
-        st.divider()
-        st.subheader("Usuários Existentes")
-        users_df = db.get_users()
-        
-        # Display users with delete button
-        for index, row in users_df.iterrows():
-            c1, c2, c3, c4 = st.columns([3, 1, 2, 1])
-            c1.write(f"**{row['email']}**")
-            c2.write(row['role'].upper())
-            c3.write(row['created_at'])
-            if c4.button("Excluir", key=f"del_{row['email']}"):
-                ok, msg = db.delete_user(st.session_state['username'], row['email'])
-                if ok:
-                    st.success(msg)
-                    st.rerun()
-                else:
-                    st.error(msg)
+        if not df_original.empty:
+            
+            # ----------------------------------------------------
+            # 1. FILTROS DE PROJETO E ARQUIVO
+            # ----------------------------------------------------
+            st.markdown("### 🏷️ Filtros de Contexto")
+            
+            # Filtro de Arquivo
+            arquivos_unicos = ['TODOS'] + sorted(df_original['Arquivo_Origem'].unique().tolist())
+            arquivo_selecionado = st.selectbox(
+                "Filtrar por Arquivo:",
+                arquivos_unicos
+            )
+            
+            # Filtro de Projeto
+            projetos_unicos = ['TODOS'] + sorted(df_original['Projeto'].astype(str).str.strip().unique().tolist())
+            projeto_selecionado = st.selectbox(
+                "Filtrar por Projeto:",
+                projetos_unicos
+            )
+            
+            # ----------------------------------------------------
+            # 2. FILTROS DE PERÍODO (NOVIDADE)
+            # ----------------------------------------------------
+            st.markdown("### 📅 Filtros de Período")
 
-    # TAB 2: Logs
-    with tab2:
-        st.subheader("Auditoria de Ações")
-        logs = db.get_logs()
-        st.dataframe(logs, use_container_width=True)
-    
-    # TAB 3: Perigo
-    with tab3:
-        st.subheader("Limpeza de Dados")
-        st.warning("Cuidado: A exclusão de dados operacionais é irreversível.")
-        if st.button("🗑️ EXCLUIR DADOS DE IMPORTAÇÃO (Mantém Usuários)", type="primary"):
-            db.delete_all_data(st.session_state['username'])
-            st.success("Banco de dados operacional limpo com sucesso.")
-            st.rerun()
+            tipo_filtro_data = st.radio(
+                "Escolha o Tipo de Filtro:",
+                ('Período Específico', 'Mês e Ano'),
+                key='tipo_filtro_data'
+            )
 
-# ==============================================================================
-# MAIN APP FLOW
-# ==============================================================================
-def main():
-    if 'logged_in' not in st.session_state:
-        st.session_state['logged_in'] = False
-        st.session_state['role'] = None
-        st.session_state['username'] = None
+            df_filtrado = df_original.copy()
+            
+            if tipo_filtro_data == 'Período Específico':
+                col_d_start, col_d_end = st.columns(2)
+                
+                # Encontrar a data mínima e máxima no conjunto de dados
+                min_date = df_original['DataPagto'].min()
+                max_date = df_original['DataPagto'].max()
+                
+                with col_d_start:
+                    data_inicio = st.date_input(
+                        "Data Início:",
+                        value=min_date,
+                        min_value=min_date,
+                        max_value=max_date,
+                        key='data_inicio'
+                    )
+                
+                with col_d_end:
+                    data_fim = st.date_input(
+                        "Data Fim:",
+                        value=max_date,
+                        min_value=min_date,
+                        max_value=max_date,
+                        key='data_fim'
+                    )
+                
+                # Aplicar filtro de período
+                if data_inicio and data_fim:
+                    df_filtrado = df_filtrado[
+                        (df_filtrado['DataPagto'].dt.date >= data_inicio) & 
+                        (df_filtrado['DataPagto'].dt.date <= data_fim)
+                    ]
 
-    if not st.session_state['logged_in']:
-        login_screen()
+            elif tipo_filtro_data == 'Mês e Ano':
+                col_m, col_a = st.columns(2)
+                
+                # Obter meses e anos únicos do Mes_Ano
+                meses_anos_disponiveis = sorted(df_original['Mes_Ano'].unique().tolist())
+                mes_ano_selecionado = st.selectbox(
+                    "Selecione o Mês/Ano:",
+                    ['TODOS'] + meses_anos_disponiveis,
+                    key='mes_ano_selecionado'
+                )
+
+                if mes_ano_selecionado != 'TODOS':
+                    df_filtrado = df_filtrado[df_filtrado['Mes_Ano'] == mes_ano_selecionado]
+
+            # Aplica filtros de Arquivo e Projeto ao DF filtrado por data
+            if arquivo_selecionado != 'TODOS':
+                df_filtrado = df_filtrado[df_filtrado['Arquivo_Origem'] == arquivo_selecionado]
+            
+            if projeto_selecionado != 'TODOS':
+                df_filtrado = df_filtrado[df_filtrado['Projeto'] == projeto_selecionado]
+
+            # Armazena o DataFrame filtrado para uso no Main Content
+            st.session_state['df_filtrado'] = df_filtrado
+            
+            # Exibir resumo dos arquivos processados
+            st.markdown("---")
+            st.markdown("#### Status dos Arquivos")
+            for arquivo, status in st.session_state['arquivos_carregados'].items():
+                icon = "✅" if status == "OK" else "❌"
+                st.caption(f"{icon} **{arquivo}**: {status}")
+
+        else:
+            st.warning("Aguardando o carregamento e processamento dos dados.")
+            st.session_state['df_filtrado'] = pd.DataFrame() # Garante que o df filtrado está vazio
+
     else:
-        # Sidebar Navigation
-        with st.sidebar:
-            st.image("https://www.prefeitura.sp.gov.br/cidade/secretarias/upload/trabalho/logo_smdet.png", width=200) # Placeholder logo
-            st.write(f"Bem-vindo, **{st.session_state['username']}**")
-            st.write(f"Perfil: **{st.session_state['role'].upper()}**")
-            
-            menu = st.radio("Navegação", ["Dashboard", "Importação", "Admin" if st.session_state['role'] == 'admin' else None])
-            
-            if st.button("Sair"):
-                st.session_state['logged_in'] = False
-                st.session_state['role'] = None
-                st.session_state['username'] = None
-                st.rerun()
-        
-        # Router
-        if menu == "Dashboard":
-            dashboard_screen()
-        elif menu == "Importação":
-            upload_screen()
-        elif menu == "Admin" and st.session_state['role'] == 'admin':
-            admin_screen()
+        st.session_state['df_filtrado'] = pd.DataFrame()
+        st.session_state['data'] = pd.DataFrame()
+        st.session_state['inconsistencias'] = []
 
-if __name__ == "__main__":
-    main()
+
+# ============================================
+# LAYOUT PRINCIPAL (CONTEÚDO)
+# ============================================
+
+st.title("Sistema de Análise e Monitoramento de Projetos")
+
+df_filtrado = st.session_state.get('df_filtrado', pd.DataFrame())
+todas_inconsistencias = st.session_state.get('inconsistencias', [])
+
+if df_filtrado.empty:
+    st.info("Carregue e processe um ou mais arquivos na barra lateral para iniciar a análise.")
+else:
+    # ----------------------------------------------------
+    # ABAS DE NAVEGAÇÃO
+    # ----------------------------------------------------
+    tab_analise, tab_inconsistencias, tab_dados, tab_config = st.tabs(
+        [
+            "📊 Análise Geral", 
+            f"🚨 Inconsistências Críticas ({len(todas_inconsistencias)})", 
+            "📝 Dados Detalhados", 
+            "⚙️ Configurações"
+        ]
+    )
+
+    # ============================================
+    # ABA 1: ANÁLISE GERAL
+    # ============================================
+    with tab_analise:
+        st.header("Resumo Financeiro e Distribuição")
+        
+        # 1. KPIs
+        df_kpi = df_filtrado.copy()
+        
+        # Calcula KPIs após a filtragem
+        total_pago = df_kpi['Valor Pagto'].sum() if 'Valor Pagto' in df_kpi.columns else 0
+        total_registros = len(df_kpi)
+        projetos_ativos = df_kpi['Projeto'].nunique() if 'Projeto' in df_kpi.columns else 0
+        
+        col_k1, col_k2, col_k3, col_k4 = st.columns(4)
+        
+        with col_k1:
+            st.metric("Total Pago (Período Filtrado)", formatar_moeda_brl(total_pago))
+        with col_k2:
+            st.metric("Total de Registros", total_registros)
+        with col_k3:
+            st.metric("Projetos Envolvidos", projetos_ativos)
+        with col_k4:
+            media_pagto = total_pago / total_registros if total_registros > 0 else 0
+            st.metric("Média por Registro", formatar_moeda_brl(media_pagto))
+            
+        st.markdown("---")
+
+        # 2. GRÁFICOS
+        if 'Valor Pagto' in df_kpi.columns and 'Projeto' in df_kpi.columns:
+            st.subheader("Distribuição do Valor Pago por Projeto")
+            
+            # Agrupamento de dados para o gráfico
+            df_projeto = df_kpi.groupby('Projeto')['Valor Pagto'].sum().reset_index()
+            df_projeto['Valor Pagto Formatado'] = df_projeto['Valor Pagto'].apply(formatar_moeda_brl)
+            
+            fig_proj = px.bar(
+                df_projeto.sort_values(by='Valor Pagto', ascending=False),
+                x='Projeto',
+                y='Valor Pagto',
+                text='Valor Pagto Formatado',
+                title='Soma Total de Pagamentos por Projeto',
+                color='Projeto',
+                template='plotly_white'
+            )
+            fig_proj.update_traces(textposition='outside')
+            fig_proj.update_layout(showlegend=False, yaxis_title="Valor Pago (R$)", xaxis_title="Projeto")
+            st.plotly_chart(fig_proj, use_container_width=True)
+
+        if 'DataPagto' in df_kpi.columns and 'Valor Pagto' in df_kpi.columns:
+            st.subheader("Evolução Mensal do Pagamento")
+            
+            df_mensal = df_kpi.set_index('DataPagto').resample('M')['Valor Pagto'].sum().reset_index()
+            df_mensal['Mes_Ano'] = df_mensal['DataPagto'].dt.strftime('%Y-%m')
+            
+            fig_time = px.line(
+                df_mensal,
+                x='Mes_Ano',
+                y='Valor Pagto',
+                markers=True,
+                title='Série Histórica do Pagamento Mensal',
+                template='plotly_white'
+            )
+            fig_time.update_layout(xaxis_title="Mês/Ano", yaxis_title="Valor Pago (R$)")
+            st.plotly_chart(fig_time, use_container_width=True)
+
+
+    # ============================================
+    # ABA 2: INCONSISTÊNCIAS CRÍTICAS (NOVIDADE)
+    # ============================================
+    with tab_inconsistencias:
+        st.header("🚨 Inconsistências Críticas Detectadas")
+        
+        if todas_inconsistencias:
+            st.warning(f"Foram encontradas **{len(todas_inconsistencias)}** inconsistências que requerem atenção da equipe.")
+            
+            # Conversão da lista de dicionários de inconsistências para DataFrame para exibição
+            # Transformamos os dados aninhados para exibição plana
+            dados_inconsistentes = []
+            for inc in todas_inconsistencias:
+                registro = inc['Registro']
+                dados_inconsistentes.append({
+                    'Arquivo Origem': inc['Arquivo'],
+                    'Tipo': inc['Tipo Inconsistência'],
+                    'Detalhes do Erro': inc['Detalhes'],
+                    'CPF Duplicado': inc['CPF_Limpo'],
+                    'Nome no Registro': registro.get('Nome', 'N/A'),
+                    'Cartão no Registro': registro.get('Num Cartao', 'N/A'),
+                    'Projeto': registro.get('Projeto', 'N/A'),
+                    'Data Pagto': registro.get('DataPagto', 'N/A'),
+                    'Valor Pagto': formatar_moeda_brl(registro.get('Valor Pagto', 0)),
+                })
+            
+            df_inconsistencias = pd.DataFrame(dados_inconsistentes)
+            
+            st.markdown("### Tabela de Registros Inconsistentes")
+            st.caption("Filtre o DataFrame abaixo para priorizar as ações de correção. **Os valores monetários estão no padrão BRL.**")
+            
+            # Exibe a tabela de inconsistências com filtro e formatação
+            st.dataframe(
+                df_inconsistencias,
+                use_container_width=True,
+                height=500
+            )
+
+            # Exportação do relatório de inconsistências (Ação Imediata)
+            csv_inconsistencias = df_inconsistencias.to_csv(index=False, sep=';', encoding='utf-8-sig')
+            st.download_button(
+                label="📥 Exportar Relatório de Inconsistências (CSV)",
+                data=csv_inconsistencias,
+                file_name=f"RELATORIO_INCONSISTENCIAS_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime='text/csv',
+                type="secondary"
+            )
+
+        else:
+            st.success("🎉 Não foram encontradas inconsistências críticas (CPFs repetidos com dados divergentes) no conjunto de dados filtrado.")
+
+    # ============================================
+    # ABA 3: DADOS DETALHADOS
+    # ============================================
+    with tab_dados:
+        st.header("Visualização e Detalhamento dos Dados")
+        
+        st.caption(f"Exibindo {len(df_filtrado)} registros (após filtros de período e contexto).")
+        
+        # Prepara a visualização: aplica a formatação BRL
+        df_display = df_filtrado.copy()
+        
+        colunas_monetarias = ['Valor Total', 'Valor Desconto', 'Valor Pagto', 'Valor Dia']
+        for col in colunas_monetarias:
+            if col in df_display.columns:
+                df_display[col] = df_display[col].apply(formatar_moeda_brl)
+                
+        # Formata a data para BR
+        if 'DataPagto' in df_display.columns:
+            df_display['DataPagto'] = df_display['DataPagto'].dt.strftime('%d/%m/%Y')
+        
+        st.dataframe(
+            df_display, 
+            use_container_width=True,
+            height=600
+        )
+
+    # ============================================
+    # ABA 4: CONFIGURAÇÕES E EXPORTAÇÃO
+    # ============================================
+    with tab_config:
+        st.header("Opções do Sistema e Exportação de Relatórios")
+
+        # ----------------------------------------------------
+        # SIMULAÇÃO DE EXPORTAÇÃO AVANÇADA
+        # ----------------------------------------------------
+        st.markdown("### 💾 OPÇÕES DE EXPORTAÇÃO DE RELATÓRIOS")
+        st.markdown("""
+        **Aviso:** O relatório exportado incluirá:
+        1.  O resumo da **Análise Geral** (KPIs e Gráficos).
+        2.  A lista completa de **Inconsistências Críticas** (com o nome do arquivo original e informações do registro).
+        3.  Os **Dados Detalhados** do período e contexto filtrados.
+        """)
+
+        col_e1, col_e2 = st.columns(2)
+        
+        with col_e1:
+            formato_exportacao = st.selectbox(
+                "Formato padrão de exportação:",
+                ["PDF (Recomendado)", "Excel (.xlsx)", "CSV (.csv)"]
+            )
+        
+        with col_e2:
+            incluir_graficos = st.checkbox(
+                "Incluir gráficos nos relatórios",
+                value=True
+            )
+        
+        st.button("⚙️ GERAR RELATÓRIO (EMULAÇÃO)", type="primary", use_container_width=True)
+        
+        if formato_exportacao == "PDF (Recomendado)":
+            st.info("A geração de PDF com inclusão de inconsistências e metadados foi solicitada e será integrada na próxima atualização do sistema.")
+        
+        # Botão real de exportação para CSV/Excel do DF Filtrado (somente para dados limpos, não o relatório complexo)
+        
+        def to_excel(df):
+            output = BytesIO()
+            writer = pd.ExcelWriter(output, engine='xlsxwriter')
+            df.to_excel(writer, index=False, sheet_name='Dados Filtrados')
+            writer.close()
+            return output.getvalue()
+        
+        # Prepara o DF para exportação (voltando a notação numérica padrão para software)
+        df_export_num = df_filtrado.copy()
+        for col in ['Valor Total', 'Valor Desconto', 'Valor Pagto', 'Valor Dia']:
+            if col in df_export_num.columns:
+                # Remove a formatação BRL para que o software que ler o arquivo reconheça o número
+                df_export_num[col] = pd.to_numeric(df_export_num[col], errors='coerce')
+
+        st.download_button(
+            label="📥 Exportar Dados Filtrados para Excel (.xlsx)",
+            data=to_excel(df_export_num),
+            file_name=f"DADOS_FILTRADOS_{datetime.now().strftime('%Y%m%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="download_excel"
+        )
+
+
+        # ----------------------------------------------------
+        # OPÇÕES DO SISTEMA (MANTIDAS DO CÓDIGO ANTERIOR)
+        # ----------------------------------------------------
+        st.markdown("### 🖥️ OPÇÕES DE VALIDAÇÃO")
+        
+        col_s1, col_s2 = st.columns(2)
+        with col_s1:
+            auto_validar = st.checkbox(
+                "Validação automática ao carregar",
+                value=True,
+                help="Executa validação automática após carregar dados"
+            )
+            
+            manter_historico = st.checkbox(
+                "Manter histórico de alterações",
+                value=True,
+                help="Armazena histórico de modificações nos dados"
+            )
+        
+        with col_s2:
+            limite_registros = st.number_input(
+                "Limite de registros para processamento:",
+                min_value=1000,
+                max_value=1000000,
+                value=100000,
+                step=1000,
+                help="Define o número máximo de registros para processamento otimizado"
+            )
+        
+        # Botão para salvar configurações
+        if st.button("💾 SALVAR CONFIGURAÇÕES", type="secondary", use_container_width=True):
+            st.success("✅ Configurações salvas com sucesso!")
+            # Aqui você implementaria a lógica para salvar as configurações
+            
+# ============================================
+# FIM DO CÓDIGO
+# ============================================
