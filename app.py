@@ -6,366 +6,273 @@ import time
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
-    page_title="Gestão de Pagamentos - Programa Operação Trabalho",
-    page_icon="💼",
-    layout="wide"
+    page_title="Sistema Integrado de Gestão - POT",
+    page_icon="🏢",
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-# --- INICIALIZAÇÃO DO ESTADO (SESSION STATE) ---
+# --- CSS PERSONALIZADO ---
+st.markdown("""
+<style>
+    .main-header {
+        font-size: 2.2rem;
+        color: #1E3D59;
+        font-weight: bold;
+    }
+    .sub-header {
+        font-size: 1.5rem;
+        color: #1E3D59;
+    }
+    .metric-container {
+        background-color: #F0F2F6;
+        padding: 15px;
+        border-radius: 10px;
+        border: 1px solid #E0E0E0;
+    }
+    div.stButton > button:first-child {
+        background-color: #1E3D59;
+        color: white;
+        border-radius: 5px;
+    }
+    div.stButton > button:hover {
+        background-color: #155a8a;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# --- INICIALIZAÇÃO DO ESTADO ---
 if 'df_pagamentos' not in st.session_state:
     st.session_state['df_pagamentos'] = pd.DataFrame()
 
-# --- FUNÇÕES DE LIMPEZA E FORMATAÇÃO ---
+# --- FUNÇÕES AUXILIARES ---
 def clean_currency(value):
-    """
-    Remove R$, espaços e converte formato BR (1.000,00) para float (1000.00).
-    """
+    """Converte valores monetários (R$ 1.000,00) para float (1000.00)."""
     if isinstance(value, (int, float, np.number)):
         return float(value)
     if isinstance(value, str):
-        # Remove caracteres não numéricos exceto vírgula e ponto
-        clean_str = value.replace('R$', '').replace(' ', '').strip()
-        # Se for formato BR (1.000,00)
-        if ',' in clean_str and '.' in clean_str:
-            clean_str = clean_str.replace('.', '').replace(',', '.')
-        elif ',' in clean_str:
-            clean_str = clean_str.replace(',', '.')
-        
+        clean = value.replace('R$', '').replace(' ', '').strip()
+        if ',' in clean and '.' in clean:
+            clean = clean.replace('.', '').replace(',', '.')
+        elif ',' in clean:
+            clean = clean.replace(',', '.')
         try:
-            return float(clean_str)
+            return float(clean)
         except ValueError:
             return 0.0
     return 0.0
 
 def format_brl(value):
-    """Formata float para moeda BRL visual."""
     return f"R$ {value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
-# --- GERAÇÃO DE DADOS (SIMULAÇÃO) ---
-def generate_mock_data():
-    """
-    Gera um dataset simulando o arquivo mestre do Programa Operação Trabalho.
-    Agora ajustado para ter pagamentos únicos altos, ao invés de focar na soma.
-    """
-    np.random.seed(42) # Semente para reprodutibilidade
-    n_rows = 2054
-    
-    projetos = [
-        "POT - Redenção", "POT - Oportunidades", "POT - Zeladoria", 
-        "POT - Horta", "POT - Mães Guardiãs"
-    ]
-    
-    # Geração de Cartões
-    unique_cards = np.random.randint(1000000000, 9999999999, size=1800, dtype=np.int64)
-    cards_column = np.random.choice(unique_cards, size=n_rows)
-    
-    # Valores de Pagamento
-    base_values = [600.00, 850.00, 920.00, 1200.00, 1500.00]
-    values_column = np.random.choice(base_values, size=n_rows).astype(float)
-    
-    noise = np.random.random(size=n_rows) * 10 
-    values_column += noise
-    
-    # Casos de Teste (Valor Único > 5k)
-    # Linha específica com valor alto (suspeito individual)
-    values_column[0] = 5500.00 
-    
-    # Linha com valor alto mas abaixo do limite
-    values_column[1] = 4900.00
-    
-    # DUPLICIDADE DE TESTE: Mesmo cartão com vários pagamentos
-    # Conta 9876543210 aparecerá 3 vezes
-    cards_column[2:5] = 9876543210
-    values_column[2] = 2000.00
-    values_column[3] = 2000.00
-    values_column[4] = 2000.00
-    
-    df = pd.DataFrame({
-        "Num Cartao": cards_column,
-        "Nome Beneficiário": [f"Beneficiário {i}" for i in range(n_rows)],
-        "Projeto Origem": np.random.choice(projetos, size=n_rows),
-        "Valor Pagto": values_column,
-        "Data Processamento": pd.date_range(start="2023-10-01", periods=n_rows, freq="T"),
-        "Status Planilha": "Importado"
-    })
-    
-    df["Num Cartao"] = df["Num Cartao"].astype(str)
-    return df
-
 def load_from_file(uploaded_file):
-    """
-    Carrega e normaliza arquivo real enviado pelo usuário.
-    Implementa tratamento de encoding para evitar erros com arquivos BR (Latin-1).
-    Remove linhas de totalização (onde Cartão/Nome estão vazios ou indicam Total).
-    """
+    """Carrega arquivo, detecta encoding e normaliza colunas."""
     df = pd.DataFrame()
     try:
         if uploaded_file.name.endswith('.csv'):
-            # Tenta ler como UTF-8 padrão
             try:
                 df = pd.read_csv(uploaded_file)
             except UnicodeDecodeError:
-                # Se falhar, tenta Latin-1 (comum em Excel BR) e separador de ponto e vírgula
                 uploaded_file.seek(0)
-                try:
-                    df = pd.read_csv(uploaded_file, encoding='latin-1', sep=';')
-                except:
-                    # Última tentativa com encoding comum
-                    uploaded_file.seek(0)
-                    df = pd.read_csv(uploaded_file, encoding='iso-8859-1', sep=';')
+                df = pd.read_csv(uploaded_file, encoding='latin-1', sep=';')
         else:
             df = pd.read_excel(uploaded_file)
         
-        # 1. Limpeza inicial de nomes de colunas (strip)
+        # Normalização de Colunas
         df.columns = [str(c).strip() for c in df.columns]
-
-        # 2. Remoção de colunas duplicadas (evita AttributeError na seleção)
-        df = df.loc[:, ~df.columns.duplicated()]
-
-        # 3. Mapeamento Inteligente
+        
+        # Mapeamento de Colunas Inteligente
         cols_map = {c.lower(): c for c in df.columns}
         rename_dict = {}
         
-        # Mapeia Num Cartao
-        if 'Num Cartao' not in df.columns:
-            for key in cols_map:
-                if 'cartao' in key or 'cartão' in key or 'conta' in key:
-                    rename_dict[cols_map[key]] = 'Num Cartao'
-                    break
-        
-        # Mapeia Valor Pagto
-        if 'Valor Pagto' not in df.columns:
-            for key in cols_map:
-                if 'valor' in key or 'liquido' in key or 'líquido' in key:
-                    rename_dict[cols_map[key]] = 'Valor Pagto'
-                    break
-        
-        # Mapeia Nome/CPF (para validação de linha vazia)
-        if 'Nome Beneficiário' not in df.columns:
-            for key in cols_map:
-                if 'nome' in key or 'beneficiario' in key or 'favorecido' in key:
-                    rename_dict[cols_map[key]] = 'Nome Beneficiário'
-                    break
-                    
+        # Tentativa de identificar colunas chave
+        for key, original in cols_map.items():
+            if 'cartao' in key or 'cartão' in key or 'conta' in key:
+                rename_dict[original] = 'Num Cartao'
+            elif 'valor' in key or 'liquido' in key:
+                rename_dict[original] = 'Valor Pagto'
+            elif 'nome' in key or 'beneficiario' in key:
+                rename_dict[original] = 'Nome Beneficiário'
+                
         df = df.rename(columns=rename_dict)
         
-        # 4. Validação Crítica de Colunas
-        required_cols = ['Num Cartao', 'Valor Pagto']
-        missing = [c for c in required_cols if c not in df.columns]
-        
-        if missing:
-            st.error(f"❌ Erro de Formato: Não foi possível identificar as colunas obrigatórias: {missing}. Verifique se o arquivo possui colunas com 'Cartão' e 'Valor'.")
-            return pd.DataFrame() # Retorna vazio para não quebrar o app
+        # Validação
+        if 'Num Cartao' not in df.columns or 'Valor Pagto' not in df.columns:
+            st.error("Erro: Arquivo deve conter colunas de 'Cartão' e 'Valor'.")
+            return pd.DataFrame()
             
-        # 5. LIMPEZA DE LINHAS DE TOTALIZAÇÃO (CORREÇÃO DO VALOR DOBRADO)
-        # Regra: Se Num Cartao é vazio/nulo ou contém 'Total', remove a linha.
-        
-        # Converte para string para analisar
+        # Limpeza de Linhas de Total/Lixo
         df['Num Cartao'] = df['Num Cartao'].astype(str).str.strip()
+        invalid_tokens = ['nan', 'none', '', 'nat', 'total', 'soma']
+        df = df[~df['Num Cartao'].str.lower().isin(invalid_tokens)]
+        df = df[~df['Num Cartao'].str.lower().str.contains('total', na=False)]
         
-        # Filtra 'nan', 'None', strings vazias e linhas que contêm "Total"
-        # O filtro mantém apenas o que NÃO É (~) nulo/vazio/total
-        df = df[~df['Num Cartao'].isin(['nan', 'None', '', 'NaN', 'NaT'])]
-        df = df[~df['Num Cartao'].str.contains('total', case=False, na=False)]
-        df = df[~df['Num Cartao'].str.contains('soma', case=False, na=False)]
-
-        # Reforço com Nome Beneficiário se existir
-        if 'Nome Beneficiário' in df.columns:
-             df['Nome Beneficiário'] = df['Nome Beneficiário'].astype(str).str.strip()
-             df = df[~df['Nome Beneficiário'].isin(['nan', 'None', '', 'NaN'])]
-             df = df[~df['Nome Beneficiário'].str.contains('Total', case=False, na=False)]
-
         return df
-
     except Exception as e:
-        st.error(f"Erro Crítico ao ler arquivo: {str(e)}")
+        st.error(f"Erro ao processar arquivo: {e}")
         return pd.DataFrame()
 
-# --- LÓGICA DE NEGÓCIO ---
-def process_business_rules(df, threshold=5000.00):
-    if df.empty:
-        return df
-
-    # Verificação de segurança adicional
-    if 'Valor Pagto' not in df.columns:
-        st.error("Erro interno: Coluna 'Valor Pagto' perdida no processamento.")
-        return df
-
-    # Limpeza/Conversão do Valor
-    # Verifica o tipo da coluna para decidir como limpar
-    try:
-        if df['Valor Pagto'].dtype == 'object':
-            df['Valor_Calculo'] = df['Valor Pagto'].apply(clean_currency)
-        else:
-            df['Valor_Calculo'] = pd.to_numeric(df['Valor Pagto'], errors='coerce').fillna(0.0)
-    except Exception as e:
-        st.error(f"Erro ao processar valores monetários: {e}")
-        df['Valor_Calculo'] = 0.0
-
-    # --- REGRA ATUALIZADA ---
-    # Validação LINHA A LINHA.
-    # O limite de R$ 5.000,00 se aplica ao valor individual do pagamento.
+def generate_mock_data():
+    """Gera dados simulados para teste do sistema."""
+    np.random.seed(42)
+    n_rows = 2054
+    projetos = ["POT - Redenção", "POT - Oportunidades", "POT - Zeladoria", "POT - Mães Guardiãs"]
     
+    unique_cards = np.random.randint(1000000000, 9999999999, size=1800, dtype=np.int64)
+    cards = np.random.choice(unique_cards, size=n_rows)
+    values = np.random.choice([600.0, 850.0, 920.0, 1200.0, 1500.0], size=n_rows)
+    values += np.random.random(size=n_rows) * 10
+    
+    # Inserção de Casos de Borda (Teto e Duplicidade)
+    values[0] = 5500.00 # Acima do teto
+    values[1] = 4900.00 # Próximo ao teto
+    
+    # Duplicidade para teste
+    cards[2:5] = 9876543210
+    values[2:5] = 2000.00
+    
+    df = pd.DataFrame({
+        "Num Cartao": cards,
+        "Nome Beneficiário": [f"Beneficiário {i}" for i in range(n_rows)],
+        "Projeto Origem": np.random.choice(projetos, size=n_rows),
+        "Valor Pagto": values,
+        "Data Processamento": pd.date_range("2023-10-01", periods=n_rows, freq="T"),
+        "Status Planilha": "Importado"
+    })
+    return df
+
+def process_data(df, teto):
+    """Aplica regras de negócio e validações."""
+    if df.empty: return df
+    
+    # Tratamento de Valor
+    if df['Valor Pagto'].dtype == 'object':
+        df['Valor_Calculo'] = df['Valor Pagto'].apply(clean_currency)
+    else:
+        df['Valor_Calculo'] = pd.to_numeric(df['Valor Pagto'], errors='coerce').fillna(0.0)
+        
+    # Regra de Teto (Correção solicitada: Validação por item)
     df['Status_Validacao'] = df['Valor_Calculo'].apply(
-        lambda x: '⚠️ Análise Admin' if x > threshold else '✅ Liberado'
+        lambda x: '⚠️ Análise Admin' if x > teto else '✅ Liberado'
     )
     
-    # Opcional: Calcula total por cartão para informação
-    try:
-        grouped = df.groupby('Num Cartao')['Valor_Calculo'].sum().reset_index()
-        grouped.rename(columns={'Valor_Calculo': 'Info_Total_Acumulado'}, inplace=True)
-        
-        # Merge apenas para trazer a info de acumulado
-        df_final = df.merge(grouped, on='Num Cartao', how='left')
-        return df_final
-    except Exception as e:
-        st.warning(f"Não foi possível calcular o acumulado por cartão: {e}")
-        return df
+    # Cálculo de Acumulado por Cartão (Informativo)
+    grouped = df.groupby('Num Cartao')['Valor_Calculo'].sum().reset_index()
+    grouped.rename(columns={'Valor_Calculo': 'Info_Total_Acumulado'}, inplace=True)
+    df = df.merge(grouped, on='Num Cartao', how='left')
+    
+    return df
 
-# --- SIDEBAR ---
-st.sidebar.title("🔧 Painel de Controle")
+# --- LAYOUT PRINCIPAL ---
 
-st.sidebar.markdown("### 1. Fonte de Dados")
-uploaded_file = st.sidebar.file_uploader("📂 Carregar Arquivo (.xlsx, .csv)", type=['xlsx', 'csv'])
+st.sidebar.image("https://cdn-icons-png.flaticon.com/512/3135/3135715.png", width=60)
+st.sidebar.title("Nexus POT")
+st.sidebar.write("Gestão de Benefícios")
+st.sidebar.markdown("---")
 
-if st.sidebar.button("🎲 Usar Dados de Teste (Simulação)"):
+# Menu Sidebar
+uploaded_file = st.sidebar.file_uploader("📂 Importar Arquivo Mestre", type=['xlsx', 'csv'])
+usar_mock = st.sidebar.button("🎲 Carregar Dados de Simulação")
+st.sidebar.markdown("---")
+teto_maximo = st.sidebar.number_input("Teto Máximo (R$)", value=5000.00, step=100.00)
+limpar_dados = st.sidebar.button("🗑️ Limpar Sistema")
+
+if limpar_dados:
+    st.session_state['df_pagamentos'] = pd.DataFrame()
+    st.rerun()
+
+if usar_mock:
     st.session_state['df_pagamentos'] = generate_mock_data()
     st.rerun()
 
-st.sidebar.markdown("---")
-st.sidebar.markdown("### 2. Regras e Ações")
-limite_teto = st.sidebar.number_input(
-    "Teto Máximo por Pagamento Único (R$)",
-    value=5000.00,
-    step=100.00,
-    help="Qualquer linha de pagamento acima deste valor será retida para análise."
-)
+if uploaded_file:
+    df_new = load_from_file(uploaded_file)
+    if not df_new.empty:
+        st.session_state['df_pagamentos'] = df_new
 
-if st.sidebar.button("🗑️ Limpar Banco de Dados (Admin)", type="primary"):
-    st.session_state['df_pagamentos'] = pd.DataFrame()
-    st.cache_data.clear()
-    st.rerun()
+# CORPO DA PÁGINA
+st.markdown("<h1 class='main-header'>Sistema de Gestão Financeira - POT</h1>", unsafe_allow_html=True)
+st.markdown("Painel de Controle e Auditoria de Folha de Pagamento")
 
-# --- PROCESSAMENTO DO UPLOAD ---
-if uploaded_file is not None:
-    # Apenas carrega se o dataframe estiver vazio ou se o usuário estiver explicitamente subindo algo novo
-    # Isso evita recargas desnecessárias, mas garante que o upload funcione
-    df_loaded = load_from_file(uploaded_file)
-    if not df_loaded.empty:
-        st.session_state['df_pagamentos'] = df_loaded
+df = st.session_state['df_pagamentos']
 
-# --- APP PRINCIPAL ---
-
-st.title("Sistema de Gestão Financeira - POT")
-
-df_raw = st.session_state['df_pagamentos']
-
-if df_raw.empty:
-    st.info("""
-        ℹ️ **Sistema Aguardando Dados**
+if not df.empty:
+    # Processamento
+    df_proc = process_data(df, teto_maximo)
+    
+    # Filtros de Auditoria
+    df_retidos = df_proc[df_proc['Status_Validacao'] == '⚠️ Análise Admin']
+    duplicados = df_proc[df_proc.duplicated(subset=['Num Cartao'], keep=False)]
+    has_duplicados = not duplicados.empty
+    
+    # KPI Cards
+    col1, col2, col3, col4 = st.columns(4)
+    total_pgto = df_proc['Valor_Calculo'].sum()
+    total_retido = df_retidos['Valor_Calculo'].sum()
+    
+    col1.metric("Total de Registros", len(df_proc))
+    # Correção de Nomenclatura aplicada: Total de Pagamentos
+    col2.metric("Total de Pagamentos", format_brl(total_pgto))
+    # Correção de Nomenclatura aplicada: Contas Únicas
+    col3.metric("Contas Únicas", df_proc['Num Cartao'].nunique())
+    col4.metric("Volume em Análise", format_brl(total_retido), delta_color="inverse")
+    
+    st.divider()
+    
+    # Abas de Gestão
+    tab1, tab2, tab3 = st.tabs(["📊 Dashboard & Auditoria", "⚠️ Malha Fina & Duplicidades", "📋 Base de Dados"])
+    
+    with tab1:
+        c1, c2 = st.columns([2, 1])
+        with c1:
+            st.subheader("Distribuição por Projeto")
+            if 'Projeto Origem' in df_proc.columns:
+                fig_bar = px.bar(df_proc.groupby("Projeto Origem")['Valor_Calculo'].sum().reset_index(),
+                                 x="Projeto Origem", y="Valor_Calculo", text_auto=True,
+                                 color_discrete_sequence=['#1E3D59'])
+                st.plotly_chart(fig_bar, use_container_width=True)
+        with c2:
+            st.subheader("Status da Validação")
+            fig_pie = px.pie(df_proc, names='Status_Validacao', 
+                             color='Status_Validacao',
+                             color_discrete_map={'✅ Liberado': '#2ecc71', '⚠️ Análise Admin': '#e74c3c'})
+            st.plotly_chart(fig_pie, use_container_width=True)
+            
+    with tab2:
+        st.subheader("Central de Auditoria")
         
-        Carregue um arquivo .xlsx/.csv ou use os dados de teste.
-    """)
-    st.markdown("---")
-    c1, c2, c3 = st.columns(3)
-    with c2:
-        st.markdown("### 🚫 Nenhum dado carregado")
+        # Auditoria de Teto (Valores individuais altos)
+        if not df_retidos.empty:
+            st.error(f"🚨 **Teto Excedido:** {len(df_retidos)} pagamentos ultrapassam R$ {teto_maximo:,.2f}")
+            st.dataframe(
+                df_retidos[['Num Cartao', 'Nome Beneficiário', 'Valor_Calculo', 'Info_Total_Acumulado']].sort_values('Valor_Calculo', ascending=False),
+                column_config={
+                    "Valor_Calculo": st.column_config.NumberColumn("Valor Pagamento", format="R$ %.2f"),
+                    "Info_Total_Acumulado": st.column_config.NumberColumn("Total no Cartão", format="R$ %.2f")
+                }, use_container_width=True
+            )
+        else:
+            st.success("✅ Nenhum pagamento individual excede o teto estipulado.")
+            
+        st.divider()
+        
+        # Auditoria de Duplicidade (Contas recebendo mais de uma vez)
+        if has_duplicados:
+            st.warning(f"⚠️ **Duplicidade Detectada:** {duplicados['Num Cartao'].nunique()} contas receberam múltiplos pagamentos.")
+            st.dataframe(
+                duplicados[['Num Cartao', 'Nome Beneficiário', 'Projeto Origem', 'Valor_Calculo']].sort_values('Num Cartao'),
+                column_config={"Valor_Calculo": st.column_config.NumberColumn("Valor", format="R$ %.2f")},
+                use_container_width=True
+            )
+        else:
+            st.success("✅ Não foram encontradas duplicidades de contas na folha.")
+
+    with tab3:
+        st.subheader("Base de Dados Completa")
+        st.dataframe(df_proc, use_container_width=True)
+        
+        csv = df_proc.to_csv(index=False).encode('utf-8')
+        st.download_button("⬇️ Exportar Relatório (CSV)", data=csv, file_name="relatorio_auditoria_pot.csv", mime="text/csv")
 
 else:
-    # Processamento com tratamento de erro
-    try:
-        df_processed = process_business_rules(df_raw, threshold=limite_teto)
-        
-        if 'Status_Validacao' in df_processed.columns:
-            # Filtros
-            df_analise = df_processed[df_processed['Status_Validacao'] == '⚠️ Análise Admin']
-            
-            # --- DETECÇÃO DE DUPLICIDADE ---
-            # Identifica IDs que aparecem mais de uma vez
-            duplicados = df_processed[df_processed.duplicated(subset=['Num Cartao'], keep=False)]
-            has_duplicates = not duplicados.empty
-
-            # KPIs
-            col1, col2, col3, col4 = st.columns(4)
-            
-            total_valor = df_processed['Valor_Calculo'].sum()
-            total_analise = df_analise['Valor_Calculo'].sum()
-            
-            with col1:
-                st.metric("Total de Registros", len(df_processed))
-            with col2:
-                # CORREÇÃO DE NOMENCLATURA: DE 'Valor Total da Folha' para 'Total de Pagamentos'
-                st.metric("Total de Pagamentos", format_brl(total_valor))
-            with col3:
-                # CORREÇÃO DE NOMENCLATURA: DE 'Cartões Únicos' para 'Contas Únicas'
-                st.metric("Contas Únicas", df_processed['Num Cartao'].nunique())
-            with col4:
-                st.metric("Retido para Validação", format_brl(total_analise), delta_color="inverse")
-                
-            st.markdown("---")
-
-            # --- ALERTA DE VERIFICAÇÃO DE DUPLICIDADE ---
-            if has_duplicates:
-                num_contas_dup = duplicados['Num Cartao'].nunique()
-                st.warning(f"⚠️ **Alerta de Verificação:** Foram encontradas {num_contas_dup} Contas (Num Cartao) com múltiplos pagamentos no mesmo arquivo.")
-                
-                with st.expander("🔎 Visualizar Detalhes dos Pagamentos Duplicados/Múltiplos", expanded=False):
-                    st.markdown("Abaixo estão listados todos os registros das contas que aparecem mais de uma vez. Verifique se são pagamentos legítimos (parcelas, retroativos) ou erros.")
-                    
-                    # Seleciona colunas relevantes para análise
-                    cols_dup_view = ['Num Cartao', 'Nome Beneficiário', 'Valor Pagto', 'Projeto Origem']
-                    existing_cols = [c for c in cols_dup_view if c in duplicados.columns]
-                    
-                    # Ordena por Cartão para ficar um embaixo do outro
-                    st.dataframe(
-                        duplicados[existing_cols].sort_values(by='Num Cartao'),
-                        column_config={
-                            "Valor Pagto": st.column_config.NumberColumn("Valor", format="R$ %.2f")
-                        },
-                        use_container_width=True,
-                        hide_index=True
-                    )
-            
-            # ALERTAS DE VALOR (R$ 5k)
-            if not df_analise.empty:
-                st.error(f"🚨 **Atenção:** {len(df_analise)} pagamentos individuais excedem o teto de R$ {limite_teto:,.2f}.")
-                with st.expander("Ver Detalhes da Malha Fina (Valores Individuais Altos)"):
-                    cols_to_show = ['Num Cartao', 'Nome Beneficiário', 'Valor Pagto', 'Info_Total_Acumulado']
-                    # Garante que as colunas existem antes de mostrar
-                    cols_existing = [c for c in cols_to_show if c in df_analise.columns]
-                    
-                    st.dataframe(
-                        df_analise[cols_existing].sort_values(by='Valor Pagto', ascending=False),
-                        column_config={
-                            "Valor Pagto": st.column_config.NumberColumn("Valor do Pagamento (Alerta)", format="R$ %.2f"),
-                            "Info_Total_Acumulado": st.column_config.NumberColumn("Total Acumulado (Info)", format="R$ %.2f")
-                        },
-                        use_container_width=True
-                    )
-            else:
-                if not has_duplicates:
-                    st.success("✅ Nenhum pagamento individual excede o limite e não há duplicidades de conta.")
-                
-            # GRÁFICOS
-            tab1, tab2 = st.tabs(["📊 Visão Gráfica", "📋 Dados Brutos"])
-            
-            with tab1:
-                c1, c2 = st.columns(2)
-                if 'Projeto Origem' in df_processed.columns:
-                    with c1:
-                        fig = px.bar(df_processed.groupby("Projeto Origem")['Valor_Calculo'].sum().reset_index(), 
-                                    x="Projeto Origem", y="Valor_Calculo", title="Por Projeto")
-                        st.plotly_chart(fig, use_container_width=True)
-                
-                with c2:
-                    fig2 = px.pie(df_processed, names='Status_Validacao', title="Status da Validação")
-                    st.plotly_chart(fig2, use_container_width=True)
-                    
-            with tab2:
-                st.dataframe(df_processed, use_container_width=True)
-        else:
-            st.warning("Não foi possível processar o status de validação. Verifique os dados.")
-            st.dataframe(df_raw)
-            
-    except Exception as e:
-        st.error(f"Erro inesperado no processamento visual: {str(e)}")
+    st.info("Aguardando importação de dados para iniciar a auditoria.")
