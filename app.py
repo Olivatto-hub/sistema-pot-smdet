@@ -6,12 +6,12 @@ import re
 
 # --- Configuração da Página ---
 st.set_page_config(
-    page_title="Processador de Folha de Pagamento", 
+    page_title="Sistema POT - Processamento de Pagamentos", 
     page_icon="💰",
     layout="wide"
 )
 
-# --- CSS Personalizado para melhor visualização ---
+# --- CSS Personalizado ---
 st.markdown("""
     <style>
     .stMetric {
@@ -19,247 +19,302 @@ st.markdown("""
         padding: 10px;
         border-radius: 5px;
     }
+    .stAlert {
+        padding: 10px;
+        border-radius: 5px;
+    }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 1. Funções Auxiliares de Limpeza ---
+# --- GESTÃO DE SESSÃO E LOGIN ---
+
+if 'authenticated' not in st.session_state:
+    st.session_state.authenticated = False
+if 'user_role' not in st.session_state:
+    st.session_state.user_role = None
+
+def check_login(username, password):
+    # Credenciais simples (em produção, usar banco de dados ou env vars)
+    users = {
+        "admin": ("admin123", "Administrador"),
+        "operador": ("operador123", "Operador")
+    }
+    
+    if username in users and users[username][0] == password:
+        st.session_state.authenticated = True
+        st.session_state.user_role = users[username][1]
+        st.session_state.username = username
+        return True
+    return False
+
+def logout():
+    st.session_state.authenticated = False
+    st.session_state.user_role = None
+    st.session_state.username = None
+    st.rerun()
+
+# --- FUNÇÕES DE LIMPEZA E PADRONIZAÇÃO ---
 
 def remover_acentos(texto):
-    """Remove acentos e caracteres especiais de uma string."""
+    """Remove acentos e caracteres especiais para normalização de chaves."""
     if not isinstance(texto, str):
         return str(texto)
-    # Normaliza para NFD (decompondo caracteres) e filtra não-espaçados
     return ''.join(c for c in unicodedata.normalize('NFD', texto) if unicodedata.category(c) != 'Mn')
 
+def sanitizar_texto(texto):
+    """
+    Limpa caracteres estranhos visualmente (ex: Ã£ -> ã) e espaços extras.
+    Útil para nomes de beneficiários e gerenciadoras.
+    """
+    if pd.isna(texto):
+        return ""
+    
+    texto = str(texto).strip()
+    
+    # Tenta corrigir problemas comuns de encoding (UTF-8 lido como Latin-1)
+    try:
+        texto = texto.encode('cp1252').decode('utf-8')
+    except:
+        pass # Se falhar, mantém o original
+        
+    # Remove caracteres de controle e espaços extras
+    texto = " ".join(texto.split())
+    
+    # Converte para Title Case (primeira letra maiúscula)
+    return texto.title()
+
 def limpar_string_coluna(coluna):
-    """
-    Padroniza o nome da coluna para comparação:
-    - Minusculo
-    - Sem acentos
-    - Sem espaços extras
-    - Sem pontuação
-    """
+    """Padroniza nome da coluna para comparação (minusculo, sem acento/espaço)."""
     coluna = remover_acentos(coluna.lower().strip())
-    # Remove tudo que não for letra ou número
     coluna = re.sub(r'[^a-z0-9]', '', coluna)
     return coluna
 
 def limpar_valor_monetario(valor):
     """
     Converte strings de dinheiro (R$ 1.500,00) para float (1500.00).
+    Robusto contra erros de tipo.
     """
+    # Proteção contra Series/Listas passadas por engano (Causa do erro ValueError anterior)
+    if isinstance(valor, (pd.Series, list, tuple)):
+        return 0.0
+        
     if pd.isna(valor):
         return 0.0
     
     valor_str = str(valor).strip()
-    
-    # Remove R$ e espaços
     valor_str = valor_str.lower().replace('r$', '').strip()
     
-    # Se estiver vazio após limpeza
     if not valor_str:
         return 0.0
         
     try:
-        # Lógica para formato brasileiro:
-        # 1. Remove ponto de milhar (1.000 -> 1000)
-        # 2. Troca vírgula decimal por ponto (10,50 -> 10.50)
+        # Formato PT-BR: remove ponto milhar, troca vírgula decimal
         valor_str = valor_str.replace('.', '').replace(',', '.')
         return float(valor_str)
     except ValueError:
         return 0.0
 
-# --- 2. Lógica de Padronização Inteligente ---
-
 def normalizar_cabecalhos(df):
     """
-    Analisa os cabeçalhos do DataFrame e os renomeia para o padrão do sistema.
+    Renomeia colunas e remove duplicatas para evitar erros de processamento.
     """
-    # Remove espaços em branco das colunas originais
     df.columns = df.columns.str.strip()
     
-    # Dicionário de Mapeamento: Chave é o Padrão, Valor é lista de termos possíveis
     mapa_colunas = {
-        'Num Cartao': ['numcartao', 'nrocartao', 'numerocartao', 'cartao', 'card', 'nrcartao'],
+        'Num Cartao': ['numcartao', 'nrocartao', 'numerocartao', 'cartao', 'card', 'nrcartao', 'num'],
         'Nome': ['nome', 'beneficiario', 'favorecido', 'funcionario', 'nomedobeneficiario', 'nomefavorecido'],
         'CPF': ['cpf', 'cpfbeneficiario', 'doc', 'documento'],
-        'Valor': ['valor', 'valorpagto', 'valorliquido', 'valortotal', 'total', 'liquido'],
-        'Data': ['data', 'dtpagto', 'datapagto', 'datamovimento']
+        'Valor': ['valor', 'valorpagto', 'valorliquido', 'valortotal', 'total', 'liquido', 'vlrliquido'],
+        'Data': ['data', 'dtpagto', 'datapagto', 'datamovimento'],
+        'Gerenciadora': ['gerenciadora', 'banco', 'origem', 'rede']
     }
     
     colunas_renomeadas = {}
     colunas_originais = list(df.columns)
     
     for col_atual in colunas_originais:
-        # Prepara a coluna atual para comparação (limpa e sem acentos)
         col_clean = limpar_string_coluna(col_atual)
-        
         match_encontrado = False
         
         for col_padrao, termos_chave in mapa_colunas.items():
             if match_encontrado: break
-            
             for termo in termos_chave:
-                # Verifica se o termo chave está contido na coluna limpa
-                # Ex: "valortotal" contém "valor" -> Match!
                 if termo in col_clean:
                     colunas_renomeadas[col_atual] = col_padrao
                     match_encontrado = True
                     break
     
-    # Aplica a renomeação
+    # 1. Renomear
     if colunas_renomeadas:
         df = df.rename(columns=colunas_renomeadas)
+    
+    # 2. CRÍTICO: Remover colunas duplicadas após renomear
+    # (Ex: se tinha "Valor Bruto" e "Valor Liquido" e ambos viraram "Valor", mantém só o primeiro)
+    df = df.loc[:, ~df.columns.duplicated()]
         
     return df, colunas_renomeadas
 
-# --- 3. Processamento de Arquivos ---
+# --- PROCESSAMENTO DE ARQUIVOS ---
 
 def carregar_arquivo(uploaded_file):
-    """Lê CSV ou Excel tentando várias codificações."""
     filename = uploaded_file.name.lower()
-    
     try:
         if filename.endswith('.csv'):
-            # Tenta ler CSV com diferentes parâmetros
             try:
-                # Tentativa 1: Padrão PT-BR (Ponto e vírgula, UTF-8)
                 return pd.read_csv(uploaded_file, sep=';', encoding='utf-8', dtype=str)
             except:
                 uploaded_file.seek(0)
                 try:
-                    # Tentativa 2: Latin-1 (comum em sistemas legados/bancos)
                     return pd.read_csv(uploaded_file, sep=';', encoding='latin-1', dtype=str)
                 except:
                     uploaded_file.seek(0)
-                    # Tentativa 3: Separador vírgula (Padrão US)
                     return pd.read_csv(uploaded_file, sep=',', encoding='utf-8', dtype=str)
         else:
-            # Excel (.xlsx, .xls)
             return pd.read_excel(uploaded_file, dtype=str)
     except Exception as e:
-        raise Exception(f"Erro ao ler o arquivo: {str(e)}")
+        raise Exception(f"Erro de leitura: {str(e)}")
 
 def processar_dados(uploaded_file):
-    """Fluxo principal de processamento de um único arquivo."""
-    
-    # 1. Carregar
-    df = carregar_arquivo(uploaded_file)
-    
-    # 2. Padronizar Colunas
-    df, mudancas = normalizar_cabecalhos(df)
-    
-    # 3. Validação de Estrutura
-    colunas_obrigatorias = ['Num Cartao', 'Nome', 'Valor']
-    colunas_existentes = [c for c in colunas_obrigatorias if c in df.columns]
-    colunas_faltantes = [c for c in colunas_obrigatorias if c not in df.columns]
-    
-    if colunas_faltantes:
-        return None, f"Colunas obrigatórias não encontradas: {', '.join(colunas_faltantes)}", mudancas
-    
-    # 4. Limpeza e Tipagem de Dados
-    
-    # Limpeza do Valor
-    df['Valor'] = df['Valor'].apply(limpar_valor_monetario)
-    
-    # Limpeza do Cartão (apenas dígitos)
-    df['Num Cartao'] = df['Num Cartao'].astype(str).str.replace(r'\D', '', regex=True)
-    
-    # Garantir que Nome seja string limpa (opcional: title case)
-    df['Nome'] = df['Nome'].astype(str).str.strip().str.title()
-    
-    # Adicionar metadados
-    df['Arquivo Origem'] = uploaded_file.name
-    
-    # Selecionar e reordenar apenas colunas relevantes (mantendo CPF e Data se existirem)
-    cols_finais = ['Arquivo Origem', 'Num Cartao', 'Nome', 'Valor']
-    if 'CPF' in df.columns: cols_finais.append('CPF')
-    if 'Data' in df.columns: cols_finais.append('Data')
-    
-    # Filtra apenas as colunas que realmente existem no DF final
-    cols_finais = [c for c in cols_finais if c in df.columns]
-    
-    return df[cols_finais], None, mudancas
+    try:
+        # 1. Carregar
+        df = carregar_arquivo(uploaded_file)
+        
+        # 2. Normalizar e Desduplicar Colunas
+        df, mudancas = normalizar_cabecalhos(df)
+        
+        # 3. Validação
+        colunas_obrigatorias = ['Num Cartao', 'Nome', 'Valor']
+        faltantes = [c for c in colunas_obrigatorias if c not in df.columns]
+        
+        if faltantes:
+            return None, f"Colunas não encontradas: {', '.join(faltantes)}", mudancas
+        
+        # 4. Limpezas Específicas
+        
+        # Valor Monetário
+        df['Valor'] = df['Valor'].apply(limpar_valor_monetario)
+        
+        # Num Cartão (apenas dígitos)
+        df['Num Cartao'] = df['Num Cartao'].astype(str).str.replace(r'\D', '', regex=True)
+        
+        # Sanitização de Texto (Nome e Gerenciadora) para corrigir caracteres estranhos
+        df['Nome'] = df['Nome'].apply(sanitizar_texto)
+        if 'Gerenciadora' in df.columns:
+            df['Gerenciadora'] = df['Gerenciadora'].apply(sanitizar_texto)
+            
+        # Adicionar origem
+        df['Arquivo Origem'] = uploaded_file.name
+        
+        # Seleção Final de Colunas
+        cols_finais = ['Arquivo Origem', 'Num Cartao', 'Nome', 'Valor']
+        opcionais = ['CPF', 'Data', 'Gerenciadora']
+        for col in opcionais:
+            if col in df.columns:
+                cols_finais.append(col)
+        
+        return df[cols_finais], None, mudancas
 
-# --- 4. Interface do Streamlit ---
+    except Exception as e:
+        # Captura erro genérico e retorna string amigável
+        return None, f"Erro interno ao processar: {str(e)}", {}
 
-st.title("📂 Sistema de Consolidação de Pagamentos")
-st.markdown("---")
+# --- INTERFACE DO USUÁRIO ---
 
-with st.sidebar:
-    st.header("Upload de Arquivos")
-    st.info("Suporta CSV (separado por ; ou ,) e Excel (.xlsx)")
+if not st.session_state.authenticated:
+    # TELA DE LOGIN
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        st.title("🔒 Sistema POT")
+        st.subheader("Login de Acesso")
+        
+        with st.form("login_form"):
+            username = st.text_input("Usuário")
+            password = st.text_input("Senha", type="password")
+            submit = st.form_submit_button("Entrar")
+            
+            if submit:
+                if check_login(username, password):
+                    st.rerun()
+                else:
+                    st.error("Usuário ou senha incorretos")
+else:
+    # TELA PRINCIPAL (LOGADO)
+    st.sidebar.title(f"👤 {st.session_state.user_role}")
+    st.sidebar.text(f"Usuário: {st.session_state.username}")
+    if st.sidebar.button("Sair"):
+        logout()
+    
+    st.sidebar.divider()
+    
+    st.title("📂 Consolidação de Pagamentos")
+    
+    # Upload apenas se logado
     uploaded_files = st.file_uploader(
-        "Selecione as planilhas", 
+        "Arraste seus arquivos (CSV/Excel) aqui", 
         accept_multiple_files=True,
         type=['csv', 'xlsx', 'xls']
     )
-
-if uploaded_files:
-    dfs_validos = []
     
-    st.subheader("🔍 Análise Individual")
-    
-    for arquivo in uploaded_files:
-        with st.expander(f"Processando: {arquivo.name}", expanded=True):
-            df_proc, erro, mudancas = processar_dados(arquivo)
-            
-            if erro:
-                st.error(f"❌ Erro no arquivo: {erro}")
-                # Debug visual para ajudar o usuário
-                try:
-                    arquivo.seek(0)
-                    df_raw = pd.read_csv(arquivo, sep=';', nrows=3) if arquivo.name.endswith('.csv') else pd.read_excel(arquivo, nrows=3)
-                    st.caption("Primeiras linhas do arquivo original para verificação:")
-                    st.dataframe(df_raw)
-                except:
-                    pass
-            else:
-                col1, col2 = st.columns([3, 1])
-                with col1:
-                    if mudancas:
-                        st.success(f"✅ Processado! Colunas detectadas: {list(mudancas.keys())} ➝ {list(mudancas.values())}")
-                    else:
-                        st.success("✅ Arquivo processado com colunas padrão.")
-                with col2:
-                    st.metric("Total do Arquivo", f"R$ {df_proc['Valor'].sum():,.2f}")
+    if uploaded_files:
+        dfs_validos = []
+        
+        st.divider()
+        st.subheader("Processamento Individual")
+        
+        for arquivo in uploaded_files:
+            with st.expander(f"📄 {arquivo.name}", expanded=True):
+                df_proc, erro, mudancas = processar_dados(arquivo)
                 
-                st.dataframe(df_proc.head(), use_container_width=True)
-                dfs_validos.append(df_proc)
-    
-    # --- Consolidação ---
-    if dfs_validos:
-        st.markdown("---")
-        st.header("📊 Resultado Consolidado")
+                if erro:
+                    st.error(f"❌ Falha: {erro}")
+                    # Debug: mostra cabeçalho original se possível
+                    try:
+                        arquivo.seek(0)
+                        if arquivo.name.endswith('.csv'):
+                            line = arquivo.readline().decode('latin-1')
+                        else:
+                            line = "Arquivo Excel (binário)"
+                        st.caption(f"Cabeçalho bruto detectado: {line[:100]}...")
+                    except:
+                        pass
+                else:
+                    colA, colB = st.columns([3, 1])
+                    with colA:
+                        msg_cols = f"Colunas ajustadas: {mudancas}" if mudancas else "Colunas padrão identificadas."
+                        st.success(f"✅ Sucesso! {msg_cols}")
+                    with colB:
+                        st.metric("Total", f"R$ {df_proc['Valor'].sum():,.2f}")
+                    
+                    st.dataframe(df_proc.head(3), use_container_width=True)
+                    dfs_validos.append(df_proc)
         
-        df_final = pd.concat(dfs_validos, ignore_index=True)
-        
-        # Métricas Gerais
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Arquivos Unificados", len(dfs_validos))
-        m2.metric("Total de Beneficiários", len(df_final))
-        total_geral = df_final['Valor'].sum()
-        m3.metric("Valor Total da Folha", f"R$ {total_geral:,.2f}")
-        
-        # Exibição dos Dados
-        st.dataframe(df_final, use_container_width=True)
-        
-        # Preparação para Download (Formato PT-BR para Excel)
-        df_export = df_final.copy()
-        # Formata float para string com vírgula (R$ 1000,00)
-        df_export['Valor'] = df_export['Valor'].apply(lambda x: f"{x:.2f}".replace('.', ','))
-        
-        csv_buffer = df_export.to_csv(index=False, sep=';', encoding='utf-8-sig')
-        
-        col_esq, col_dir = st.columns([1, 2])
-        with col_esq:
+        if dfs_validos:
+            st.divider()
+            st.header("📊 Relatório Consolidado")
+            
+            df_final = pd.concat(dfs_validos, ignore_index=True)
+            
+            # Métricas
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Arquivos", len(dfs_validos))
+            c2.metric("Beneficiários", len(df_final))
+            c3.metric("Valor Total", f"R$ {df_final['Valor'].sum():,.2f}")
+            
+            # Visualização
+            st.dataframe(df_final, use_container_width=True)
+            
+            # Exportação
+            df_export = df_final.copy()
+            df_export['Valor'] = df_export['Valor'].apply(lambda x: f"{x:.2f}".replace('.', ','))
+            
+            csv = df_export.to_csv(index=False, sep=';', encoding='utf-8-sig')
+            
             st.download_button(
-                label="⬇️ Baixar Planilha Consolidada (.csv)",
-                data=csv_buffer,
-                file_name="folha_pagamento_consolidada.csv",
+                label="⬇️ Baixar Consolidado (.csv)",
+                data=csv,
+                file_name="folha_pot_consolidada.csv",
                 mime="text/csv",
                 type="primary"
             )
-
-else:
-    st.info("👈 Por favor, faça o upload dos arquivos na barra lateral para começar.")
+    else:
+        st.info("Aguardando arquivos para processamento...")
