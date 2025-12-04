@@ -8,7 +8,6 @@ import chardet
 import numpy as np
 import io
 import traceback
-from typing import Dict, List, Any
 
 warnings.filterwarnings('ignore')
 
@@ -65,14 +64,29 @@ st.markdown("""
         padding: 1rem;
         margin-bottom: 1rem;
     }
-    .critical-row {
-        background-color: #FEE2E2 !important;
+    .critical-badge {
+        background-color: #FEE2E2;
+        color: #DC2626;
+        padding: 2px 8px;
+        border-radius: 12px;
+        font-size: 0.8rem;
+        font-weight: bold;
     }
-    .warning-row {
-        background-color: #FEF3C7 !important;
+    .warning-badge {
+        background-color: #FEF3C7;
+        color: #D97706;
+        padding: 2px 8px;
+        border-radius: 12px;
+        font-size: 0.8rem;
+        font-weight: bold;
     }
-    .data-table {
-        font-size: 0.9rem;
+    .info-badge {
+        background-color: #DBEAFE;
+        color: #1D4ED8;
+        padding: 2px 8px;
+        border-radius: 12px;
+        font-size: 0.8rem;
+        font-weight: bold;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -91,7 +105,6 @@ class SistemaPOT:
         self.coluna_valor_pagto = None
         self.log_processamento = []
         self.erros_detalhados = []
-        self.linha_original_offset = 0  # Offset para mapear linha original
     
     def log(self, mensagem):
         """Registra mensagem no log"""
@@ -103,7 +116,7 @@ class SistemaPOT:
         self.erros_detalhados.append({
             'Tipo_Erro': tipo_erro,
             'Coluna': coluna,
-            'Valor_Problema': str(valor)[:50],
+            'Valor_Problema': str(valor)[:50] if valor else "",
             'Linha_Original': linha_original,
             'Descricao': descricao,
             'Timestamp': datetime.now().strftime("%H:%M:%S")
@@ -170,12 +183,15 @@ class SistemaPOT:
         if pd.isna(valor_str) or valor_str == '' or str(valor_str).strip() == '':
             return 0.0
         
-        valor_original = str(valor_str).strip()
-        
         try:
+            valor_original = str(valor_str).strip()
+            
             # Se for um número, retorna direto
-            if isinstance(valor_str, (int, float, np.number)):
-                return float(valor_str)
+            try:
+                if isinstance(valor_str, (int, float, np.number)):
+                    return float(valor_str)
+            except:
+                pass
             
             # Verifica se é uma data - NÃO CONVERTE
             if self.eh_data(valor_original):
@@ -230,9 +246,9 @@ class SistemaPOT:
             self.registrar_erro(
                 "Erro de Conversão",
                 coluna,
-                valor_original,
+                valor_str,
                 linha_original,
-                f"Não foi possível converter para valor monetário: {str(e)[:100]}"
+                f"Não foi possível converter para valor monetário"
             )
             return 0.0
     
@@ -270,35 +286,13 @@ class SistemaPOT:
                 )
                 
                 # Adiciona coluna com linha original (considerando header)
-                self.df['__linha_original'] = range(2, len(self.df) + 2)
+                self.df.insert(0, '__linha_original', range(2, len(self.df) + 2))
                 self.log(f"✅ Arquivo lido. Total de linhas: {len(self.df)}")
+                self.log(f"Colunas: {list(self.df.columns)}")
                 
             except Exception as e:
                 self.log(f"❌ Erro ao ler com pandas: {e}")
-                # Tenta leitura manual
-                with open(temp_path, 'r', encoding=encoding, errors='replace') as f:
-                    linhas = f.readlines()
-                
-                if len(linhas) > 1:
-                    colunas = linhas[0].strip().split(';')
-                    dados = []
-                    for i, linha in enumerate(linhas[1:], 2):  # i começa em 2 (após header)
-                        try:
-                            valores = linha.strip().split(';')
-                            if len(valores) >= len(colunas) - 1:
-                                while len(valores) < len(colunas):
-                                    valores.append('')
-                                valores.append(str(i))  # Adiciona linha original
-                                dados.append(valores)
-                        except:
-                            continue
-                    
-                    colunas.append('__linha_original')
-                    self.df = pd.DataFrame(dados, columns=colunas)
-                    self.log(f"DataFrame criado manualmente. Linhas: {len(self.df)}")
-                else:
-                    self.log("❌ Nenhuma linha válida encontrada")
-                    return False
+                return False
             
             self.df_original = self.df.copy()
             
@@ -334,10 +328,14 @@ class SistemaPOT:
         
         df_limpo = self.df.copy()
         
-        # Remove linhas totalmente vazias
+        # Remove linhas totalmente vazias (exceto a coluna de linha original)
         linhas_iniciais = len(df_limpo)
         colunas_sem_linha_original = [c for c in df_limpo.columns if c != '__linha_original']
-        df_limpo = df_limpo.dropna(subset=colunas_sem_linha_original, how='all')
+        
+        # Cria uma máscara para identificar linhas totalmente vazias
+        mask_vazias = df_limpo[colunas_sem_linha_original].isnull().all(axis=1)
+        df_limpo = df_limpo[~mask_vazias]
+        
         linhas_apos_vazias = len(df_limpo)
         removidas = linhas_iniciais - linhas_apos_vazias
         if removidas > 0:
@@ -346,6 +344,10 @@ class SistemaPOT:
         # Normaliza nomes das colunas
         mapeamento_colunas = {}
         for col in df_limpo.columns:
+            if col == '__linha_original':
+                mapeamento_colunas[col] = col
+                continue
+                
             if pd.isna(col) or str(col).strip() == '':
                 col_novo = 'coluna_sem_nome'
             else:
@@ -361,6 +363,7 @@ class SistemaPOT:
             mapeamento_colunas[col] = col_novo
         
         df_limpo = df_limpo.rename(columns=mapeamento_colunas)
+        self.log(f"Colunas após normalização: {list(df_limpo.columns)}")
         
         # Identifica coluna de valor
         possiveis_nomes_valor = [
@@ -377,15 +380,23 @@ class SistemaPOT:
                 self.log(f"✅ Coluna de valor identificada: {nome}")
                 break
         
-        # Converte valores monetários
+        # Se não encontrou, tenta identificar por padrão
+        if self.coluna_valor_pagto is None:
+            for col in df_limpo.columns:
+                if col != '__linha_original' and any(termo in col.lower() for termo in ['valor', 'pag', 'total', 'vlr']):
+                    self.coluna_valor_pagto = col
+                    self.log(f"✅ Coluna de valor identificada por padrão: {col}")
+                    break
+        
+        # Converte valores monetários se identificou a coluna
         if self.coluna_valor_pagto and self.coluna_valor_pagto in df_limpo.columns:
             self.log(f"Convertendo valores da coluna: {self.coluna_valor_pagto}")
             
             for idx, row in df_limpo.iterrows():
-                linha_original = row.get('__linha_original', idx + 2)
+                linha_original = row['__linha_original']
                 valor_original = row[self.coluna_valor_pagto]
                 
-                if pd.notna(valor_original):
+                if pd.notna(valor_original) and str(valor_original).strip() != '':
                     valor_convertido = self.converter_valor_monetario(
                         valor_original, 
                         linha_original, 
@@ -406,6 +417,10 @@ class SistemaPOT:
         
         # Ignora coluna de linha original na análise
         colunas_analise = [c for c in self.dados_limpos.columns if c != '__linha_original']
+        
+        if not colunas_analise:
+            self.log("❌ Nenhuma coluna para análise")
+            return
         
         faltantes_por_coluna = self.dados_limpos[colunas_analise].isnull().sum()
         percentual_faltantes = (faltantes_por_coluna / len(self.dados_limpos)) * 100
@@ -431,45 +446,56 @@ class SistemaPOT:
         
         # 1. Valores negativos
         if self.coluna_valor_pagto and self.coluna_valor_pagto in self.dados_limpos.columns:
-            negativos = self.dados_limpos[self.dados_limpos[self.coluna_valor_pagto] < 0]
-            if len(negativos) > 0:
-                for idx, row in negativos.iterrows():
-                    linha_original = row.get('__linha_original', idx + 2)
-                    self.registrar_erro(
-                        "Valor Negativo",
-                        self.coluna_valor_pagto,
-                        row[self.coluna_valor_pagto],
-                        linha_original,
-                        "Valor de pagamento negativo"
-                    )
+            try:
+                # Converte para numérico para análise
+                valores_numericos = pd.to_numeric(self.dados_limpos[self.coluna_valor_pagto], errors='coerce')
+                negativos = self.dados_limpos[valores_numericos < 0]
                 
-                inconsistencias.append({
-                    'Tipo': 'Valores Negativos',
-                    'Coluna': self.coluna_valor_pagto,
-                    'Quantidade': len(negativos),
-                    'Descrição': 'Valores de pagamento negativos'
-                })
+                if len(negativos) > 0:
+                    for idx, row in negativos.iterrows():
+                        linha_original = row['__linha_original']
+                        self.registrar_erro(
+                            "Valor Negativo",
+                            self.coluna_valor_pagto,
+                            row[self.coluna_valor_pagto],
+                            linha_original,
+                            "Valor de pagamento negativo"
+                        )
+                    
+                    inconsistencias.append({
+                        'Tipo': 'Valores Negativos',
+                        'Coluna': self.coluna_valor_pagto,
+                        'Quantidade': len(negativos),
+                        'Descrição': 'Valores de pagamento negativos'
+                    })
+            except Exception as e:
+                self.log(f"Erro ao analisar valores negativos: {e}")
         
         # 2. Valores zerados
         if self.coluna_valor_pagto and self.coluna_valor_pagto in self.dados_limpos.columns:
-            zerados = self.dados_limpos[self.dados_limpos[self.coluna_valor_pagto] == 0]
-            if len(zerados) > 0:
-                for idx, row in zerados.iterrows():
-                    linha_original = row.get('__linha_original', idx + 2)
-                    self.registrar_erro(
-                        "Valor Zerado",
-                        self.coluna_valor_pagto,
-                        row[self.coluna_valor_pagto],
-                        linha_original,
-                        "Valor de pagamento zerado"
-                    )
+            try:
+                valores_numericos = pd.to_numeric(self.dados_limpos[self.coluna_valor_pagto], errors='coerce')
+                zerados = self.dados_limpos[valores_numericos == 0]
                 
-                inconsistencias.append({
-                    'Tipo': 'Valores Zerados',
-                    'Coluna': self.coluna_valor_pagto,
-                    'Quantidade': len(zerados),
-                    'Descrição': 'Valores de pagamento zerados'
-                })
+                if len(zerados) > 0:
+                    for idx, row in zerados.iterrows():
+                        linha_original = row['__linha_original']
+                        self.registrar_erro(
+                            "Valor Zerado",
+                            self.coluna_valor_pagto,
+                            row[self.coluna_valor_pagto],
+                            linha_original,
+                            "Valor de pagamento zerado"
+                        )
+                    
+                    inconsistencias.append({
+                        'Tipo': 'Valores Zerados',
+                        'Coluna': self.coluna_valor_pagto,
+                        'Quantidade': len(zerados),
+                        'Descrição': 'Valores de pagamento zerados'
+                    })
+            except Exception as e:
+                self.log(f"Erro ao analisar valores zerados: {e}")
         
         # 3. Dados críticos faltantes
         colunas_criticas = ['nome', 'cpf', 'cnpj', 'agencia', 'conta', 'banco']
@@ -478,7 +504,7 @@ class SistemaPOT:
                 faltantes = self.dados_limpos[self.dados_limpos[coluna].isnull()]
                 if len(faltantes) > 0:
                     for idx, row in faltantes.iterrows():
-                        linha_original = row.get('__linha_original', idx + 2)
+                        linha_original = row['__linha_original']
                         self.registrar_erro(
                             "Dado Crítico Faltante",
                             coluna,
@@ -510,49 +536,56 @@ class SistemaPOT:
         
         registros_problematicos = []
         
-        # Verifica cada linha
-        for idx, row in self.dados_limpos.iterrows():
-            linha_original = row.get('__linha_original', idx + 2)
-            problemas = []
-            nivel_severidade = "BAIXA"
+        # Coleta todos os erros para cada linha
+        erros_por_linha = {}
+        for erro in self.erros_detalhados:
+            linha = erro['Linha_Original']
+            if linha not in erros_por_linha:
+                erros_por_linha[linha] = []
+            erros_por_linha[linha].append(erro)
+        
+        # Para cada linha com erros, cria um registro detalhado
+        for linha, erros in erros_por_linha.items():
+            # Encontra a linha correspondente nos dados
+            linha_df = self.dados_limpos[self.dados_limpos['__linha_original'] == linha]
             
-            # Verifica valores negativos
-            if self.coluna_valor_pagto and self.coluna_valor_pagto in row:
-                valor = row[self.coluna_valor_pagto]
-                if isinstance(valor, (int, float)):
-                    if valor < 0:
-                        problemas.append("VALOR NEGATIVO")
-                        nivel_severidade = "CRÍTICA"
-                    elif valor == 0:
-                        problemas.append("VALOR ZERADO")
-                        nivel_severidade = "ALTA"
-            
-            # Verifica dados críticos faltantes
-            for coluna in ['nome', 'cpf', 'cnpj']:
-                if coluna in row and pd.isna(row[coluna]):
-                    problemas.append(f"{coluna.upper()} FALTANTE")
-                    nivel_severidade = "ALTA"
-            
-            if problemas:
+            if not linha_df.empty:
+                row = linha_df.iloc[0]
+                
+                # Determina severidade baseada nos tipos de erro
+                severidade = "BAIXA"
+                problemas = []
+                
+                for erro in erros:
+                    tipo = erro['Tipo_Erro']
+                    problemas.append(tipo)
+                    
+                    if tipo in ["Valor Negativo", "Dado Crítico Faltante"]:
+                        severidade = "CRÍTICA"
+                    elif tipo == "Valor Zerado" and severidade != "CRÍTICA":
+                        severidade = "ALTA"
+                
+                # Cria registro
                 registro = {
-                    'Linha_Original': int(linha_original),
+                    'Linha_Original': int(linha),
                     'Problemas': ', '.join(problemas),
-                    'Severidade': nivel_severidade
+                    'Severidade': severidade
                 }
                 
-                # Adiciona informações do registro
-                for col in self.dados_limpos.columns:
-                    if col not in ['__linha_original']:
-                        valor = row[col]
-                        if pd.isna(valor):
-                            registro[col] = ''
-                        elif isinstance(valor, (int, float)):
-                            if col == self.coluna_valor_pagto:
-                                registro[col] = f"R$ {valor:,.2f}"
-                            else:
-                                registro[col] = f"{valor:,.2f}"
+                # Adiciona as principais colunas ao registro
+                colunas_principais = ['nome', 'cpf', 'cnpj', self.coluna_valor_pagto] if self.coluna_valor_pagto else []
+                for col in colunas_principais:
+                    if col in row and pd.notna(row[col]):
+                        if col == self.coluna_valor_pagto:
+                            try:
+                                valor_num = float(row[col])
+                                registro[col] = f"R$ {valor_num:,.2f}"
+                            except:
+                                registro[col] = str(row[col])
                         else:
-                            registro[col] = str(valor)[:50]
+                            registro[col] = str(row[col])[:50]
+                    else:
+                        registro[col] = ''
                 
                 registros_problematicos.append(registro)
         
@@ -573,8 +606,9 @@ class SistemaPOT:
         
         if self.coluna_valor_pagto and self.coluna_valor_pagto in self.dados_limpos.columns:
             try:
-                valores = self.dados_limpos[self.coluna_valor_pagto]
-                valores_numericos = pd.to_numeric(valores, errors='coerce').dropna()
+                # Converte para numérico
+                valores = pd.to_numeric(self.dados_limpos[self.coluna_valor_pagto], errors='coerce')
+                valores_numericos = valores.dropna()
                 
                 if len(valores_numericos) > 0:
                     self.total_pagamentos = valores_numericos.sum()
@@ -648,23 +682,12 @@ class SistemaPOT:
             st.markdown('</div>', unsafe_allow_html=True)
         
         # Informações adicionais
-        if self.coluna_valor_pagto and self.coluna_valor_pagto in self.dados_limpos.columns:
-            col_info1, col_info2, col_info3 = st.columns(3)
-            
-            with col_info1:
-                st.markdown('<div class="info-card">', unsafe_allow_html=True)
-                st.write(f"**Coluna de Valor:** `{self.coluna_valor_pagto}`")
-                st.markdown('</div>', unsafe_allow_html=True)
-            
-            with col_info2:
-                st.markdown('<div class="info-card">', unsafe_allow_html=True)
-                st.write(f"**Total de Colunas:** {len(self.dados_limpos.columns) - 1}")
-                st.markdown('</div>', unsafe_allow_html=True)
-            
-            with col_info3:
-                st.markdown('<div class="info-card">', unsafe_allow_html=True)
-                st.write(f"**Arquivo:** {self.nome_arquivo}")
-                st.markdown('</div>', unsafe_allow_html=True)
+        if self.coluna_valor_pagto:
+            st.markdown('<div class="info-card">', unsafe_allow_html=True)
+            st.write(f"**Coluna de Valor Identificada:** `{self.coluna_valor_pagto}`")
+            st.write(f"**Arquivo Processado:** {self.nome_arquivo}")
+            st.write(f"**Total de Colunas:** {len(self.dados_limpos.columns) - 1}")
+            st.markdown('</div>', unsafe_allow_html=True)
     
     def mostrar_erros_detalhados(self):
         """Mostra erros detalhados com linha original"""
@@ -672,7 +695,7 @@ class SistemaPOT:
             st.markdown('<div class="success-card">✅ NENHUM ERRO DE CONVERSÃO DETECTADO</div>', unsafe_allow_html=True)
             return
         
-        st.markdown('<div class="sub-header">🚨 ERROS DE CONVERSÃO DETALHADOS</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sub-header">🚨 ERROS DETALHADOS POR LINHA</div>', unsafe_allow_html=True)
         
         df_erros = pd.DataFrame(self.erros_detalhados)
         
@@ -682,19 +705,25 @@ class SistemaPOT:
             
             with col1:
                 erro_por_tipo = df_erros['Tipo_Erro'].value_counts()
-                st.bar_chart(erro_por_tipo)
+                if not erro_por_tipo.empty:
+                    st.bar_chart(erro_por_tipo)
+                else:
+                    st.info("Sem dados para gráfico")
             
             with col2:
-                st.dataframe(
-                    erro_por_tipo.reset_index().rename(columns={'index': 'Tipo de Erro', 'Tipo_Erro': 'Quantidade'}),
-                    use_container_width=True,
-                    hide_index=True
-                )
+                if not erro_por_tipo.empty:
+                    st.dataframe(
+                        erro_por_tipo.reset_index().rename(columns={'index': 'Tipo de Erro', 'Tipo_Erro': 'Quantidade'}),
+                        use_container_width=True,
+                        hide_index=True
+                    )
         
         # Mostra todos os erros detalhados
         with st.expander("🔍 DETALHES COMPLETOS DOS ERROS", expanded=False):
+            # Ordena por linha original
+            df_erros_sorted = df_erros.sort_values('Linha_Original')
             st.dataframe(
-                df_erros[['Linha_Original', 'Tipo_Erro', 'Coluna', 'Valor_Problema', 'Descricao', 'Timestamp']],
+                df_erros_sorted[['Linha_Original', 'Tipo_Erro', 'Coluna', 'Valor_Problema', 'Descricao']],
                 use_container_width=True,
                 height=400
             )
@@ -736,12 +765,23 @@ class SistemaPOT:
             st.info("Nenhum registro encontrado com os filtros selecionados.")
             return
         
-        # Mostra tabela com formatação condicional
-        st.dataframe(
-            df_filtrado.head(linhas_mostrar),
-            use_container_width=True,
-            height=500
-        )
+        # Formata a severidade com badges
+        def formatar_severidade(severidade):
+            if severidade == "CRÍTICA":
+                return f'<span class="critical-badge">{severidade}</span>'
+            elif severidade == "ALTA":
+                return f'<span class="warning-badge">{severidade}</span>'
+            else:
+                return f'<span class="info-badge">{severidade}</span>'
+        
+        df_display = df_filtrado.copy()
+        df_display['Severidade'] = df_display['Severidade'].apply(formatar_severidade)
+        
+        # Mostra tabela
+        st.write(f"**Total de registros filtrados:** {len(df_filtrado)}")
+        
+        # Converte para HTML para renderizar os badges
+        st.markdown(df_display.head(linhas_mostrar).to_html(escape=False, index=False), unsafe_allow_html=True)
         
         # Botão para exportar
         if st.button("📥 EXPORTAR REGISTROS PROBLEMÁTICOS", use_container_width=True):
@@ -782,10 +822,12 @@ class SistemaPOT:
             fig_col1, fig_col2 = st.columns(2)
             
             with fig_col1:
-                st.bar_chart(
-                    pd.cut(valores, bins=10).value_counts().sort_index(),
-                    use_container_width=True
-                )
+                if len(valores) > 1:
+                    bins = min(10, len(valores))
+                    hist_data = pd.cut(valores, bins=bins).value_counts().sort_index()
+                    st.bar_chart(hist_data)
+                else:
+                    st.info("Dados insuficientes para histograma")
             
             with fig_col2:
                 # Tabela de estatísticas
