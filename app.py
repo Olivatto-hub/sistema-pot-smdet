@@ -7,733 +7,941 @@ import plotly.graph_objects as go
 from datetime import datetime
 import warnings
 import re
-from functools import wraps
-
 warnings.filterwarnings('ignore')
 
 # ============================================
-# 1. CONFIGURAÇÃO DA PÁGINA
+# CONFIGURAÇÃO DA PÁGINA
 # ============================================
 st.set_page_config(
     page_title="SMDET - POT Monitoramento de Pagamento de Benefícios",
-    page_icon="🏙️",
+    page_icon="💰",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
 # ============================================
-# CSS MINIMALISTA - ADAPTA AO TEMA DO USUÁRIO
+# CSS PERSONALIZADO
 # ============================================
 st.markdown("""
 <style>
-    /* MELHORIAS GERAIS - NÃO INTERFERE NO TEMA */
-    .stDataFrame {
-        border-radius: 8px;
-        overflow: hidden;
+    /* TÍTULO PRINCIPAL */
+    .main-header {
+        font-size: 2.2em;
+        font-weight: 800;
+        margin-bottom: 0.5em;
+        text-align: center;
+        color: #1E3A8A;
+        padding-bottom: 10px;
+        border-bottom: 3px solid #1E3A8A;
     }
     
-    /* MELHOR VISIBILIDADE PARA DATAFRAMES */
-    .stDataFrame th {
+    /* MÉTRICAS */
+    [data-testid="stMetric"] {
+        background-color: #f8f9fa;
+        padding: 15px;
+        border-radius: 10px;
+        border: 1px solid #dee2e6;
+        box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
+    }
+    
+    [data-testid="stMetricValue"] {
+        font-size: 1.5em !important;
         font-weight: 700 !important;
     }
     
-    /* ESPAÇAMENTO MELHOR ENTRE WIDGETS */
-    .stSlider, .stSelectbox, .stMultiSelect {
-        margin-bottom: 1rem;
-    }
-    
-    /* BOTÕES MAIS VISÍVEIS */
+    /* BOTÕES */
     .stButton > button {
         border-radius: 6px;
         font-weight: 600;
         transition: all 0.3s ease;
         padding: 0.75rem 1rem;
+        border: 1px solid #1E3A8A;
     }
     
     .stButton > button:hover {
-        opacity: 0.9;
+        transform: translateY(-2px);
+        box-shadow: 0 4px 8px rgba(30, 58, 138, 0.2);
     }
-
-    /* TÍTULO CENTRALIZADO PARA MELHORES VISUALIZAÇÕES */
-    .chart-title {
-        text-align: center;
-        font-weight: 600;
-        margin-bottom: 1rem;
-        padding: 0.5rem;
-        background-color: #f0f2f6; /* Light gray background for title area */
+    
+    .stButton > button:first-of-type {
+        background-color: #1E3A8A;
+        color: white;
+    }
+    
+    /* TABELAS */
+    .stDataFrame {
         border-radius: 8px;
+        overflow: hidden;
+        border: 1px solid #dee2e6;
     }
-
-    /* CORREÇÃO PARA ALINHAMENTO DO BOTÃO DE DOWNLOAD */
-    .stDownloadButton {
-        display: flex;
-        justify-content: center;
+    
+    /* ABAS */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 2px;
+    }
+    
+    .stTabs [data-baseweb="tab"] {
+        height: 50px;
+        white-space: pre-wrap;
+        background-color: #f8f9fa;
+        border-radius: 4px 4px 0px 0px;
+        gap: 1px;
+        padding-top: 10px;
+        padding-bottom: 10px;
+    }
+    
+    .stTabs [aria-selected="true"] {
+        background-color: #1E3A8A;
+        color: white;
     }
 </style>
 """, unsafe_allow_html=True)
 
+# ============================================
+# INICIALIZAÇÃO DO ESTADO DA SESSÃO
+# ============================================
+if 'dataframes' not in st.session_state:
+    st.session_state['dataframes'] = {}
+if 'is_processed' not in st.session_state:
+    st.session_state['is_processed'] = False
+if 'config' not in st.session_state:
+    st.session_state['config'] = {
+        'auto_validar': True,
+        'manter_historico': True,
+        'limite_registros': 100000,
+        'formato_exportacao': "Excel (.xlsx)",
+        'incluir_graficos': True
+    }
 
 # ============================================
-# ⚙️ FUNÇÕES DE UTILIDADE E PROCESSAMENTO
+# FUNÇÕES DE PROCESSAMENTO E UTILIDADE
 # ============================================
 
-# Mapeamento de nomes de colunas esperados (Chave: Nome no arquivo; Valor: Nome usado na aplicação)
-# Adicione variações comuns se necessário
-COLUMN_MAP = {
-    'Num Cartao': 'Num Cartao', 'Valor Total': 'Valor Total', 'Valor Desconto': 'Valor Desconto', 
-    'Valor Pagto': 'Valor Pagto', 'Data Pagto': 'Data Pagto', 'Valor Dia': 'Valor Dia', 
-    'Dias a apagar': 'Dias a apagar', 'Gerenciadora': 'Gerenciadora', 'Nome': 'Nome', 'CPF': 'CPF', 
-    'Ordem': 'Ordem', 'Projeto': 'Projeto'
-}
-REQUIRED_FINAL_COLS = ['Projeto', 'Gerenciadora', 'Valor Pagto', 'Data Pagto', 'CPF', 'Ordem', 'Valor Total']
-
-
-# Função para inicializar configurações padrão
-def initialize_config():
-    if 'config' not in st.session_state:
-        st.session_state['config'] = {
-            'auto_validar': True,
-            'manter_historico': True,
-            'limite_registros': 100000,
-            'formato_exportacao': 'Excel (.xlsx)', 
-            'incluir_graficos': False 
-        }
+def clean_column_name(col):
+    """Limpa e normaliza os nomes das colunas."""
+    col = str(col).strip().upper()
+    col = re.sub(r'[^A-Z0-9_ÁÉÍÓÚÀÈÌÒÙÃÕÇ ]+', '', col)
     
-    # Inicializa os dataframes de análise se ainda não existirem
-    if 'df_analise' not in st.session_state:
-        st.session_state['df_analise'] = pd.DataFrame()
-    if 'df_pendencias' not in st.session_state:
-        st.session_state['df_pendencias'] = pd.DataFrame()
-
-
-# Função para aplicar filtros e gerar df_analise
-def apply_filters(df, filters):
-    df_filtered = df.copy()
+    # Mapeamento de substituições
+    replacements = {
+        'CARTO': 'CARTAO',
+        'CARTÃO': 'CARTAO',
+        'AGENCIA': 'AGENCIA',
+        'AGÊNCIA': 'AGENCIA',
+        'VLR DIA': 'VALOR_DIA',
+        'VL DIA': 'VALOR_DIA',
+        'DIAS': 'DIAS_VALIDOS',
+        'MÊS': 'MES',
+        'OBS': 'OBSERVACOES',
+        'VALORTOTAL': 'VALOR_TOTAL',
+        'VALORDESCONTO': 'VALOR_DESCONTO',
+        'VALORPAGTO': 'VALOR_PAGAMENTO',
+        'VALOR PAGAMENTO': 'VALOR_PAGAMENTO',
+        'VALOR PAGTO': 'VALOR_PAGAMENTO',
+        'PAGAMENTO': 'VALOR_PAGAMENTO',
+        'VLR PAGTO': 'VALOR_PAGAMENTO',
+        'VLR PAGAMENTO': 'VALOR_PAGAMENTO'
+    }
     
-    # Filtro de Projeto
-    if 'Projeto' in df_filtered.columns:
-        if filters['projeto'] and filters['projeto'] != 'All':
-            df_filtered = df_filtered[df_filtered['Projeto'].isin(filters['projeto'])]
+    for old, new in replacements.items():
+        col = col.replace(old, new)
     
-    # Filtro de Gerenciadora
-    if 'Gerenciadora' in df_filtered.columns:
-        if filters['gerenciadora'] and filters['gerenciadora'] != 'All':
-            df_filtered = df_filtered[df_filtered['Gerenciadora'].isin(filters['gerenciadora'])]
-        
-    # Filtro de Valor Pagto (assume que a coluna Valor Pagto existe e é numérica após load_data)
-    if 'Valor Pagto' in df_filtered.columns:
-        df_filtered = df_filtered[df_filtered['Valor Pagto'] >= filters['valor_min']]
-        df_filtered = df_filtered[df_filtered['Valor Pagto'] <= filters['valor_max']]
+    return col.replace(' ', '_').replace('.', '').replace('__', '_')
 
-    # Filtro de Data
-    if 'Data Pagto' in df_filtered.columns and filters['data_inicio'] and filters['data_fim']:
-        data_col = pd.to_datetime(df_filtered['Data Pagto'], format='%d/%m/%Y', errors='coerce')
-        # Filtra apenas linhas onde a data foi convertida com sucesso E está no intervalo
-        valid_dates = data_col.notna()
-        # Nota: Usar .loc ou .copy() após a filtragem para evitar SettingWithCopyWarning
-        df_filtered = df_filtered.loc[valid_dates].copy() 
-        data_col_valid = data_col[valid_dates]
-        
-        df_filtered = df_filtered[
-            (data_col_valid >= filters['data_inicio']) & (data_col_valid <= filters['data_fim'])
-        ]
-    
-    return df_filtered
-
-# Função para carregar e processar os dados
-@st.cache_data(show_spinner="Processando dados e realizando validações iniciais...")
-def load_data(uploaded_file):
+def formatar_valor_brl(valor):
+    """Formata valor para Real Brasileiro."""
     try:
-        # Tenta ler o arquivo CSV
-        uploaded_file.seek(0)
-        df = pd.read_csv(uploaded_file, sep=';', encoding='utf-8', on_bad_lines='skip')
-    except UnicodeDecodeError:
+        valor = float(valor)
+        return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    except:
+        return "R$ 0,00"
+
+@st.cache_data(show_spinner="Carregando e processando dados...")
+def load_and_process_files(uploaded_files, limite_registros):
+    """Carrega, limpa e concatena todos os arquivos de pendência."""
+    dataframes = {}
+    
+    if not uploaded_files:
+        return dataframes
+
+    all_pendencias = []
+    
+    for file in uploaded_files:
         try:
-            uploaded_file.seek(0)
-            df = pd.read_csv(uploaded_file, sep=';', encoding='latin-1', on_bad_lines='skip')
-            st.warning("⚠️ Arquivo lido usando encoding 'latin-1' para corrigir problemas de caracteres.")
+            # Detecta extensão e lê arquivo apropriadamente
+            file_extension = file.name.lower().split('.')[-1]
+            
+            if file_extension == 'csv':
+                # Tenta diferentes encodings e delimitadores
+                try:
+                    df = pd.read_csv(file, sep=';', encoding='utf-8', on_bad_lines='skip', nrows=limite_registros)
+                except:
+                    try:
+                        df = pd.read_csv(file, sep=';', encoding='latin1', on_bad_lines='skip', nrows=limite_registros)
+                    except:
+                        df = pd.read_csv(file, sep=',', encoding='utf-8', on_bad_lines='skip', nrows=limite_registros)
+            
+            elif file_extension == 'txt':
+                try:
+                    df = pd.read_csv(file, sep='\t', encoding='utf-8', on_bad_lines='skip', nrows=limite_registros)
+                except:
+                    df = pd.read_csv(file, sep=';', encoding='latin1', on_bad_lines='skip', nrows=limite_registros)
+            else:
+                st.error(f"Formato não suportado: {file.name}")
+                continue
+            
+            # Limpeza de nomes de colunas
+            df.columns = [clean_column_name(col) for col in df.columns]
+            
+            # Padronização de colunas numéricas - CORREÇÃO DO PROBLEMA DE DUPLICAÇÃO
+            value_cols = ['VALOR_TOTAL', 'VALOR_DESCONTO', 'VALOR_PAGAMENTO', 'VALOR_DIA']
+            
+            for col in value_cols:
+                if col in df.columns:
+                    # Converte para string e limpa
+                    df[col] = df[col].astype(str)
+                    
+                    # Remove caracteres não numéricos exceto ponto e vírgula
+                    df[col] = df[col].str.replace('R\$', '', regex=False)
+                    df[col] = df[col].str.replace(' ', '', regex=False)
+                    
+                    # Verifica se já está no formato numérico correto
+                    try:
+                        # Tenta converter diretamente
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
+                    except:
+                        # Se falhar, tenta converter de formato BR
+                        # Primeiro verifica se tem ponto como separador de milhar
+                        if df[col].str.contains('\.\d{3}$', na=False).any():
+                            # Remove pontos de milhar e substitui vírgula por ponto decimal
+                            df[col] = df[col].str.replace('.', '', regex=False)
+                            df[col] = df[col].str.replace(',', '.', regex=False)
+                        else:
+                            # Já está com ponto como decimal ou sem separadores
+                            df[col] = df[col].str.replace(',', '.', regex=False)
+                        
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
+                    
+                    df[col] = df[col].fillna(0)
+                    
+                    # VERIFICAÇÃO DE DUPLICAÇÃO - CORREÇÃO CRÍTICA
+                    # Se os valores parecem muito altos, divide por 100 (caso estejam com 2 decimais extras)
+                    if df[col].mean() > 1000000:  # Se a média for maior que 1 milhão
+                        # Verifica se pode ser um problema de casas decimais
+                        sample_val = df[col].iloc[0] if len(df) > 0 else 0
+                        if sample_val > 1000 and str(sample_val)[-2:] == '00':
+                            # Possível duplicação de casas decimais
+                            df[col] = df[col] / 100
+
+            # Padronização de coluna Projeto e Nome
+            if 'PROJETO' in df.columns:
+                df['PROJETO'] = df['PROJETO'].astype(str).str.strip().str.upper()
+                df['PROJETO'] = df['PROJETO'].str.replace(r'\s+', ' ', regex=True)  # Remove múltiplos espaços
+            
+            if 'NOME' in df.columns:
+                df['NOME'] = df['NOME'].astype(str).str.strip().str.title()
+                df['NOME'] = df['NOME'].str.replace(r'\s+', ' ', regex=True)
+                
+            # Verifica se é um arquivo de Pendência
+            is_pendencia = any(col in df.columns for col in ['VALOR_TOTAL', 'VALOR_PAGAMENTO', 'VALOR_PAGTO'])
+            
+            if is_pendencia:
+                # Adiciona o nome do arquivo para rastreamento
+                df['ARQUIVO_ORIGEM'] = file.name
+                df['DATA_CARREGAMENTO'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                all_pendencias.append(df)
+            else:
+                # Trata como arquivo de Cadastro/Corretivo
+                dataframes[file.name] = df
+                
         except Exception as e:
-            st.error(f"Erro ao ler o arquivo: {e}")
-            return pd.DataFrame()
-    except Exception as e:
-        st.error(f"Erro ao ler o arquivo: {e}")
-        return pd.DataFrame()
-
-    # Normalização e mapeamento dos nomes das colunas
-    col_mapping = {}
-    
-    # Prepara os nomes das colunas carregadas para comparação (minúsculas, sem espaço/acento)
-    normalized_loaded_cols = {
-        col: col.strip().lower().replace(' ', '').replace('ã', 'a').replace('ç', 'c').replace('.', '')
-        for col in df.columns
-    }
-    
-    # Prepara os nomes finais esperados para comparação (minúsculas, sem espaço/acento)
-    normalized_target_cols = {
-        val.strip().lower().replace(' ', '').replace('ã', 'a').replace('ç', 'c').replace('.', ''): val
-        for val in COLUMN_MAP.values()
-    }
-    
-    # Cria o mapeamento: Coluna Original -> Nome Final Esperado
-    for original_col, normalized_loaded_name in normalized_loaded_cols.items():
-        if normalized_loaded_name in normalized_target_cols:
-            col_mapping[original_col] = normalized_target_cols[normalized_loaded_name]
-    
-    df.rename(columns=col_mapping, inplace=True)
-    
-    # Colunas que DEVEM ser tratadas como numéricas (mesmo que com prefixo R$)
-    numeric_cols_to_process = ['Valor Total', 'Valor Desconto', 'Valor Pagto', 'Valor Dia']
-    
-    for col in numeric_cols_to_process:
-        if col in df.columns:
-            # Remove R$, . e substitui , por .
-            df[col] = df[col].astype(str).str.replace('R$', '', regex=False).str.replace('.', '', regex=False).str.replace(',', '.', regex=False).str.replace(' ', '', regex=False)
-            # Converte para numérico, tratando erros como NaN e preenchendo NaN com 0
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0) 
-
-    # Desduplicação (Apenas se as colunas existirem)
-    dedup_cols = ['Ordem', 'CPF', 'Valor Pagto', 'Data Pagto']
-    if all(col in df.columns for col in dedup_cols):
-        initial_count = len(df)
-        df.drop_duplicates(subset=dedup_cols, keep='first', inplace=True)
-        final_count = len(df)
-        if initial_count != final_count:
-            st.warning(f"⚠️ {initial_count - final_count} linhas duplicadas foram removidas. Total: {final_count}.")
-    else:
-        st.warning(f"Colunas necessárias para desduplicação ({', '.join(dedup_cols)}) não encontradas. Ignorando desduplicação.")
-    
-    # 🚨 PONTO CRÍTICO DE VALIDAÇÃO 🚨
-    # Garante que as colunas essenciais para o filtro existam
-    missing_cols = [col for col in REQUIRED_FINAL_COLS if col not in df.columns]
-    
-    if missing_cols:
-        st.error(f"As seguintes colunas obrigatórias são essenciais e não foram identificadas na base: {', '.join(missing_cols)}. Colunas presentes no arquivo: {', '.join(df.columns)}")
-        st.warning("Verifique se as colunas estão presentes e escritas corretamente no cabeçalho do seu arquivo CSV.")
-        return pd.DataFrame()
+            st.error(f"❌ Erro ao processar o arquivo {file.name}: {str(e)[:200]}")
+            
+    if all_pendencias:
+        # Concatena todas as pendências em um único DataFrame
+        df_final = pd.concat(all_pendencias, ignore_index=True)
         
-    # Adicionar coluna de Mês/Ano para análise temporal
-    # Deve ser feito após a validação da 'Data Pagto'
-    df['Mes_Ano'] = pd.to_datetime(df['Data Pagto'], format='%d/%m/%Y', errors='coerce').dt.to_period('M')
-    
-    # Identificação de pendências básicas 
-    # Deve ser feito após a validação do 'CPF' e 'Valor Pagto'
-    df['Pendencia'] = np.where(df['CPF'].isnull() | (df['CPF'] == 0) | (df['Valor Pagto'] <= 0), True, False)
-    
-    return df
-
-# Função para criar o gráfico de pizza de Gerenciadoras
-def create_gerenciadora_pie_chart(df):
-    df_counts = df.groupby('Gerenciadora')['Valor Pagto'].sum().reset_index()
-    df_counts.columns = ['Gerenciadora', 'Valor Pago']
-    
-    fig = px.pie(
-        df_counts, 
-        values='Valor Pago', 
-        names='Gerenciadora', 
-        title='Distribuição de Pagamentos por Gerenciadora',
-        hole=0.4,
-        color_discrete_sequence=px.colors.sequential.Teal
-    )
-    fig.update_traces(textinfo='percent+label', marker=dict(line=dict(color='#000000', width=1)))
-    fig.update_layout(showlegend=True, margin=dict(t=50, b=0, l=0, r=0))
-    return fig
-
-# Função para criar o gráfico de barras dos projetos
-def create_project_bar_chart(df_proj):
-    fig = px.bar(
-        df_proj.sort_values(by='Valor Total Pago', ascending=True), 
-        x='Valor Total Pago', 
-        y='Projeto', 
-        orientation='h',
-        title='Distribuição de Pagamentos por Projeto',
-        color='Valor Total Pago',
-        color_continuous_scale=px.colors.sequential.Agsunset,
-        text='Valor Total Pago'
-    )
-    
-    fig.update_traces(
-        texttemplate='R$ %{text:$.2s}',  # Formata o texto como R$ com milhar (e.g., $1.5M)
-        textposition='outside',
-        marker_line_color='rgb(8,48,107)',
-        marker_line_width=1.5
-    )
-    
-    fig.update_layout(
-        uniformtext_minsize=8, 
-        uniformtext_mode='hide',
-        xaxis_title="Valor Total Pago (R$)",
-        yaxis_title="Projeto",
-        margin=dict(l=0, r=0, t=50, b=0),
-        xaxis={'tickformat': ',.2f'} 
-    )
-    
-    return fig
-
-# Função de formatação BRL
-def format_brl(value):
-    return f"R$ {value:,.2f}".replace(",", "_").replace(".", ",").replace("_", ".")
-
-# ============================================
-# 🏠 INICIALIZAÇÃO DE ESTADO E BARRA LATERAL
-# ============================================
-
-initialize_config()
-
-# 1. SIDEBAR
-st.sidebar.markdown("# SMDET - POT Monitoramento de Pagamento de Benefícios")
-st.sidebar.markdown("---")
-
-uploaded_file = st.sidebar.file_uploader(
-    "📤 CARREGAR BASE DE DADOS (CSV)", 
-    type=['csv'],
-    help="Carregue o arquivo de pagamentos no formato CSV com ';' como delimitador."
-)
-
-if uploaded_file and 'data' not in st.session_state:
-    st.session_state['data'] = load_data(uploaded_file)
-    # Se o DataFrame estiver vazio após o load_data (devido a colunas faltando), exibe uma mensagem de erro
-    if st.session_state['data'].empty:
-        st.session_state.pop('data', None) # Remove a chave 'data' para não entrar no loop
-        st.stop()
-    st.rerun() # Força a re-execução para entrar no fluxo principal com os dados
-
-if 'data' in st.session_state and not st.session_state['data'].empty:
-    df = st.session_state['data']
-    
-    # Informações básicas na sidebar
-    st.sidebar.markdown("### 📊 STATUS DA BASE")
-    st.sidebar.metric("Linhas Carregadas", len(df))
-    if 'Projeto' in df.columns:
-        st.sidebar.metric("Projetos Únicos", df['Projeto'].nunique())
-    
-    # Botão de Limpar Dados
-    if st.sidebar.button("🧹 Limpar dados carregados", type="secondary", use_container_width=True):
-        # Limpa o estado da sessão de dados e da análise
-        keys_to_delete = ['data', 'df_analise', 'df_pendencias', 'filters']
-        for key in keys_to_delete:
-            if key in st.session_state:
-                del st.session_state[key]
-        st.info("Dados removidos com sucesso. Reiniciando a aplicação...")
-        st.rerun() 
-
-# ============================================
-# ⚠️ FLUXO PRINCIPAL: CARREGAMENTO DE DADOS
-# ============================================
-
-if 'data' not in st.session_state or st.session_state['data'].empty:
-    st.info("Por favor, carregue um arquivo CSV de pagamentos na barra lateral para iniciar o monitoramento.")
-    st.stop()
-
-df = st.session_state['data']
-
-# ============================================
-# 🎛️ BARRA LATERAL: FILTROS DE ANÁLISE
-# ============================================
-
-st.sidebar.markdown("### 🔍 FILTROS DE ANÁLISE")
-
-# Definir valores padrão para os filtros (Proteção contra DataFrame vazio)
-# Este bloco SÓ É EXECUTADO se df não for vazio E contiver as colunas essenciais (garantido pela load_data)
-if all(col in df.columns for col in REQUIRED_FINAL_COLS):
-    
-    unique_projects = sorted(df['Projeto'].unique())
-    unique_gerenciadoras = sorted(df['Gerenciadora'].dropna().unique())
-    
-    # Usar .astype(float) para garantir que min/max funcionem
-    valor_min, valor_max = float(df['Valor Pagto'].min()), float(df['Valor Pagto'].max())
-    
-    # Processamento seguro de datas
-    data_col_dt = pd.to_datetime(df['Data Pagto'], format='%d/%m/%Y', errors='coerce').dropna()
-    
-    # Definir range de datas válido
-    if not data_col_dt.empty:
-        min_date = data_col_dt.min().date()
-        max_date = data_col_dt.max().date()
-    else:
-        # Fallback para um range seguro se as datas forem inválidas/vazias
-        min_date = datetime(2020, 1, 1).date()
-        max_date = datetime.now().date()
-    
-    # Recupera filtros armazenados ou define padrões
-    if 'filters' not in st.session_state:
-        st.session_state['filters'] = {
-            'projeto': unique_projects,
-            'gerenciadora': unique_gerenciadoras,
-            'valor_min': valor_min,
-            'valor_max': valor_max,
-            'data_inicio': min_date,
-            'data_fim': max_date
-        }
-
-    stored_filters = st.session_state['filters']
-
-
-    # Filtro de Múltipla Seleção (Projeto)
-    selected_projects = st.sidebar.multiselect(
-        "Projetos:",
-        options=unique_projects,
-        default=stored_filters.get('projeto', unique_projects),
-        help="Selecione os projetos para análise."
-    )
-
-    # Filtro de Múltipla Seleção (Gerenciadora)
-    selected_gerenciadoras = st.sidebar.multiselect(
-        "Gerenciadoras:",
-        options=unique_gerenciadoras,
-        default=stored_filters.get('gerenciadora', unique_gerenciadoras),
-        help="Selecione as gerenciadoras para análise."
-    )
-
-    # Filtro de Range de Valor
-    selected_min_value, selected_max_value = st.sidebar.slider(
-        "Valor de Pagamento (R$):",
-        min_value=valor_min,
-        max_value=valor_max,
-        value=(stored_filters.get('valor_min', valor_min), stored_filters.get('valor_max', valor_max)),
-        step=100.0,
-        format='R$ %.2f'
-    )
-
-    # Filtro de Range de Data
-    try:
-        # Garante que as datas padrão estejam dentro do range de min_date e max_date
-        default_start = stored_filters.get('data_inicio', min_date)
-        default_end = stored_filters.get('data_fim', max_date)
+        # Remove duplicatas baseado em colunas-chave (se existirem)
+        colunas_chave = []
+        for col in ['CODIGO', 'CPF', 'MATRICULA', 'NOME', 'PROJETO', 'VALOR_TOTAL']:
+            if col in df_final.columns:
+                colunas_chave.append(col)
         
-        # Ajusta as datas padrão se elas estiverem fora do intervalo da base
-        if default_start < min_date: default_start = min_date
-        if default_end > max_date: default_end = max_date
+        if len(colunas_chave) > 0:
+            df_final = df_final.drop_duplicates(subset=colunas_chave, keep='first')
         
-        selected_date_range = st.sidebar.date_input(
-            "Período de Pagamento:",
-            value=(default_start, default_end),
-            min_value=min_date,
-            max_value=max_date
-        )
-        if len(selected_date_range) == 2:
-            start_date = selected_date_range[0]
-            end_date = selected_date_range[1]
+        # Cria uma coluna de status
+        if 'VALOR_PAGAMENTO' in df_final.columns:
+            df_final['STATUS_PAGAMENTO'] = np.where(df_final['VALOR_PAGAMENTO'] > 0, 'PAGO', 'PENDENTE')
         else:
-            start_date, end_date = None, None
-    except Exception:
-        start_date, end_date = None, None
-        st.sidebar.error("Problema ao carregar o filtro de datas. Verifique a coluna 'Data Pagto'.")
-        
-    # Dicionário dos filtros atuais dos widgets
-    current_filters = {
-        'projeto': selected_projects,
-        'gerenciadora': selected_gerenciadoras,
-        'valor_min': selected_min_value,
-        'valor_max': selected_max_value,
-        'data_inicio': start_date,
-        'data_fim': end_date
-    }
+            df_final['STATUS_PAGAMENTO'] = 'PENDENTE'
+            
+        # Calcula valor pendente
+        if all(col in df_final.columns for col in ['VALOR_TOTAL', 'VALOR_PAGAMENTO', 'VALOR_DESCONTO']):
+            df_final['VALOR_PENDENTE'] = df_final['VALOR_TOTAL'] - df_final['VALOR_PAGAMENTO'] - df_final['VALOR_DESCONTO'].fillna(0)
+        elif 'VALOR_TOTAL' in df_final.columns and 'VALOR_PAGAMENTO' in df_final.columns:
+            df_final['VALOR_PENDENTE'] = df_final['VALOR_TOTAL'] - df_final['VALOR_PAGAMENTO']
+        else:
+            df_final['VALOR_PENDENTE'] = 0
+            
+        dataframes['DADOS_CONSOLIDADOS_PENDENCIAS'] = df_final
+        st.session_state['is_processed'] = True
     
-    # Botão para aplicar filtros
-    if st.sidebar.button("✅ APLICAR FILTROS E RECALCULAR", type="primary", use_container_width=True):
-        st.session_state['filters'] = current_filters
-        st.session_state['df_analise'] = apply_filters(df, current_filters)
-        st.session_state['df_pendencias'] = st.session_state['df_analise'][st.session_state['df_analise']['Pendencia'] == True].copy()
-        st.success("Filtros aplicados e análise recalculada!")
-        st.rerun() 
+    return dataframes
+
+def create_download_link(df, filename, file_format):
+    """Gera o link de download para o DataFrame."""
+    try:
+        if file_format == "CSV (.csv)":
+            csv = df.to_csv(index=False, sep=';', encoding='latin1')
+            return csv, "text/csv"
         
-    # === LÓGICA DE CÁLCULO INICIAL OU APÓS RECARGA ===
-    # Se o df_analise não foi populado ou foi esvaziado, aplica os filtros iniciais.
-    if st.session_state['df_analise'].empty:
-        st.session_state['df_analise'] = apply_filters(df, current_filters)
-        st.session_state['df_pendencias'] = st.session_state['df_analise'][st.session_state['df_analise']['Pendencia'] == True].copy()
-
-    df_analise = st.session_state['df_analise']
-    df_pendencias = st.session_state['df_pendencias']
-
-else:
-    # Este bloco só deve ser atingido se a validação em load_data falhou E o erro não foi capturado.
-    # No entanto, se o df_analise estava vazio, ele entrará no bloco anterior
-    # Para ter certeza que a aplicação não quebra, definimos DataFrames vazios
-    df_analise = pd.DataFrame()
-    df_pendencias = pd.DataFrame()
-    st.info("Aguardando o carregamento correto da base de dados. Verifique as mensagens de erro de validação.")
-    st.stop()
+        elif file_format == "Excel (.xlsx)":
+            output = BytesIO()
+            # Usa openpyxl em vez de xlsxwriter para evitar dependência extra
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                df.to_excel(writer, index=False, sheet_name='Dados_Consolidados')
+            return output.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        
+        return None, None
+    except Exception as e:
+        st.error(f"Erro ao criar arquivo de download: {str(e)}")
+        return None, None
 
 # ============================================
-# 🖥️ VISUALIZAÇÃO PRINCIPAL (ABAS)
+# LAYOUT PRINCIPAL
 # ============================================
 
-aba_dashboard, aba_processamento, aba_pendencias, aba_config = st.tabs([
-    "📊 Dashboard", "🛠️ Processamento e Exportação", "🚨 Análise de Pendências", "⚙️ Configurações"
+st.markdown("<p class='main-header'>💰 SMDET - POT Monitoramento de Pagamento de Benefícios</p>", unsafe_allow_html=True)
+
+# 1. SIDEBAR PARA CARREGAMENTO DE DADOS
+with st.sidebar:
+    st.markdown("### 📥 CARREGAMENTO DE DADOS")
+    st.markdown("Selecione os arquivos de **Cadastro (.TXT)** e **Pagamentos (.CSV)**.")
+    
+    uploaded_files = st.file_uploader(
+        "Arraste ou clique para carregar arquivos",
+        type=['csv', 'txt'],
+        accept_multiple_files=True,
+        help="Formatos aceitos: CSV (separador ; ou ,) e TXT (tab ou ;)"
+    )
+    
+    # Botão para processar os dados
+    if st.button("🚀 PROCESSAR DADOS", type="primary", use_container_width=True):
+        if uploaded_files:
+            with st.spinner("Processando arquivos..."):
+                # Pega o limite de registros da configuração
+                limite = st.session_state['config'].get('limite_registros', 100000)
+                
+                # Carrega e processa
+                st.session_state['dataframes'] = load_and_process_files(uploaded_files, limite)
+                
+                if st.session_state['is_processed']:
+                    st.success(f"✅ {len(uploaded_files)} arquivo(s) processado(s) com sucesso!")
+                    
+                    # Mostra estatísticas rápidas
+                    df_pendencias = st.session_state['dataframes'].get('DADOS_CONSOLIDADOS_PENDENCIAS')
+                    if df_pendencias is not None:
+                        st.info(f"""
+                        **Resumo do Processamento:**
+                        - Registros: {len(df_pendencias):,}
+                        - Projetos: {df_pendencias['PROJETO'].nunique()}
+                        - Valor Total: {formatar_valor_brl(df_pendencias['VALOR_TOTAL'].sum())}
+                        """)
+                else:
+                    st.warning("⚠️ Arquivos carregados, mas não foram identificados dados de pagamentos.")
+        else:
+            st.error("Por favor, carregue pelo menos um arquivo para processamento.")
+
+    # Status e Limpeza
+    st.markdown("---")
+    st.markdown(f"**Arquivos Carregados:** {len(uploaded_files)}")
+    
+    if st.session_state['is_processed']:
+        st.success("✅ Dados processados e prontos!")
+    else:
+        st.info("⏳ Aguardando carregamento de dados...")
+        
+    if st.button("🗑️ LIMPAR DADOS CARREGADOS", use_container_width=True):
+        st.session_state['dataframes'] = {}
+        st.session_state['is_processed'] = False
+        st.cache_data.clear()
+        st.rerun()
+    
+    # Informações do sistema
+    st.markdown("---")
+    st.markdown("### ℹ️ Sobre o Sistema")
+    st.markdown("""
+    **SMDET - POT**  
+    Sistema de Monitoramento de  
+    Pagamento de Benefícios
+    
+    **Funcionalidades:**
+    - Dashboard de métricas
+    - Análise de pagamentos
+    - Exportação de relatórios
+    - Filtros personalizados
+    """)
+
+# ============================================
+# ABAS PRINCIPAIS
+# ============================================
+tab1, tab2, tab3, tab4 = st.tabs([
+    "📊 DASHBOARD - VISÃO GERAL", 
+    "📁 DADOS E EXPORTAÇÃO", 
+    "🔍 ANÁLISE DETALHADA", 
+    "⚙️ CONFIGURAÇÕES"
 ])
 
-# ===========================================
-# 📊 Aba Dashboard - Métricas Principais
-# ===========================================
-with aba_dashboard:
-    if df_analise.empty:
-        st.warning("Nenhum dado corresponde aos filtros aplicados ou a base de dados não foi carregada corretamente. Tente ajustar os filtros na barra lateral.")
-        st.stop()
+# ============================================
+# ABA 1: DASHBOARD
+# ============================================
+with tab1:
+    st.markdown("## 📊 Dashboard de Monitoramento de Pagamentos")
 
-    col1, col2, col3, col4 = st.columns(4)
-
-    # Cálculo dos KPIs (Garantido que as colunas existem por df_analise.empty check)
-    total_pago = df_analise['Valor Pagto'].sum()
-    num_pagamentos = len(df_analise) 
-    num_beneficiarios = df_analise['CPF'].nunique()
-    num_pendencias = len(df_pendencias)
-    
-    # Métricas Principais
-    with col1:
-        st.metric(label="💰 VALOR TOTAL PAGO", 
-                  value=format_brl(total_pago))
-    
-    with col2:
-        st.metric(label="👤 QUANTIDADE DE PAGAMENTOS", 
-                  value=f"{num_pagamentos:,.0f}".replace(",", "_").replace(".", ",").replace("_", "."))
-    
-    with col3:
-        st.metric(label="👥 BENEFICIÁRIOS ÚNICOS", 
-                  value=f"{num_beneficiarios:,.0f}".replace(",", "_").replace(".", ",").replace("_", "."))
-    
-    with col4:
-        # Evita divisão por zero
-        percentual_pendencia = num_pendencias / num_pagamentos if num_pagamentos > 0 else 0
-        st.metric(label="🚨 PAGAMENTOS C/ PENDÊNCIA", 
-                  value=f"{num_pendencias:,.0f} ({percentual_pendencia:.2%})".replace(",", "_").replace(".", ",").replace("_", "."))
-    
-    st.markdown("---")
-    
-    # 2. Análise por Projeto e Gerenciadora
-    col_g1, col_g2 = st.columns([1, 2])
-    
-    with col_g1:
-        st.markdown('<p class="chart-title">Distribuição por Gerenciadora</p>', unsafe_allow_html=True)
-        fig_pie = create_gerenciadora_pie_chart(df_analise)
-        st.plotly_chart(fig_pie, use_container_width=True)
-        
-    with col_g2:
-        st.markdown('<p class="chart-title">🏛️ VALORES TOTAIS POR PROJETO</p>', unsafe_allow_html=True)
-        
-        df_proj = df_analise.groupby('Projeto').agg(
-            Valor_Total_Pago=('Valor Pagto', 'sum'),
-            Valor_Total_Bruto=('Valor Total', 'sum'),
-            Total_Beneficiarios=('CPF', 'nunique'),
-            Media_Pagto=('Valor Pagto', 'mean')
-        ).reset_index()
-        
-        # Renaming for display
-        df_proj.columns = ['Projeto', 'Valor Total Pago', 'Valor Total Bruto', 'Total de Beneficiários', 'Média de Pagamento']
-        
-        fig_bar = create_project_bar_chart(df_proj)
-        st.plotly_chart(fig_bar, use_container_width=True)
-        
-    st.markdown("---")
-
-    # 3. Análise Temporal
-    st.markdown("### 📈 ANÁLISE TEMPORAL (PAGAMENTO MÊS/ANO)")
-    
-    df_tempo = df_analise.groupby('Mes_Ano').agg(
-        Valor_Total_Pago=('Valor Pagto', 'sum'),
-        Total_Pagamentos=('Ordem', 'nunique')
-    ).reset_index()
-    
-    df_tempo['Mes_Ano_str'] = df_tempo['Mes_Ano'].astype(str)
-    
-    fig_line = px.line(
-        df_tempo,
-        x='Mes_Ano_str',
-        y='Valor_Total_Pago',
-        title='Evolução Mensal do Valor Total Pago',
-        markers=True,
-        text='Valor_Total_Pago'
-    )
-    
-    fig_line.update_traces(
-        texttemplate='R$ %{text:,.2s}', 
-        textposition="top center",
-        line=dict(color=px.colors.qualitative.Dark24[0], width=3),
-    )
-    fig_line.update_layout(
-        xaxis_title="Mês/Ano",
-        yaxis_title="Valor Total Pago (R$)",
-        xaxis_tickangle=-45
-    )
-    st.plotly_chart(fig_line, use_container_width=True)
-
-# ===========================================
-# 🛠️ Aba Processamento e Exportação
-# ===========================================
-with aba_processamento:
-    st.markdown("### STATUS DO PROCESSAMENTO")
-    col_p1, col_p2 = st.columns(2)
-    
-    with col_p1:
-        st.metric("Status Atual", "Análise Completa", help="Reflete o estado após a aplicação dos filtros.")
-    with col_p2:
-        st.metric("Registros na Análise", len(df_analise), help="Número de pagamentos após a aplicação dos filtros.")
-        
-    st.markdown("---")
-    
-    st.markdown("### ⬇️ EXPORTAÇÃO DE DADOS FILTRADOS")
-    
-    export_format = st.session_state['config']['formato_exportacao']
-    
-    if not df_analise.empty:
-        
-        data_to_download = None
-        mime_type = None
-        
-        if export_format == "Excel (.xlsx)":
-            output = BytesIO()
-            try:
-                with pd.ExcelWriter(output, engine='openypxl') as writer: 
-                    df_analise.to_excel(writer, index=False, sheet_name='Dados Analisados')
-                data_to_download = output.getvalue()
-                mime_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            except ImportError:
-                 st.error("O motor 'openpyxl' não está instalado. Por favor, exporte como CSV.")
-                 export_format = "CSV (.csv)" # Fallback
-            
-        if export_format == "CSV (.csv)":
-            data_to_download = df_analise.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
-            mime_type = "text/csv"
-        
-        filename = f"analise_smdet_pot_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        if export_format == "Excel (.xlsx)":
-            filename += ".xlsx"
-        elif export_format == "CSV (.csv)":
-            filename += ".csv"
-
-        if data_to_download is not None and mime_type is not None:
-             st.download_button(
-                label=f"⬇️ EXPORTAR DADOS FILTRADOS ({export_format.split('(')[1][:-1].upper()})",
-                data=data_to_download,
-                file_name=filename,
-                mime=mime_type,
-                type="primary",
-                use_container_width=True
-            )
-        else:
-            st.warning("Não foi possível gerar o arquivo para download.")
-
-# ===========================================
-# 🚨 Aba Análise de Pendências
-# ===========================================
-with aba_pendencias:
-    st.markdown("### 🚨 REGISTROS COM PENDÊNCIAS IDENTIFICADAS")
-    st.info("A identificação de pendência é baseada em: CPF nulo/zero ou Valor de Pagamento <= R$ 0,00.")
-    
-    if df_pendencias.empty:
-        st.success("🎉 Nenhum registro com pendência de validação básica encontrado na seleção atual.")
+    if not st.session_state['is_processed']:
+        st.warning("Carregue e processe os arquivos na barra lateral para visualizar o Dashboard.")
     else:
-        st.metric("Total de Pendências", len(df_pendencias))
+        df_pendencias = st.session_state['dataframes'].get('DADOS_CONSOLIDADOS_PENDENCIAS')
         
-        # Filtra apenas as colunas que existem no df_pendencias
-        display_cols = ['Ordem', 'Nome', 'CPF', 'Valor Pagto', 'Data Pagto', 'Projeto', 'Gerenciadora', 'Pendencia']
-        cols_to_display = [col for col in display_cols if col in df_pendencias.columns]
-        
-        st.dataframe(df_pendencias[cols_to_display], 
-                     use_container_width=True)
-        
-        st.markdown("---")
-        
-        st.markdown("### ⬇️ EXPORTAR LISTA DE PENDÊNCIAS")
-        
-        pendencias_export_format = st.session_state['config']['formato_exportacao']
-        
-        data_to_download_pend = None
-        mime_type_pend = None
-        
-        if pendencias_export_format == "Excel (.xlsx)":
-            output_pend = BytesIO()
-            try:
-                with pd.ExcelWriter(output_pend, engine='openpyxl') as writer: 
-                    df_pendencias.to_excel(writer, index=False, sheet_name='Pendências')
-                data_to_download_pend = output_pend.getvalue()
-                mime_type_pend = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            except ImportError:
-                 st.error("O motor 'openpyxl' não está instalado. Por favor, exporte como CSV.")
-                 pendencias_export_format = "CSV (.csv)" # Fallback
+        if df_pendencias is not None:
+            # Cálculos de Métricas
+            total_registros = len(df_pendencias)
+            total_projetos = df_pendencias['PROJETO'].nunique()
+            quantidade_pagamentos = df_pendencias['VALOR_PAGAMENTO'].count() if 'VALOR_PAGAMENTO' in df_pendencias.columns else 0
+            valor_total_pago = df_pendencias['VALOR_PAGAMENTO'].sum() if 'VALOR_PAGAMENTO' in df_pendencias.columns else 0
+            valor_total_desconto = df_pendencias['VALOR_DESCONTO'].sum() if 'VALOR_DESCONTO' in df_pendencias.columns else 0
+            valor_pendente = (df_pendencias['VALOR_TOTAL'].sum() - valor_total_pago - valor_total_desconto) if 'VALOR_TOTAL' in df_pendencias.columns else 0
             
-        if pendencias_export_format == "CSV (.csv)":
-            data_to_download_pend = df_pendencias.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
-            mime_type_pend = "text/csv"
-        
-        
-        filename_pend = f"pendencias_smdet_pot_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        if pendencias_export_format == "Excel (.xlsx)":
-            filename_pend += ".xlsx"
-        elif pendencias_export_format == "CSV (.csv)":
-            filename_pend += ".csv"
+            # --- Seção de Métricas Chave ---
+            st.markdown("### Métricas Financeiras Consolidadas")
+            col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+            
+            with col_m1:
+                st.metric(
+                    label="Quantidade de Pagamentos", 
+                    value=f"{quantidade_pagamentos:,}",
+                    help="Total de registros de pagamento processados"
+                )
+            with col_m2:
+                st.metric(
+                    label="Valor Total Pago", 
+                    value=formatar_valor_brl(valor_total_pago),
+                    delta=formatar_valor_brl(valor_total_pago),
+                    delta_color="normal",
+                    help="Soma de todos os valores pagos"
+                )
+            with col_m3:
+                st.metric(
+                    label="Valor de Descontos", 
+                    value=formatar_valor_brl(valor_total_desconto),
+                    help="Total de descontos aplicados"
+                )
+            with col_m4:
+                st.metric(
+                    label="Valor Pendente", 
+                    value=formatar_valor_brl(valor_pendente),
+                    delta=formatar_valor_brl(valor_pendente),
+                    delta_color="inverse",
+                    help="Valor total pendente de pagamento"
+                )
+                
+            st.markdown("---")
+            
+            # --- Seção de Distribuição ---
+            col_p1, col_p2 = st.columns(2)
+            
+            with col_p1:
+                st.markdown("### Registros por Status de Pagamento")
+                if 'STATUS_PAGAMENTO' in df_pendencias.columns:
+                    status_counts = df_pendencias['STATUS_PAGAMENTO'].value_counts().reset_index()
+                    status_counts.columns = ['Status', 'Contagem']
+                    
+                    fig_status = px.pie(
+                        status_counts, 
+                        values='Contagem', 
+                        names='Status', 
+                        title='Distribuição de Status de Pagamento',
+                        color='Status',
+                        color_discrete_map={'PENDENTE':'#EF553B', 'PAGO':'#00CC96'},
+                        hole=0.3
+                    )
+                    fig_status.update_traces(
+                        textposition='inside', 
+                        textinfo='percent+label',
+                        textfont_size=14
+                    )
+                    fig_status.update_layout(
+                        showlegend=True,
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                    )
+                    st.plotly_chart(fig_status, use_container_width=True)
+                else:
+                    st.info("Coluna 'STATUS_PAGAMENTO' não encontrada.")
 
-        if data_to_download_pend is not None and mime_type_pend is not None:
-             st.download_button(
-                label=f"⬇️ EXPORTAR PENDÊNCIAS ({pendencias_export_format.split('(')[1][:-1].upper()})",
-                data=data_to_download_pend,
-                file_name=filename_pend,
-                mime=mime_type_pend,
-                type="secondary",
-                use_container_width=True
+            with col_p2:
+                st.markdown("### Valores Totais por Projeto")
+                if 'PROJETO' in df_pendencias.columns and 'VALOR_TOTAL' in df_pendencias.columns:
+                    proj_summary = df_pendencias.groupby('PROJETO')['VALOR_TOTAL'].sum().reset_index()
+                    proj_summary = proj_summary.sort_values('VALOR_TOTAL', ascending=False)
+                    proj_summary.columns = ['Projeto', 'Valor Total']
+                    
+                    fig_proj = px.bar(
+                        proj_summary, 
+                        x='Projeto', 
+                        y='Valor Total', 
+                        title='Valor Total por Projeto',
+                        color='Valor Total',
+                        color_continuous_scale=px.colors.sequential.Blues,
+                        text_auto='.2s'
+                    )
+                    fig_proj.update_layout(
+                        xaxis_tickangle=-45,
+                        xaxis_title="Projeto",
+                        yaxis_title="Valor Total (R$)",
+                        showlegend=False
+                    )
+                    fig_proj.update_traces(
+                        texttemplate='R$ %{value:,.0f}',
+                        textposition='outside'
+                    )
+                    st.plotly_chart(fig_proj, use_container_width=True)
+                else:
+                    st.info("Dados insuficientes para gráfico de projetos.")
+            
+            # --- Seção de Tabela Resumo ---
+            st.markdown("---")
+            st.markdown("### Resumo por Projeto")
+            
+            if 'PROJETO' in df_pendencias.columns:
+                resumo_projetos = df_pendencias.groupby('PROJETO').agg({
+                    'NOME': 'count',
+                    'VALOR_TOTAL': 'sum',
+                    'VALOR_PAGAMENTO': 'sum',
+                    'VALOR_PENDENTE': 'sum',
+                    'STATUS_PAGAMENTO': lambda x: (x == 'PAGO').sum()
+                }).reset_index()
+                
+                resumo_projetos.columns = ['Projeto', 'Qtd Beneficiários', 'Valor Total', 'Valor Pago', 'Valor Pendente', 'Qtd Pagos']
+                resumo_projetos['% Pago'] = (resumo_projetos['Valor Pago'] / resumo_projetos['Valor Total'] * 100).round(2)
+                resumo_projetos = resumo_projetos.sort_values('Valor Total', ascending=False)
+                
+                # Formata valores
+                for col in ['Valor Total', 'Valor Pago', 'Valor Pendente']:
+                    resumo_projetos[col] = resumo_projetos[col].apply(lambda x: f"R$ {x:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+                
+                st.dataframe(resumo_projetos, use_container_width=True)
+                
+        else:
+            st.warning("Nenhum dado consolidado encontrado. Verifique os arquivos carregados.")
+
+# ============================================
+# ABA 2: DADOS E EXPORTAÇÃO
+# ============================================
+with tab2:
+    st.markdown("## 📁 Dados Carregados e Exportação")
+
+    if not st.session_state['is_processed']:
+        st.info("Carregue e processe os dados na barra lateral para ver os detalhes e exportar.")
+    else:
+        st.success("Dados consolidados e prontos para inspeção e exportação!")
+        
+        df_pendencias = st.session_state['dataframes'].get('DADOS_CONSOLIDADOS_PENDENCIAS')
+
+        if df_pendencias is not None:
+            st.markdown(f"### 📊 Dados Consolidados de Pagamentos ({len(df_pendencias):,} registros)")
+            
+            # Mostrar estatísticas rápidas
+            col_stats1, col_stats2, col_stats3 = st.columns(3)
+            with col_stats1:
+                st.metric("Total de Registros", f"{len(df_pendencias):,}")
+            with col_stats2:
+                st.metric("Projetos Únicos", f"{df_pendencias['PROJETO'].nunique():,}")
+            with col_stats3:
+                st.metric("Valor Total", formatar_valor_brl(df_pendencias['VALOR_TOTAL'].sum()))
+            
+            # Visualização dos dados
+            with st.expander("🔍 Visualizar Dados Consolidados (Primeiros 500 registros)", expanded=False):
+                st.dataframe(df_pendencias.head(500), use_container_width=True)
+            
+            st.markdown("---")
+            st.markdown("### 💾 Exportação de Dados")
+            
+            # Opções de exportação
+            col_exp1, col_exp2 = st.columns(2)
+            
+            with col_exp1:
+                export_format = st.selectbox(
+                    "Selecione o formato de exportação:",
+                    ["Excel (.xlsx)", "CSV (.csv)"],
+                    index=0
+                )
+            
+            with col_exp2:
+                # Filtro para exportação
+                if 'PROJETO' in df_pendencias.columns:
+                    projetos_export = ['Todos'] + sorted(df_pendencias['PROJETO'].unique().tolist())
+                    projeto_selecionado = st.selectbox(
+                        "Exportar dados do projeto:",
+                        projetos_export
+                    )
+                    
+                    if projeto_selecionado != 'Todos':
+                        df_export = df_pendencias[df_pendencias['PROJETO'] == projeto_selecionado]
+                        nome_arquivo = f"Dados_{projeto_selecionado}_{datetime.now().strftime('%Y%m%d')}"
+                    else:
+                        df_export = df_pendencias
+                        nome_arquivo = f"Dados_Consolidados_{datetime.now().strftime('%Y%m%d')}"
+                else:
+                    df_export = df_pendencias
+                    nome_arquivo = f"Dados_Consolidados_{datetime.now().strftime('%Y%m%d')}"
+            
+            # Botão de download
+            if st.button("⬇️ BAIXAR DADOS", type="primary", use_container_width=True):
+                with st.spinner("Gerando arquivo para download..."):
+                    data_to_download, mime_type = create_download_link(df_export, nome_arquivo, export_format)
+                    
+                    if data_to_download and mime_type:
+                        extensao = 'xlsx' if export_format.startswith('Excel') else 'csv'
+                        st.download_button(
+                            label=f"💾 CLIQUE PARA BAIXAR ({export_format})",
+                            data=data_to_download,
+                            file_name=f"{nome_arquivo}.{extensao}",
+                            mime=mime_type,
+                            type="primary",
+                            use_container_width=True
+                        )
+                        st.success("✅ Arquivo gerado com sucesso! Clique no botão acima para baixar.")
+                    else:
+                        st.error("❌ Erro ao gerar arquivo para download.")
+
+        # Exibe outros arquivos carregados
+        other_files = {k: v for k, v in st.session_state['dataframes'].items() if k != 'DADOS_CONSOLIDADOS_PENDENCIAS'}
+        if other_files:
+            st.markdown("---")
+            st.markdown("### 📄 Outros Arquivos Carregados")
+            
+            for name, df in other_files.items():
+                with st.expander(f"📋 {name} ({len(df):,} registros)"):
+                    st.dataframe(df.head(), use_container_width=True)
+                    
+                    # Botão de download para arquivos individuais
+                    col_dl1, col_dl2 = st.columns(2)
+                    with col_dl1:
+                        if st.button(f"Baixar {name} como CSV", key=f"csv_{name}"):
+                            csv = df.to_csv(index=False, sep=';', encoding='latin1')
+                            st.download_button(
+                                label="Clique para baixar CSV",
+                                data=csv,
+                                file_name=f"{name.replace('.', '_')}.csv",
+                                mime="text/csv",
+                                key=f"dl_csv_{name}"
+                            )
+                    
+                    with col_dl2:
+                        if st.button(f"Baixar {name} como Excel", key=f"excel_{name}"):
+                            output = BytesIO()
+                            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                                df.to_excel(writer, index=False, sheet_name='Dados')
+                            st.download_button(
+                                label="Clique para baixar Excel",
+                                data=output.getvalue(),
+                                file_name=f"{name.replace('.', '_')}.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                key=f"dl_excel_{name}"
+                            )
+
+# ============================================
+# ABA 3: ANÁLISE DETALHADA
+# ============================================
+with tab3:
+    st.markdown("## 🔍 Análise Detalhada de Pagamentos")
+
+    if not st.session_state['is_processed'] or st.session_state['dataframes'].get('DADOS_CONSOLIDADOS_PENDENCIAS') is None:
+        st.warning("Carregue e processe os dados consolidados para iniciar a análise.")
+    else:
+        df_pendencias = st.session_state['dataframes']['DADOS_CONSOLIDADOS_PENDENCIAS']
+        
+        # Filtros Interativos
+        st.markdown("### 🛠️ Filtros para Análise")
+        
+        col_f1, col_f2, col_f3 = st.columns(3)
+        
+        with col_f1:
+            # Filtro por Projeto
+            all_projects = ['Todos'] + sorted(df_pendencias['PROJETO'].unique().tolist())
+            selected_project = st.selectbox("Filtrar por Projeto:", all_projects)
+
+        with col_f2:
+            # Filtro por Status
+            all_status = ['Todos', 'PAGO', 'PENDENTE']
+            selected_status = st.selectbox("Filtrar por Status:", all_status)
+            
+        with col_f3:
+            # Filtro por Valor
+            min_val = float(df_pendencias['VALOR_TOTAL'].min()) if 'VALOR_TOTAL' in df_pendencias.columns else 0
+            max_val = float(df_pendencias['VALOR_TOTAL'].max()) if 'VALOR_TOTAL' in df_pendencias.columns else 10000
+            valor_range = st.slider(
+                "Filtrar por Valor Total:",
+                min_value=float(min_val),
+                max_value=float(max_val),
+                value=(float(min_val), float(max_val)),
+                help="Selecione a faixa de valores para filtrar"
             )
+        
+        # Aplica Filtros
+        df_filtered = df_pendencias.copy()
+        
+        if selected_project != 'Todos':
+            df_filtered = df_filtered[df_filtered['PROJETO'] == selected_project]
+            
+        if selected_status != 'Todos':
+            df_filtered = df_filtered[df_filtered['STATUS_PAGAMENTO'] == selected_status]
+            
+        # Filtro por valor
+        if 'VALOR_TOTAL' in df_filtered.columns:
+            df_filtered = df_filtered[
+                (df_filtered['VALOR_TOTAL'] >= valor_range[0]) & 
+                (df_filtered['VALOR_TOTAL'] <= valor_range[1])
+            ]
 
-# ===========================================
-# ⚙️ Aba Configurações
-# ===========================================
-with aba_config:
-    st.markdown("### 🛠️ CONFIGURAÇÕES DE PROCESSAMENTO E EXIBIÇÃO")
-    current_config = st.session_state['config']
+        st.markdown("---")
+        st.markdown(f"### 📈 Resultados da Análise: {len(df_filtered):,} Registros Filtrados")
+        
+        if len(df_filtered) == 0:
+            st.info("Nenhum registro encontrado com os filtros selecionados.")
+        else:
+            # Métricas Filtradas
+            col_fa1, col_fa2, col_fa3, col_fa4 = st.columns(4)
+            with col_fa1:
+                st.metric(
+                    label="Registros Filtrados", 
+                    value=f"{len(df_filtered):,}",
+                    delta=f"{len(df_filtered) - len(df_pendencias):,}" if len(df_filtered) != len(df_pendencias) else None
+                )
+            with col_fa2:
+                st.metric(
+                    label="Valor Total Filtrado", 
+                    value=formatar_valor_brl(df_filtered['VALOR_TOTAL'].sum())
+                )
+            with col_fa3:
+                st.metric(
+                    label="Valor Pago Filtrado", 
+                    value=formatar_valor_brl(df_filtered['VALOR_PAGAMENTO'].sum() if 'VALOR_PAGAMENTO' in df_filtered.columns else 0)
+                )
+            with col_fa4:
+                st.metric(
+                    label="Beneficiários Únicos", 
+                    value=f"{df_filtered['NOME'].nunique() if 'NOME' in df_filtered.columns else 0:,}"
+                )
+            
+            st.markdown("---")
+            
+            # Visualização dos Dados Filtrados
+            st.markdown("### 📋 Dados Detalhados Filtrados")
+            
+            # Seleção de colunas para exibição
+            todas_colunas = list(df_filtered.columns)
+            colunas_padrao = ['NOME', 'PROJETO', 'VALOR_TOTAL', 'VALOR_PAGAMENTO', 'STATUS_PAGAMENTO', 'VALOR_PENDENTE']
+            colunas_disponiveis = [col for col in colunas_padrao if col in todas_colunas]
+            
+            colunas_selecionadas = st.multiselect(
+                "Selecione as colunas para exibir:",
+                todas_colunas,
+                default=colunas_disponiveis
+            )
+            
+            if colunas_selecionadas:
+                df_exibir = df_filtered[colunas_selecionadas]
+                
+                # Paginação
+                registros_por_pagina = 100
+                total_paginas = max(1, len(df_exibir) // registros_por_pagina + (1 if len(df_exibir) % registros_por_pagina > 0 else 0))
+                
+                pagina_atual = st.number_input(
+                    "Página:",
+                    min_value=1,
+                    max_value=total_paginas,
+                    value=1,
+                    step=1
+                )
+                
+                inicio = (pagina_atual - 1) * registros_por_pagina
+                fim = min(inicio + registros_por_pagina, len(df_exibir))
+                
+                st.dataframe(df_exibir.iloc[inicio:fim], use_container_width=True)
+                st.caption(f"Mostrando registros {inicio+1} a {fim} de {len(df_exibir):,} ({pagina_atual}/{total_paginas})")
+            
+            # Gráficos de Análise
+            st.markdown("---")
+            st.markdown("### 📊 Análise Visual dos Dados Filtrados")
+            
+            col_g1, col_g2 = st.columns(2)
+            
+            with col_g1:
+                if 'AGENCIA' in df_filtered.columns and len(df_filtered) > 0:
+                    st.markdown("#### Distribuição por Agência")
+                    agency_counts = df_filtered['AGENCIA'].value_counts().reset_index()
+                    agency_counts.columns = ['Agência', 'Quantidade']
+                    
+                    fig_agency = px.bar(
+                        agency_counts.head(20), 
+                        x='Agência', 
+                        y='Quantidade',
+                        title='Top 20 Agências por Quantidade',
+                        color='Quantidade',
+                        color_continuous_scale=px.colors.sequential.Plasma
+                    )
+                    fig_agency.update_layout(xaxis_tickangle=-45)
+                    st.plotly_chart(fig_agency, use_container_width=True)
+                else:
+                    st.info("Coluna 'AGENCIA' não encontrada para análise.")
+            
+            with col_g2:
+                if 'PROJETO' in df_filtered.columns and len(df_filtered) > 0:
+                    st.markdown("#### Distribuição de Valores por Projeto")
+                    projeto_valores = df_filtered.groupby('PROJETO')['VALOR_TOTAL'].sum().nlargest(15).reset_index()
+                    projeto_valores.columns = ['Projeto', 'Valor Total']
+                    
+                    fig_valores = px.bar(
+                        projeto_valores,
+                        x='Projeto',
+                        y='Valor Total',
+                        title='Top 15 Projetos por Valor Total',
+                        color='Valor Total',
+                        color_continuous_scale=px.colors.sequential.Viridis
+                    )
+                    fig_valores.update_layout(xaxis_tickangle=-45)
+                    st.plotly_chart(fig_valores, use_container_width=True)
+                else:
+                    st.info("Dados insuficientes para análise por projeto.")
+
+# ============================================
+# ABA 4: CONFIGURAÇÕES
+# ============================================
+with tab4:
+    st.markdown("## ⚙️ Configurações do Sistema")
     
-    st.markdown("### ⚙️ OPÇÕES DE PROCESSAMENTO")
+    current_config = st.session_state['config']
+
+    st.markdown("### 🔧 Opções de Processamento")
     
     col_p1, col_p2, col_p3 = st.columns(3)
     
     with col_p1:
         auto_validar = st.checkbox(
-            "Validação automática de formato na carga",
+            "Validação automática",
             value=current_config['auto_validar'],
-            help="Tenta corrigir automaticamente colunas de valor e data."
+            help="Executa validação automática após carregar dados"
         )
         
     with col_p2:
         manter_historico = st.checkbox(
-            "Manter histórico de filtros e ações",
+            "Manter histórico",
             value=current_config['manter_historico'],
-            help="Preserva o estado da sessão ao recarregar a página."
+            help="Armazena histórico de modificações"
         )
-        
+    
     with col_p3:
         limite_registros = st.number_input(
-            "Limite de registros para processamento:",
+            "Limite de registros:",
             min_value=1000,
             max_value=1000000,
             value=current_config['limite_registros'],
             step=1000,
-            help="Define o número máximo de registros para processamento otimizado"
+            help="Número máximo de registros para processamento"
         )
     
-    st.markdown("### 💾 OPÇÕES DE EXPORTAÇÃO")
+    st.markdown("### 💾 Opções de Exportação")
     
     col_e1, col_e2 = st.columns(2)
     
     with col_e1:
-        export_options = ["Excel (.xlsx)", "CSV (.csv)"]
         formato_exportacao = st.selectbox(
-            "Formato padrão de exportação:",
-            export_options,
-            index=export_options.index(current_config['formato_exportacao']) if current_config['formato_exportacao'] in export_options else 0
+            "Formato padrão:",
+            ["Excel (.xlsx)", "CSV (.csv)"],
+            index=0 if current_config['formato_exportacao'] == "Excel (.xlsx)" else 1
         )
     
     with col_e2:
         incluir_graficos = st.checkbox(
-            "Incluir gráficos nos relatórios (Opção desativada para exportação)",
+            "Incluir gráficos em relatórios",
             value=current_config['incluir_graficos'],
-            disabled=True 
+            help="Adiciona visualizações nos relatórios exportados (quando disponível)"
         )
     
+    # Configurações avançadas
+    st.markdown("### ⚡ Configurações Avançadas")
+    
+    with st.expander("Configurações de Validação", expanded=False):
+        validar_cpf = st.checkbox("Validar formato de CPF", value=True)
+        validar_valores = st.checkbox("Validar valores numéricos", value=True)
+        corrigir_decimais = st.checkbox("Corrigir problemas de casas decimais", value=True,
+                                       help="Corrige automaticamente valores que parecem ter problemas de formatação")
+    
     # Botão para salvar configurações
-    if st.button("💾 SALVAR CONFIGURAÇÕES", type="primary", use_container_width=True):
-        st.session_state['config'] = {
-            'auto_validar': auto_validar,
-            'manter_historico': manter_historico,
-            'limite_registros': limite_registros,
-            'formato_exportacao': formato_exportacao,
-            'incluir_graficos': incluir_graficos
-        }
-        st.success("Configurações salvas com sucesso!")
+    col_btn1, col_btn2 = st.columns(2)
+    
+    with col_btn1:
+        if st.button("💾 SALVAR CONFIGURAÇÕES", type="primary", use_container_width=True):
+            st.session_state['config'] = {
+                'auto_validar': auto_validar,
+                'manter_historico': manter_historico,
+                'limite_registros': limite_registros,
+                'formato_exportacao': formato_exportacao,
+                'incluir_graficos': incluir_graficos,
+                'validar_cpf': validar_cpf,
+                'validar_valores': validar_valores,
+                'corrigir_decimais': corrigir_decimais
+            }
+            st.success("✅ Configurações salvas com sucesso!")
+            st.rerun()
+    
+    with col_btn2:
+        if st.button("🔄 RESTAURAR PADRÕES", use_container_width=True):
+            st.session_state['config'] = {
+                'auto_validar': True,
+                'manter_historico': True,
+                'limite_registros': 100000,
+                'formato_exportacao': "Excel (.xlsx)",
+                'incluir_graficos': True,
+                'validar_cpf': True,
+                'validar_valores': True,
+                'corrigir_decimais': True
+            }
+            st.success("✅ Configurações restauradas para os valores padrão!")
+            st.rerun()
+    
+    # Informações do sistema
+    st.markdown("---")
+    st.markdown("### ℹ️ Informações do Sistema")
+    
+    col_info1, col_info2 = st.columns(2)
+    
+    with col_info1:
+        st.markdown("""
+        **Versão:** 2.0.1  
+        **Última atualização:** Novembro 2024  
+        **Desenvolvido para:** SMDET-POT  
+        """)
+    
+    with col_info2:
+        st.markdown("""
+        **Funcionalidades principais:**
+        - Processamento de arquivos CSV/TXT
+        - Dashboard interativo
+        - Análise detalhada
+        - Exportação multiplataforma
+        """)
+
+# ============================================
+# RODAPÉ
+# ============================================
+st.markdown("---")
+st.markdown(
+    "<div style='text-align: center; color: #666; font-size: 0.9em;'>"
+    "💰 SMDET - POT Monitoramento de Pagamento de Benefícios | "
+    "Sistema desenvolvido para acompanhamento e análise de pagamentos"
+    "</div>",
+    unsafe_allow_html=True
+)
