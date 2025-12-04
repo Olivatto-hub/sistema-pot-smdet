@@ -95,6 +95,7 @@ def load_from_file(uploaded_file):
     """
     Carrega e normaliza arquivo real enviado pelo usuário.
     Implementa tratamento de encoding para evitar erros com arquivos BR (Latin-1).
+    Remove linhas de totalização (onde Cartão/Nome estão vazios ou indicam Total).
     """
     df = pd.DataFrame()
     try:
@@ -137,10 +138,17 @@ def load_from_file(uploaded_file):
                 if 'valor' in key or 'liquido' in key or 'líquido' in key:
                     rename_dict[cols_map[key]] = 'Valor Pagto'
                     break
+        
+        # Mapeia Nome/CPF (para validação de linha vazia)
+        if 'Nome Beneficiário' not in df.columns:
+            for key in cols_map:
+                if 'nome' in key or 'beneficiario' in key or 'favorecido' in key:
+                    rename_dict[cols_map[key]] = 'Nome Beneficiário'
+                    break
                     
         df = df.rename(columns=rename_dict)
         
-        # 4. Validação Crítica
+        # 4. Validação Crítica de Colunas
         required_cols = ['Num Cartao', 'Valor Pagto']
         missing = [c for c in required_cols if c not in df.columns]
         
@@ -148,10 +156,24 @@ def load_from_file(uploaded_file):
             st.error(f"❌ Erro de Formato: Não foi possível identificar as colunas obrigatórias: {missing}. Verifique se o arquivo possui colunas com 'Cartão' e 'Valor'.")
             return pd.DataFrame() # Retorna vazio para não quebrar o app
             
-        # Força conversão de Num Cartao para string
-        if 'Num Cartao' in df.columns:
-            df['Num Cartao'] = df['Num Cartao'].astype(str)
-            
+        # 5. LIMPEZA DE LINHAS DE TOTALIZAÇÃO (CORREÇÃO DO VALOR DOBRADO)
+        # Regra: Se Num Cartao é vazio/nulo ou contém 'Total', remove a linha.
+        
+        # Converte para string para analisar
+        df['Num Cartao'] = df['Num Cartao'].astype(str).str.strip()
+        
+        # Filtra 'nan', 'None', strings vazias e linhas que contêm "Total"
+        # O filtro mantém apenas o que NÃO É (~) nulo/vazio/total
+        df = df[~df['Num Cartao'].isin(['nan', 'None', '', 'NaN', 'NaT'])]
+        df = df[~df['Num Cartao'].str.contains('total', case=False, na=False)]
+        df = df[~df['Num Cartao'].str.contains('soma', case=False, na=False)]
+
+        # Reforço com Nome Beneficiário se existir
+        if 'Nome Beneficiário' in df.columns:
+             df['Nome Beneficiário'] = df['Nome Beneficiário'].astype(str).str.strip()
+             df = df[~df['Nome Beneficiário'].isin(['nan', 'None', '', 'NaN'])]
+             df = df[~df['Nome Beneficiário'].str.contains('Total', case=False, na=False)]
+
         return df
 
     except Exception as e:
@@ -266,7 +288,8 @@ else:
             with col1:
                 st.metric("Total de Registros", len(df_processed))
             with col2:
-                st.metric("Valor Total da Folha", format_brl(total_valor))
+                # CORREÇÃO DE NOMENCLATURA: DE 'Valor Total da Folha' para 'Total de Pagamentos'
+                st.metric("Total de Pagamentos", format_brl(total_valor))
             with col3:
                 st.metric("Cartões Únicos", df_processed['Num Cartao'].nunique())
             with col4:
