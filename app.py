@@ -166,7 +166,7 @@ def process_data(df, teto):
 # --- LAYOUT PRINCIPAL ---
 
 st.sidebar.image("https://cdn-icons-png.flaticon.com/512/3135/3135715.png", width=60)
-st.sidebar.title("Nexus POT")
+st.sidebar.title("SMDET - POT")
 st.sidebar.write("Gestão de Benefícios")
 st.sidebar.markdown("---")
 
