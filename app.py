@@ -73,7 +73,8 @@ def generate_mock_data():
     # Linha com valor alto mas abaixo do limite
     values_column[1] = 4900.00
     
-    # Mesmo cartão com vários pagamentos (Total > 5k, mas linhas individuais < 5k -> DEVE PASSAR)
+    # DUPLICIDADE DE TESTE: Mesmo cartão com vários pagamentos
+    # Conta 9876543210 aparecerá 3 vezes
     cards_column[2:5] = 9876543210
     values_column[2] = 2000.00
     values_column[3] = 2000.00
@@ -279,6 +280,11 @@ else:
             # Filtros
             df_analise = df_processed[df_processed['Status_Validacao'] == '⚠️ Análise Admin']
             
+            # --- DETECÇÃO DE DUPLICIDADE ---
+            # Identifica IDs que aparecem mais de uma vez
+            duplicados = df_processed[df_processed.duplicated(subset=['Num Cartao'], keep=False)]
+            has_duplicates = not duplicados.empty
+
             # KPIs
             col1, col2, col3, col4 = st.columns(4)
             
@@ -291,13 +297,36 @@ else:
                 # CORREÇÃO DE NOMENCLATURA: DE 'Valor Total da Folha' para 'Total de Pagamentos'
                 st.metric("Total de Pagamentos", format_brl(total_valor))
             with col3:
-                st.metric("Cartões Únicos", df_processed['Num Cartao'].nunique())
+                # CORREÇÃO DE NOMENCLATURA: DE 'Cartões Únicos' para 'Contas Únicas'
+                st.metric("Contas Únicas", df_processed['Num Cartao'].nunique())
             with col4:
                 st.metric("Retido para Validação", format_brl(total_analise), delta_color="inverse")
                 
             st.markdown("---")
+
+            # --- ALERTA DE VERIFICAÇÃO DE DUPLICIDADE ---
+            if has_duplicates:
+                num_contas_dup = duplicados['Num Cartao'].nunique()
+                st.warning(f"⚠️ **Alerta de Verificação:** Foram encontradas {num_contas_dup} Contas (Num Cartao) com múltiplos pagamentos no mesmo arquivo.")
+                
+                with st.expander("🔎 Visualizar Detalhes dos Pagamentos Duplicados/Múltiplos", expanded=False):
+                    st.markdown("Abaixo estão listados todos os registros das contas que aparecem mais de uma vez. Verifique se são pagamentos legítimos (parcelas, retroativos) ou erros.")
+                    
+                    # Seleciona colunas relevantes para análise
+                    cols_dup_view = ['Num Cartao', 'Nome Beneficiário', 'Valor Pagto', 'Projeto Origem']
+                    existing_cols = [c for c in cols_dup_view if c in duplicados.columns]
+                    
+                    # Ordena por Cartão para ficar um embaixo do outro
+                    st.dataframe(
+                        duplicados[existing_cols].sort_values(by='Num Cartao'),
+                        column_config={
+                            "Valor Pagto": st.column_config.NumberColumn("Valor", format="R$ %.2f")
+                        },
+                        use_container_width=True,
+                        hide_index=True
+                    )
             
-            # ALERTAS
+            # ALERTAS DE VALOR (R$ 5k)
             if not df_analise.empty:
                 st.error(f"🚨 **Atenção:** {len(df_analise)} pagamentos individuais excedem o teto de R$ {limite_teto:,.2f}.")
                 with st.expander("Ver Detalhes da Malha Fina (Valores Individuais Altos)"):
@@ -314,7 +343,8 @@ else:
                         use_container_width=True
                     )
             else:
-                st.success("✅ Nenhum pagamento individual excede o limite estabelecido.")
+                if not has_duplicates:
+                    st.success("✅ Nenhum pagamento individual excede o limite e não há duplicidades de conta.")
                 
             # GRÁFICOS
             tab1, tab2 = st.tabs(["📊 Visão Gráfica", "📋 Dados Brutos"])
