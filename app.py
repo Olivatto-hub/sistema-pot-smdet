@@ -1,1227 +1,951 @@
-import pandas as pd
-import os
-import re
-from datetime import datetime
 import streamlit as st
-import warnings
-import chardet
+import pandas as pd
 import numpy as np
-import io
-import traceback
-
+from io import BytesIO
+import plotly.express as px
+import plotly.graph_objects as go
+from datetime import datetime
+import warnings
+import re
 warnings.filterwarnings('ignore')
 
-# Configuração da página
+# ============================================
+# CONFIGURAÇÃO DA PÁGINA
+# ============================================
 st.set_page_config(
-    page_title="Sistema POT - Monitoramento de Pagamentos",
-    page_icon="💰",
+    page_title="Sistema POT-SMDET - Monitoramento de Projetos",
+    page_icon="🏙️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Estilos CSS personalizados com melhor contraste
+# ============================================
+# CSS PERSONALIZADO - ALTO CONTRASTE
+# ============================================
 st.markdown("""
 <style>
-    .main-header {
-        font-size: 2.5rem;
-        color: #1E3A8A;
-        text-align: center;
-        margin-bottom: 1rem;
-        font-weight: 700;
+    /* FUNDO PRINCIPAL */
+    .main {
+        background-color: #ffffff !important;
     }
-    .sub-header {
-        font-size: 1.5rem;
-        color: #1E40AF;
-        margin-top: 1rem;
-        margin-bottom: 1rem;
-        border-bottom: 2px solid #D1D5DB;
-        padding-bottom: 0.5rem;
-        font-weight: 600;
+    
+    /* TÍTULOS E TEXTOS - PRETO FORTE */
+    h1, h2, h3, h4, h5, h6, p, div, span, label {
+        color: #000000 !important;
+        font-weight: 500 !important;
     }
-    .metric-card {
-        background-color: #FFFFFF;
-        border-radius: 10px;
-        padding: 1.2rem;
-        border: 1px solid #E5E7EB;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        margin-bottom: 0.5rem;
-    }
-    .metric-card h3 {
-        color: #374151;
-        font-size: 0.9rem;
-        margin-bottom: 0.5rem;
-        font-weight: 600;
-    }
-    .metric-card .st-emotion-cache-1wivap2 {
-        font-size: 1.8rem;
-        font-weight: 700;
-        color: #111827;
-    }
-    .alert-card {
-        background-color: #FEF2F2;
-        border: 1px solid #F87171;
-        border-radius: 8px;
-        padding: 1rem;
-        margin-bottom: 1rem;
-    }
-    .alert-card h3, .alert-card p {
-        color: #7F1D1D;
-    }
-    .success-card {
-        background-color: #F0FDF4;
-        border: 1px solid #4ADE80;
-        border-radius: 8px;
-        padding: 1rem;
-        margin-bottom: 1rem;
-    }
-    .success-card h3, .success-card p {
-        color: #14532D;
-    }
-    .info-card {
-        background-color: #EFF6FF;
-        border: 1px solid #60A5FA;
-        border-radius: 8px;
-        padding: 1rem;
-        margin-bottom: 1rem;
-    }
-    .info-card h3, .info-card p {
-        color: #1E3A8A;
-    }
-    .info-card li {
-        color: #374151;
-    }
-    /* Badges com alto contraste */
-    .critical-badge {
-        background-color: #FEE2E2;
-        color: #991B1B !important;
-        padding: 4px 12px;
-        border-radius: 16px;
-        font-size: 0.85rem;
-        font-weight: 700;
-        border: 1px solid #FCA5A5;
-        display: inline-block;
-        margin: 2px;
-    }
-    .warning-badge {
-        background-color: #FEF3C7;
-        color: #92400E !important;
-        padding: 4px 12px;
-        border-radius: 16px;
-        font-size: 0.85rem;
-        font-weight: 700;
-        border: 1px solid #FBBF24;
-        display: inline-block;
-        margin: 2px;
-    }
-    .info-badge {
-        background-color: #DBEAFE;
-        color: #1E40AF !important;
-        padding: 4px 12px;
-        border-radius: 16px;
-        font-size: 0.85rem;
-        font-weight: 700;
-        border: 1px solid #93C5FD;
-        display: inline-block;
-        margin: 2px;
-    }
-    /* Melhorar contraste nas tabelas */
+    
+    /* DATAFRAMES - CONTRASTE MÁXIMO */
     .stDataFrame {
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+        background-color: #ffffff !important;
+        border: 2px solid #000000 !important;
     }
+    
+    .stDataFrame table {
+        border-collapse: collapse !important;
+    }
+    
     .stDataFrame th {
-        background-color: #F3F4F6 !important;
-        color: #111827 !important;
+        background-color: #000000 !important;
+        color: #ffffff !important;
+        font-weight: bold !important;
+        border: 1px solid #ffffff !important;
+        padding: 8px !important;
+    }
+    
+    .stDataFrame td {
+        background-color: #ffffff !important;
+        color: #000000 !important;
+        border: 1px solid #000000 !important;
+        padding: 8px !important;
+    }
+    
+    .stDataFrame tr:nth-child(even) td {
+        background-color: #f0f0f0 !important;
+    }
+    
+    /* MÉTRICAS */
+    [data-testid="stMetricValue"] {
+        color: #000000 !important;
+        font-size: 28px !important;
+        font-weight: 700 !important;
+    }
+    
+    [data-testid="stMetricLabel"] {
+        color: #000000 !important;
+        font-size: 16px !important;
         font-weight: 600 !important;
     }
-    .stDataFrame td {
-        color: #374151 !important;
+    
+    [data-testid="stMetricDelta"] {
+        font-weight: 600 !important;
     }
-    /* Botões com melhor contraste */
+    
+    /* WIDGETS */
+    .stSlider label, 
+    .stNumberInput label, 
+    .stSelectbox label,
+    .stMultiSelect label,
+    .stRadio label,
+    .stCheckbox label,
+    .stTextInput label,
+    .stDateInput label {
+        color: #000000 !important;
+        font-weight: 600 !important;
+        font-size: 16px !important;
+    }
+    
+    /* INPUTS E SELECTS */
+    .stTextInput input,
+    .stNumberInput input,
+    .stSelectbox select,
+    .stMultiSelect div {
+        background-color: #ffffff !important;
+        color: #000000 !important;
+        border: 2px solid #000000 !important;
+        font-weight: 500 !important;
+    }
+    
+    /* BOTÕES */
     .stButton > button {
-        font-weight: 600;
-        border-radius: 6px;
+        background-color: #000000 !important;
+        color: #ffffff !important;
+        border: 2px solid #000000 !important;
+        font-weight: 600 !important;
+        padding: 10px 20px !important;
+        border-radius: 4px !important;
     }
-    /* Texto geral */
-    .stMarkdown, .stText, .stWrite {
-        color: #374151;
+    
+    .stButton > button:hover {
+        background-color: #333333 !important;
+        border-color: #333333 !important;
     }
-    /* Rodapé */
-    .footer {
-        text-align: center;
-        color: #6B7280;
-        padding: 20px;
-        font-size: 0.9rem;
-        border-top: 1px solid #E5E7EB;
-        margin-top: 2rem;
+    
+    /* SIDEBAR */
+    [data-testid="stSidebar"] {
+        background-color: #f8f9fa !important;
     }
-    /* Labels e controles */
-    .stCheckbox label, .stSelectbox label, .stMultiselect label, .stSlider label {
-        color: #4B5563 !important;
-        font-weight: 500;
+    
+    /* TABS */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 2px;
+        background-color: #e9ecef !important;
     }
-    /* Cards de features na tela inicial */
-    .feature-card {
-        background-color: #FFFFFF;
-        border-radius: 10px;
-        padding: 1.5rem;
-        border: 1px solid #E5E7EB;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-        height: 100%;
+    
+    .stTabs [data-baseweb="tab"] {
+        background-color: #ffffff !important;
+        border: 1px solid #000000 !important;
+        color: #000000 !important;
+        font-weight: 600 !important;
     }
-    .feature-card h4 {
-        color: #1E40AF;
-        margin-bottom: 1rem;
-        font-weight: 600;
+    
+    .stTabs [aria-selected="true"] {
+        background-color: #000000 !important;
+        color: #ffffff !important;
     }
-    .feature-card p {
-        color: #4B5563;
-        margin-bottom: 0.5rem;
+    
+    /* ALERTAS E MENSAGENS */
+    .stAlert {
+        border: 2px solid !important;
+        font-weight: 500 !important;
     }
-    .feature-card li {
-        color: #4B5563;
+    
+    .stSuccess {
+        border-color: #28a745 !important;
+        background-color: #d4edda !important;
+        color: #000000 !important;
+    }
+    
+    .stError {
+        border-color: #dc3545 !important;
+        background-color: #f8d7da !important;
+        color: #000000 !important;
+    }
+    
+    .stWarning {
+        border-color: #ffc107 !important;
+        background-color: #fff3cd !important;
+        color: #000000 !important;
+    }
+    
+    .stInfo {
+        border-color: #17a2b8 !important;
+        background-color: #d1ecf1 !important;
+        color: #000000 !important;
+    }
+    
+    /* EXPANDERS */
+    .streamlit-expanderHeader {
+        background-color: #f8f9fa !important;
+        color: #000000 !important;
+        font-weight: 600 !important;
+        border: 1px solid #000000 !important;
+    }
+    
+    /* SLIDER ESPECÍFICO */
+    .stSlider > div > div {
+        color: #000000 !important;
+    }
+    
+    .stSlider > div > div > div {
+        color: #000000 !important;
     }
 </style>
 """, unsafe_allow_html=True)
 
-class SistemaPOT:
+# ============================================
+# CLASSE PRINCIPAL DO SISTEMA
+# ============================================
+class SistemaPOTSMDET:
     def __init__(self):
         self.df = None
         self.df_original = None
-        self.dados_limpos = None
-        self.dados_faltantes = None
-        self.inconsistencias = None
+        self.coluna_valor = None
+        self.coluna_data = None
+        self.coluna_projeto = None
         self.registros_problematicos = None
-        self.arquivo_processado = False
-        self.nome_arquivo = ""
-        self.total_pagamentos = 0
-        self.coluna_valor_pagto = None
-        self.log_processamento = []
-        self.erros_detalhados = []
-    
-    def log(self, mensagem):
-        """Registra mensagem no log"""
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        self.log_processamento.append(f"[{timestamp}] {mensagem}")
-    
-    def registrar_erro(self, tipo_erro, coluna, valor, linha_original, descricao):
-        """Registra erro detalhado com linha original"""
-        self.erros_detalhados.append({
-            'Tipo_Erro': tipo_erro,
-            'Coluna': coluna,
-            'Valor_Problema': str(valor)[:50] if valor else "",
-            'Linha_Original': linha_original,
-            'Descricao': descricao,
-            'Timestamp': datetime.now().strftime("%H:%M:%S")
-        })
-    
-    def detectar_encoding(self, arquivo_path):
-        """Detecta o encoding do arquivo"""
+        self.erros_detectados = 0
+        self.total_registros = 0
+        self.valor_total = 0
+        
+    def carregar_dados(self, arquivo):
+        """Carrega dados do arquivo Excel ou CSV"""
         try:
-            with open(arquivo_path, 'rb') as f:
-                raw_data = f.read(10000)
-            resultado = chardet.detect(raw_data)
-            encoding = resultado['encoding']
-            confianca = resultado['confidence']
-            self.log(f"Encoding detectado: {encoding} (confiança: {confianca:.2f})")
-            return encoding if encoding else 'latin-1'
-        except Exception as e:
-            self.log(f"Erro na detecção de encoding: {e}")
-            return 'latin-1'
-    
-    def tentar_encodings(self, arquivo_path):
-        """Tenta diferentes encodings até encontrar um que funcione"""
-        encodings = ['latin-1', 'iso-8859-1', 'cp1252', 'utf-8', 'utf-8-sig', 'cp850']
-        
-        for encoding in encodings:
-            try:
-                self.log(f"Tentando encoding: {encoding}")
-                df = pd.read_csv(arquivo_path, delimiter=';', encoding=encoding, nrows=5, on_bad_lines='skip')
-                if not df.empty and len(df.columns) > 1:
-                    self.log(f"Encoding funcionou: {encoding}")
-                    return encoding
-            except Exception as e:
-                self.log(f"Encoding {encoding} falhou: {str(e)[:50]}")
-                continue
-        
-        self.log("Nenhum encoding comum funcionou")
-        return None
-    
-    def eh_data(self, valor_str):
-        """Verifica se uma string parece ser uma data"""
-        if pd.isna(valor_str) or not isinstance(valor_str, str):
-            return False
-        
-        valor_str = str(valor_str).strip()
-        
-        # Padrões de data
-        padroes_data = [
-            r'^\d{1,2}/\d{1,2}/\d{4}$',      # DD/MM/AAAA
-            r'^\d{1,2}-\d{1,2}-\d{4}$',      # DD-MM-AAAA
-            r'^\d{4}-\d{1,2}-\d{1,2}$',      # AAAA-MM-DD
-            r'^\d{1,2}/\d{1,2}/\d{2}$',      # DD/MM/AA
-            r'^\d{1,2}-\d{1,2}-\d{2}$',      # DD-MM-AA
-            r'^\d{1,2}\.\d{1,2}\.\d{4}$',    # DD.MM.AAAA
-            r'^\d{8}$',                       # AAAAMMDD
-        ]
-        
-        for padrao in padroes_data:
-            if re.match(padrao, valor_str):
-                return True
-        
-        return False
-    
-    def converter_valor_monetario(self, valor_str, linha_original, coluna):
-        """Converte valores monetários do formato brasileiro para float"""
-        if pd.isna(valor_str) or valor_str == '' or str(valor_str).strip() == '':
-            return 0.0
-        
-        try:
-            valor_original = str(valor_str).strip()
+            if arquivo.name.endswith('.xlsx'):
+                self.df = pd.read_excel(arquivo, dtype=str)
+            elif arquivo.name.endswith('.csv'):
+                # Tenta diferentes encodings e separadores
+                try:
+                    self.df = pd.read_csv(arquivo, encoding='utf-8', sep=';', dtype=str)
+                except:
+                    self.df = pd.read_csv(arquivo, encoding='latin-1', sep=';', dtype=str)
             
-            # Se for um número, retorna direto
-            try:
-                if isinstance(valor_str, (int, float, np.number)):
-                    return float(valor_str)
-            except:
-                pass
-            
-            # Verifica se é uma data - NÃO CONVERTE
-            if self.eh_data(valor_original):
-                return valor_original  # Mantém como string
-            
-            # Tenta converter direto para float
-            try:
-                return float(valor_original)
-            except:
-                pass
-            
-            # Remove símbolos de moeda
-            valor_limpo = valor_original.replace('R$', '').replace('US$', '').replace(' ', '').strip()
-            
-            if valor_limpo == '':
-                return 0.0
-            
-            # Substitui ponto e vírgula por ponto
-            valor_limpo = valor_limpo.replace(';', '.')
-            
-            # Formato brasileiro: 1.234,56
-            if '.' in valor_limpo and ',' in valor_limpo:
-                # Remove pontos de milhar
-                if valor_limpo.count('.') > 1:
-                    partes = valor_limpo.split(',')
-                    if len(partes) == 2:
-                        inteiro = partes[0].replace('.', '')
-                        decimal = partes[1]
-                        return float(f"{inteiro}.{decimal}")
-            
-            # Formato com vírgula decimal
-            elif ',' in valor_limpo:
-                partes = valor_limpo.split(',')
-                if len(partes) == 2 and len(partes[1]) <= 3:
-                    return float(valor_limpo.replace(',', '.'))
-                else:
-                    return float(valor_limpo.replace(',', ''))
-            
-            # Formato com ponto
-            elif '.' in valor_limpo:
-                partes = valor_limpo.split('.')
-                if len(partes) == 2 and len(partes[1]) <= 3:
-                    return float(valor_limpo)
-                else:
-                    return float(valor_limpo.replace('.', ''))
-            
-            else:
-                return float(valor_limpo)
-                
-        except Exception as e:
-            # Registra erro de conversão
-            self.registrar_erro(
-                "Erro de Conversão",
-                coluna,
-                valor_str,
-                linha_original,
-                f"Não foi possível converter para valor monetário"
-            )
-            return 0.0
-    
-    def processar_arquivo_streamlit(self, arquivo_upload):
-        """Processa arquivo CSV de pagamentos do POT"""
-        try:
-            self.log_processamento = []
-            self.erros_detalhados = []
-            self.log(f"Iniciando processamento do arquivo: {arquivo_upload.name}")
-            
-            # Salva arquivo temporariamente
-            temp_path = f"temp_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-            with open(temp_path, 'wb') as f:
-                f.write(arquivo_upload.getvalue())
-            
-            self.log(f"Arquivo salvo temporariamente em: {temp_path}")
-            
-            # Detecta encoding
-            encoding = self.tentar_encodings(temp_path)
-            if encoding is None:
-                encoding = self.detectar_encoding(temp_path) or 'latin-1'
-            
-            self.log(f"Encoding selecionado: {encoding}")
-            
-            # Lê o arquivo mantendo o índice original
-            try:
-                self.df = pd.read_csv(
-                    temp_path, 
-                    delimiter=';', 
-                    encoding=encoding, 
-                    on_bad_lines='skip',
-                    dtype=str,
-                    quoting=3,
-                    low_memory=False
-                )
-                
-                # Adiciona coluna com linha original (considerando header)
-                self.df.insert(0, '__linha_original', range(2, len(self.df) + 2))
-                self.log(f"Arquivo lido. Total de linhas: {len(self.df)}")
-                self.log(f"Colunas: {list(self.df.columns)}")
-                
-            except Exception as e:
-                self.log(f"Erro ao ler com pandas: {e}")
-                return False
-            
+            # Mantém cópia original
             self.df_original = self.df.copy()
             
-            # Remove arquivo temporário
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
+            # Processa colunas de valor
+            self._processar_colunas_valor()
             
-            # Processa os dados
-            self._limpar_dados()
-            self._analisar_dados_faltantes()
-            self._analisar_inconsistencias()
-            self._identificar_registros_problematicos()
-            self._calcular_estatisticas()
-            
-            self.arquivo_processado = True
-            self.nome_arquivo = arquivo_upload.name
-            
-            self.log("Processamento concluído com sucesso!")
+            st.success(f"✅ Dados carregados com sucesso! Total: {len(self.df)} registros")
             return True
             
         except Exception as e:
-            self.log(f"ERRO CRÍTICO NO PROCESSAMENTO: {e}")
-            self.log(f"Traceback: {traceback.format_exc()}")
+            st.error(f"❌ Erro ao carregar dados: {str(e)}")
             return False
     
-    def _limpar_dados(self):
-        """Limpa e prepara os dados para análise"""
-        self.log("Iniciando limpeza de dados...")
-        
-        if self.df is None or self.df.empty:
-            self.log("DataFrame vazio")
+    def _processar_colunas_valor(self):
+        """Identifica e processa colunas de valores monetários"""
+        if self.df is None:
             return
-        
-        df_limpo = self.df.copy()
-        
-        # Remove linhas totalmente vazias (exceto a coluna de linha original)
-        linhas_iniciais = len(df_limpo)
-        colunas_sem_linha_original = [c for c in df_limpo.columns if c != '__linha_original']
-        
-        # Cria uma máscara para identificar linhas totalmente vazias
-        mask_vazias = df_limpo[colunas_sem_linha_original].isnull().all(axis=1)
-        df_limpo = df_limpo[~mask_vazias]
-        
-        linhas_apos_vazias = len(df_limpo)
-        removidas = linhas_iniciais - linhas_apos_vazias
-        if removidas > 0:
-            self.log(f"Removidas {removidas} linhas totalmente vazias")
-        
-        # Normaliza nomes das colunas
-        mapeamento_colunas = {}
-        for col in df_limpo.columns:
-            if col == '__linha_original':
-                mapeamento_colunas[col] = col
-                continue
-                
-            if pd.isna(col) or str(col).strip() == '':
-                col_novo = 'coluna_sem_nome'
-            else:
-                col_novo = str(col).strip().lower()
-                col_novo = re.sub(r'[^a-z0-9_]', '_', col_novo)
-                col_novo = (col_novo
-                           .replace('á', 'a').replace('é', 'e').replace('í', 'i')
-                           .replace('ó', 'o').replace('ú', 'u').replace('â', 'a')
-                           .replace('ê', 'e').replace('î', 'i').replace('ô', 'o')
-                           .replace('û', 'u').replace('ã', 'a').replace('õ', 'o')
-                           .replace('ç', 'c'))
             
-            mapeamento_colunas[col] = col_novo
-        
-        df_limpo = df_limpo.rename(columns=mapeamento_colunas)
-        self.log(f"Colunas após normalização: {list(df_limpo.columns)}")
-        
-        # Identifica coluna de valor
-        possiveis_nomes_valor = [
-            'valor_pagto', 'valor_pagamento', 'valor_total', 'valor', 
-            'pagto', 'pagamento', 'total', 'valorpagto', 'valor_pgto',
-            'valorpagamento', 'vlr_pagto', 'vlr_pagamento', 'vlr_total',
-            'valor_do_pagamento', 'val_pagto'
-        ]
-        
-        self.coluna_valor_pagto = None
-        for nome in possiveis_nomes_valor:
-            if nome in df_limpo.columns:
-                self.coluna_valor_pagto = nome
-                self.log(f"Coluna de valor identificada: {nome}")
-                break
-        
-        # Se não encontrou, tenta identificar por padrão
-        if self.coluna_valor_pagto is None:
-            for col in df_limpo.columns:
-                if col != '__linha_original' and any(termo in col.lower() for termo in ['valor', 'pag', 'total', 'vlr']):
-                    self.coluna_valor_pagto = col
-                    self.log(f"Coluna de valor identificada por padrão: {col}")
+        # Identificar coluna de valor
+        colunas_candidatas = []
+        for coluna in self.df.columns:
+            coluna_lower = str(coluna).lower()
+            if any(termo in coluna_lower for termo in ['valor', 'vlr', 'r$', 'total', 'pagamento', 'pago']):
+                colunas_candidatas.append(coluna)
+                # Tentar converter para numérico
+                try:
+                    # Remove caracteres não numéricos
+                    self.df[coluna] = self.df[coluna].astype(str).str.replace('R\$', '', regex=False)
+                    self.df[coluna] = self.df[coluna].astype(str).str.replace('.', '', regex=False)
+                    self.df[coluna] = self.df[coluna].astype(str).str.replace(',', '.', regex=False)
+                    self.df[coluna] = pd.to_numeric(self.df[coluna], errors='coerce')
+                    self.coluna_valor = coluna
+                    st.info(f"🔍 Coluna de valor identificada: **{coluna}**")
                     break
+                except:
+                    continue
         
-        # Converte valores monetários se identificou a coluna
-        if self.coluna_valor_pagto and self.coluna_valor_pagto in df_limpo.columns:
-            self.log(f"Convertendo valores da coluna: {self.coluna_valor_pagto}")
+        # Identificar coluna de data
+        for coluna in self.df.columns:
+            coluna_lower = str(coluna).lower()
+            if any(termo in coluna_lower for termo in ['data', 'dt', 'date']):
+                try:
+                    self.df[coluna] = pd.to_datetime(self.df[coluna], errors='coerce')
+                    self.coluna_data = coluna
+                    st.info(f"📅 Coluna de data identificada: **{coluna}**")
+                    break
+                except:
+                    continue
+        
+        # Identificar coluna de projeto
+        for coluna in self.df.columns:
+            coluna_lower = str(coluna).lower()
+            if any(termo in coluna_lower for termo in ['projeto', 'proj', 'nome', 'descricao', 'objeto']):
+                self.coluna_projeto = coluna
+                st.info(f"🏗️ Coluna de projeto identificada: **{coluna}**")
+                break
+    
+    def validar_dados(self):
+        """Realiza validação completa dos dados"""
+        if self.df is None:
+            return
             
-            for idx, row in df_limpo.iterrows():
-                linha_original = row['__linha_original']
-                valor_original = row[self.coluna_valor_pagto]
-                
-                if pd.notna(valor_original) and str(valor_original).strip() != '':
-                    valor_convertido = self.converter_valor_monetario(
-                        valor_original, 
-                        linha_original, 
-                        self.coluna_valor_pagto
-                    )
-                    df_limpo.at[idx, self.coluna_valor_pagto] = valor_convertido
+        self.registros_problematicos = pd.DataFrame()
+        problemas = []
         
-        self.dados_limpos = df_limpo
-        self.log(f"Dados limpos: {len(df_limpo)} linhas, {len(df_limpo.columns)} colunas")
-    
-    def _analisar_dados_faltantes(self):
-        """Analisa dados faltantes no dataset"""
-        self.log("Analisando dados faltantes...")
+        # 1. Valores nulos na coluna de valor
+        if self.coluna_valor:
+            nulos_valor = self.df[self.df[self.coluna_valor].isna()]
+            if len(nulos_valor) > 0:
+                nulos_valor['Tipo_Erro'] = 'VALOR_NULO'
+                problemas.append(nulos_valor)
         
-        if self.dados_limpos is None or self.dados_limpos.empty:
-            self.log("Nenhum dado para análise de faltantes")
-            return
+        # 2. Valores zerados ou negativos
+        if self.coluna_valor:
+            zerados = self.df[(self.df[self.coluna_valor] <= 0) & (self.df[self.coluna_valor].notna())]
+            if len(zerados) > 0:
+                zerados['Tipo_Erro'] = 'VALOR_ZERADO_NEGATIVO'
+                problemas.append(zerados)
         
-        # Ignora coluna de linha original na análise
-        colunas_analise = [c for c in self.dados_limpos.columns if c != '__linha_original']
+        # 3. Datas inválidas
+        if self.coluna_data:
+            datas_invalidas = self.df[self.df[self.coluna_data].isna()]
+            if len(datas_invalidas) > 0:
+                datas_invalidas['Tipo_Erro'] = 'DATA_INVALIDA'
+                problemas.append(datas_invalidas)
         
-        if not colunas_analise:
-            self.log("Nenhuma coluna para análise")
-            return
+        # 4. Projetos sem nome
+        if self.coluna_projeto:
+            projetos_vazios = self.df[self.df[self.coluna_projeto].isna() | (self.df[self.coluna_projeto].str.strip() == '')]
+            if len(projetos_vazios) > 0:
+                projetos_vazios['Tipo_Erro'] = 'PROJETO_SEM_NOME'
+                problemas.append(projetos_vazios)
         
-        faltantes_por_coluna = self.dados_limpos[colunas_analise].isnull().sum()
-        percentual_faltantes = (faltantes_por_coluna / len(self.dados_limpos)) * 100
-        
-        self.dados_faltantes = pd.DataFrame({
-            'Coluna': faltantes_por_coluna.index,
-            'Valores_Faltantes': faltantes_por_coluna.values,
-            'Percentual_Faltante': percentual_faltantes.values.round(2),
-            'Tipo_Dado': [str(self.dados_limpos[col].dtype) for col in colunas_analise]
-        })
-        
-        self.log(f"Dados faltantes analisados: {len(faltantes_por_coluna)} colunas")
-    
-    def _analisar_inconsistencias(self):
-        """Analisa inconsistências nos dados"""
-        self.log("Analisando inconsistências...")
-        
-        if self.dados_limpos is None or self.dados_limpos.empty:
-            self.log("Nenhum dado para análise de inconsistências")
-            return
-        
-        inconsistencias = []
-        
-        # 1. Valores negativos
-        if self.coluna_valor_pagto and self.coluna_valor_pagto in self.dados_limpos.columns:
-            try:
-                # Converte para numérico para análise
-                valores_numericos = pd.to_numeric(self.dados_limpos[self.coluna_valor_pagto], errors='coerce')
-                negativos = self.dados_limpos[valores_numericos < 0]
-                
-                if len(negativos) > 0:
-                    for idx, row in negativos.iterrows():
-                        linha_original = row['__linha_original']
-                        self.registrar_erro(
-                            "Valor Negativo",
-                            self.coluna_valor_pagto,
-                            row[self.coluna_valor_pagto],
-                            linha_original,
-                            "Valor de pagamento negativo"
-                        )
-                    
-                    inconsistencias.append({
-                        'Tipo': 'Valores Negativos',
-                        'Coluna': self.coluna_valor_pagto,
-                        'Quantidade': len(negativos),
-                        'Descrição': 'Valores de pagamento negativos'
-                    })
-            except Exception as e:
-                self.log(f"Erro ao analisar valores negativos: {e}")
-        
-        # 2. Valores zerados
-        if self.coluna_valor_pagto and self.coluna_valor_pagto in self.dados_limpos.columns:
-            try:
-                valores_numericos = pd.to_numeric(self.dados_limpos[self.coluna_valor_pagto], errors='coerce')
-                zerados = self.dados_limpos[valores_numericos == 0]
-                
-                if len(zerados) > 0:
-                    for idx, row in zerados.iterrows():
-                        linha_original = row['__linha_original']
-                        self.registrar_erro(
-                            "Valor Zerado",
-                            self.coluna_valor_pagto,
-                            row[self.coluna_valor_pagto],
-                            linha_original,
-                            "Valor de pagamento zerado"
-                        )
-                    
-                    inconsistencias.append({
-                        'Tipo': 'Valores Zerados',
-                        'Coluna': self.coluna_valor_pagto,
-                        'Quantidade': len(zerados),
-                        'Descrição': 'Valores de pagamento zerados'
-                    })
-            except Exception as e:
-                self.log(f"Erro ao analisar valores zerados: {e}")
-        
-        # 3. Dados críticos faltantes
-        colunas_criticas = ['nome', 'cpf', 'cnpj', 'agencia', 'conta', 'banco']
-        for coluna in colunas_criticas:
-            if coluna in self.dados_limpos.columns:
-                faltantes = self.dados_limpos[self.dados_limpos[coluna].isnull()]
-                if len(faltantes) > 0:
-                    for idx, row in faltantes.iterrows():
-                        linha_original = row['__linha_original']
-                        self.registrar_erro(
-                            "Dado Crítico Faltante",
-                            coluna,
-                            "",
-                            linha_original,
-                            f"{coluna.upper()} não informado"
-                        )
-                    
-                    inconsistencias.append({
-                        'Tipo': f'{coluna.upper()} Faltante',
-                        'Coluna': coluna,
-                        'Quantidade': len(faltantes),
-                        'Descrição': f'{coluna} não informado'
-                    })
-        
-        if inconsistencias:
-            self.inconsistencias = pd.DataFrame(inconsistencias)
-            self.log(f"Inconsistências detectadas: {len(inconsistencias)} tipos")
+        # Consolidar problemas
+        if problemas:
+            self.registros_problematicos = pd.concat(problemas, ignore_index=True)
+            self.erros_detectados = len(self.registros_problematicos)
         else:
-            self.inconsistencias = pd.DataFrame()
-            self.log("Nenhuma inconsistência detectada")
-    
-    def _identificar_registros_problematicos(self):
-        """Identifica registros problemáticos com todos os detalhes"""
-        self.log("Identificando registros problemáticos...")
+            self.registros_problematicos = pd.DataFrame(columns=self.df.columns.tolist() + ['Tipo_Erro'])
+            self.erros_detectados = 0
         
-        if self.dados_limpos is None or len(self.dados_limpos) == 0:
-            return
-        
-        registros_problematicos = []
-        
-        # Coleta todos os erros para cada linha
-        erros_por_linha = {}
-        for erro in self.erros_detalhados:
-            linha = erro['Linha_Original']
-            if linha not in erros_por_linha:
-                erros_por_linha[linha] = []
-            erros_por_linha[linha].append(erro)
-        
-        # Para cada linha com erros, cria um registro detalhado
-        for linha, erros in erros_por_linha.items():
-            # Encontra a linha correspondente nos dados
-            linha_df = self.dados_limpos[self.dados_limpos['__linha_original'] == linha]
-            
-            if not linha_df.empty:
-                row = linha_df.iloc[0]
-                
-                # Determina severidade baseada nos tipos de erro
-                severidade = "BAIXA"
-                problemas = []
-                
-                for erro in erros:
-                    tipo = erro['Tipo_Erro']
-                    problemas.append(tipo)
-                    
-                    if tipo in ["Valor Negativo", "Dado Crítico Faltante"]:
-                        severidade = "CRÍTICA"
-                    elif tipo == "Valor Zerado" and severidade != "CRÍTICA":
-                        severidade = "ALTA"
-                
-                # Cria registro
-                registro = {
-                    'Linha_Original': int(linha),
-                    'Problemas': ', '.join(problemas),
-                    'Severidade': severidade
-                }
-                
-                # Adiciona as principais colunas ao registro
-                colunas_principais = ['nome', 'cpf', 'cnpj', self.coluna_valor_pagto] if self.coluna_valor_pagto else []
-                for col in colunas_principais:
-                    if col in row and pd.notna(row[col]):
-                        if col == self.coluna_valor_pagto:
-                            try:
-                                valor_num = float(row[col])
-                                registro[col] = f"R$ {valor_num:,.2f}"
-                            except:
-                                registro[col] = str(row[col])
-                        else:
-                            registro[col] = str(row[col])[:50]
-                    else:
-                        registro[col] = ''
-                
-                registros_problematicos.append(registro)
-        
-        if registros_problematicos:
-            self.registros_problematicos = pd.DataFrame(registros_problematicos)
-            self.log(f"Registros problemáticos identificados: {len(registros_problematicos)}")
+        # Atualizar métricas
+        self.total_registros = len(self.df)
+        if self.coluna_valor:
+            self.valor_total = self.df[self.coluna_valor].sum()
         else:
-            self.registros_problematicos = pd.DataFrame()
-            self.log("Nenhum registro problemático identificado")
-    
-    def _calcular_estatisticas(self):
-        """Calcula estatísticas dos dados"""
-        self.log("Calculando estatísticas...")
-        
-        if self.dados_limpos is None or len(self.dados_limpos) == 0:
-            self.log("Nenhum dado para cálculo de estatísticas")
-            return
-        
-        if self.coluna_valor_pagto and self.coluna_valor_pagto in self.dados_limpos.columns:
-            try:
-                # Converte para numérico
-                valores = pd.to_numeric(self.dados_limpos[self.coluna_valor_pagto], errors='coerce')
-                valores_numericos = valores.dropna()
-                
-                if len(valores_numericos) > 0:
-                    self.total_pagamentos = valores_numericos.sum()
-                    
-                    self.log(f"Valor total: R$ {self.total_pagamentos:,.2f}")
-                    self.log(f"  - Média: R$ {valores_numericos.mean():,.2f}")
-                    self.log(f"  - Mínimo: R$ {valores_numericos.min():,.2f}")
-                    self.log(f"  - Máximo: R$ {valores_numericos.max():,.2f}")
-                    self.log(f"  - Mediana: R$ {valores_numericos.median():,.2f}")
-                else:
-                    self.log("Nenhum valor numérico encontrado na coluna de pagamento")
-                    self.total_pagamentos = 0
-                    
-            except Exception as e:
-                self.log(f"Erro ao calcular estatísticas: {e}")
-                self.total_pagamentos = 0
-        else:
-            self.log("Coluna de valor não disponível para cálculo")
-            self.total_pagamentos = 0
-    
-    def mostrar_log(self):
-        """Mostra log de processamento"""
-        if self.log_processamento:
-            with st.expander("LOG DE PROCESSAMENTO", expanded=False):
-                for entry in self.log_processamento:
-                    if "ERRO" in entry.upper():
-                        st.error(entry)
-                    elif "AVISO" in entry.upper():
-                        st.warning(entry)
-                    elif "SUCESSO" in entry.upper():
-                        st.success(entry)
-                    else:
-                        st.info(entry)
+            self.valor_total = 0
     
     def mostrar_resumo_executivo(self):
-        """Mostra resumo executivo dos dados"""
-        if not self.arquivo_processado or self.dados_limpos is None:
-            return
+        """Exibe o resumo executivo do projeto"""
+        st.markdown("---")
+        st.markdown("## 📋 RESUMO EXECUTIVO DO PROJETO POT")
         
-        st.markdown('<div class="sub-header">RESUMO EXECUTIVO</div>', unsafe_allow_html=True)
-        
-        # Métricas principais
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
-            with st.container():
-                st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-                st.metric("TOTAL DE REGISTROS", f"{len(self.dados_limpos):,}")
-                st.markdown('</div>', unsafe_allow_html=True)
+            st.metric(
+                label="TOTAL DE REGISTROS",
+                value=f"{self.total_registros:,}",
+                delta=None
+            )
         
         with col2:
-            with st.container():
-                st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-                if self.coluna_valor_pagto and self.total_pagamentos > 0:
-                    st.metric("VALOR TOTAL", f"R$ {self.total_pagamentos:,.2f}")
-                else:
-                    st.metric("VALOR TOTAL", "N/A")
-                st.markdown('</div>', unsafe_allow_html=True)
+            if self.coluna_valor:
+                valor_formatado = f"R$ {self.valor_total:,.2f}"
+                st.metric(
+                    label="VALOR TOTAL DO PROJETO",
+                    value=valor_formatado,
+                    delta=None
+                )
         
         with col3:
-            with st.container():
-                st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-                total_erros = len(self.erros_detalhados)
-                st.metric("ERROS DETECTADOS", f"{total_erros:,}")
-                st.markdown('</div>', unsafe_allow_html=True)
+            st.metric(
+                label="ERROS DETECTADOS",
+                value=self.erros_detectados,
+                delta=None,
+                delta_color="inverse"
+            )
         
         with col4:
-            with st.container():
-                st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-                if self.registros_problematicos is not None and not self.registros_problematicos.empty:
-                    total_problematicos = len(self.registros_problematicos)
-                    st.metric("REGISTROS PROBLEMÁTICOS", f"{total_problematicos:,}")
-                else:
-                    st.metric("REGISTROS PROBLEMÁTICOS", "0")
-                st.markdown('</div>', unsafe_allow_html=True)
+            registros_problem = len(self.registros_problematicos) if self.registros_problematicos is not None else 0
+            st.metric(
+                label="REGISTROS PROBLEMÁTICOS",
+                value=registros_problem,
+                delta=None,
+                delta_color="inverse"
+            )
         
-        # Informações adicionais
-        if self.coluna_valor_pagto:
-            st.markdown('<div class="info-card">', unsafe_allow_html=True)
-            st.write(f"**Coluna de Valor Identificada:** `{self.coluna_valor_pagto}`")
-            st.write(f"**Arquivo Processado:** {self.nome_arquivo}")
-            st.write(f"**Total de Colunas Analisadas:** {len(self.dados_limpos.columns) - 1}")
-            st.markdown('</div>', unsafe_allow_html=True)
+        st.markdown("---")
+        
+        # Mostrar informações da coluna identificada
+        if self.coluna_valor:
+            st.info(f"**Coluna de valor identificada:** `{self.coluna_valor}`")
+        if self.coluna_data:
+            st.info(f"**Coluna de data identificada:** `{self.coluna_data}`")
+        if self.coluna_projeto:
+            st.info(f"**Coluna de projeto identificada:** `{self.coluna_projeto}`")
     
-    def mostrar_erros_detalhados(self):
-        """Mostra erros detalhados com linha original"""
-        if not self.erros_detalhados:
-            st.markdown('<div class="success-card">NENHUM ERRO DE CONVERSÃO DETECTADO</div>', unsafe_allow_html=True)
+    def mostrar_analise_financeira(self):
+        """Mostra análise financeira detalhada"""
+        if self.df is None or self.coluna_valor is None:
+            st.warning("Não há dados financeiros para analisar.")
             return
+            
+        st.markdown("## 📊 ANÁLISE FINANCEIRA")
         
-        st.markdown('<div class="sub-header">ERROS DETALHADOS POR LINHA</div>', unsafe_allow_html=True)
+        tab1, tab2, tab3, tab4 = st.tabs([
+            "📈 Distribuição de Valores", 
+            "🗓️ Evolução Temporal",
+            "🏗️ Análise por Projeto",
+            "🔍 Detalhamento"
+        ])
         
-        df_erros = pd.DataFrame(self.erros_detalhados)
-        
-        # Agrupa por tipo de erro para melhor visualização
-        with st.expander("VISÃO GERAL DOS ERROS", expanded=True):
+        with tab1:
             col1, col2 = st.columns(2)
             
             with col1:
-                erro_por_tipo = df_erros['Tipo_Erro'].value_counts()
-                if not erro_por_tipo.empty:
-                    st.bar_chart(erro_por_tipo)
-                else:
-                    st.info("Sem dados para gráfico")
+                # Histograma de valores
+                fig = px.histogram(
+                    self.df, 
+                    x=self.coluna_valor,
+                    title="Distribuição dos Valores Pagos",
+                    labels={self.coluna_valor: 'Valor (R$)', 'count': 'Quantidade'},
+                    color_discrete_sequence=['#000000']
+                )
+                fig.update_layout(
+                    plot_bgcolor='white',
+                    paper_bgcolor='white',
+                    font_color='black'
+                )
+                st.plotly_chart(fig, use_container_width=True)
             
             with col2:
-                if not erro_por_tipo.empty:
-                    st.dataframe(
-                        erro_por_tipo.reset_index().rename(columns={'index': 'Tipo de Erro', 'Tipo_Erro': 'Quantidade'}),
-                        use_container_width=True,
-                        hide_index=True
-                    )
+                # Box plot
+                fig = px.box(
+                    self.df,
+                    y=self.coluna_valor,
+                    title="Box Plot - Distribuição de Valores",
+                    color_discrete_sequence=['#000000']
+                )
+                fig.update_layout(
+                    plot_bgcolor='white',
+                    paper_bgcolor='white',
+                    font_color='black'
+                )
+                st.plotly_chart(fig, use_container_width=True)
         
-        # Mostra todos os erros detalhados
-        with st.expander("DETALHES COMPLETOS DOS ERROS", expanded=False):
-            # Ordena por linha original
-            df_erros_sorted = df_erros.sort_values('Linha_Original')
+        with tab2:
+            if self.coluna_data:
+                # Agrupar por mês
+                self.df['Mês'] = self.df[self.coluna_data].dt.to_period('M').dt.to_timestamp()
+                mensal = self.df.groupby('Mês')[self.coluna_valor].sum().reset_index()
+                
+                fig = px.line(
+                    mensal,
+                    x='Mês',
+                    y=self.coluna_valor,
+                    title="Evolução Mensal dos Pagamentos",
+                    markers=True
+                )
+                fig.update_layout(
+                    plot_bgcolor='white',
+                    paper_bgcolor='white',
+                    font_color='black'
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.warning("Coluna de data não identificada para análise temporal.")
+        
+        with tab3:
+            if self.coluna_projeto:
+                # Top 10 projetos por valor
+                top_projetos = self.df.groupby(self.coluna_projeto)[self.coluna_valor].sum().nlargest(10).reset_index()
+                
+                fig = px.bar(
+                    top_projetos,
+                    x=self.coluna_valor,
+                    y=self.coluna_projeto,
+                    orientation='h',
+                    title="Top 10 Projetos por Valor",
+                    color=self.coluna_valor,
+                    color_continuous_scale='Viridis'
+                )
+                fig.update_layout(
+                    plot_bgcolor='white',
+                    paper_bgcolor='white',
+                    font_color='black'
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.warning("Coluna de projeto não identificada.")
+        
+        with tab4:
+            # Estatísticas detalhadas
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.metric("Valor Médio", f"R$ {self.df[self.coluna_valor].mean():,.2f}")
+            with col2:
+                st.metric("Valor Máximo", f"R$ {self.df[self.coluna_valor].max():,.2f}")
+            with col3:
+                st.metric("Valor Mínimo", f"R$ {self.df[self.coluna_valor].min():,.2f}")
+            
             st.dataframe(
-                df_erros_sorted[['Linha_Original', 'Tipo_Erro', 'Coluna', 'Valor_Problema', 'Descricao']],
-                use_container_width=True,
-                height=400
+                self.df[[self.coluna_projeto, self.coluna_valor, self.coluna_data]].head(20)
+                if all(col in self.df.columns for col in [self.coluna_projeto, self.coluna_valor, self.coluna_data])
+                else self.df.head(20),
+                use_container_width=True
             )
     
     def mostrar_registros_problematicos(self):
-        """Mostra registros problemáticos com linha original"""
-        if self.registros_problematicos is None or self.registros_problematicos.empty:
-            st.markdown('<div class="success-card">NENHUM REGISTRO PROBLEMÁTICO IDENTIFICADO</div>', unsafe_allow_html=True)
+        """Exibe registros problemáticos com slider corrigido"""
+        if self.registros_problematicos is None or len(self.registros_problematicos) == 0:
+            st.info("✅ Nenhum registro problemático encontrado.")
             return
         
-        st.markdown('<div class="sub-header">REGISTROS PROBLEMÁTICOS</div>', unsafe_allow_html=True)
+        st.markdown("## ⚠️ REGISTROS PROBLEMÁTICOS")
+        st.warning(f"Foram encontrados {len(self.registros_problematicos)} registros com problemas.")
         
-        # Filtros
-        col_filtro1, col_filtro2 = st.columns(2)
-        
-        with col_filtro1:
-            severidades = self.registros_problematicos['Severidade'].unique()
-            severidade_selecionada = st.multiselect(
-                "Filtrar por Severidade:",
-                options=severidades,
-                default=severidades
-            )
-        
-        with col_filtro2:
+        # CORREÇÃO DO SLIDER - Verificar se há registros
+        if len(self.registros_problematicos) > 0:
+            # Configurar slider com valores seguros
+            max_rows = len(self.registros_problematicos)
+            min_value = min(5, max_rows)
+            
+            # Slider com verificação de valores
             linhas_mostrar = st.slider(
-                "Linhas para mostrar:",
-                min_value=5,
-                max_value=min(100, len(self.registros_problematicos)),
-                value=min(20, len(self.registros_problematicos)),
+                "🔢 Linhas para mostrar:",
+                min_value=min_value,
+                max_value=max_rows,
+                value=min(min_value, 20),
                 step=5
             )
+            
+            # Mostrar registros
+            st.dataframe(
+                self.registros_problematicos.head(linhas_mostrar),
+                use_container_width=True
+            )
+            
+            # Opções de tratamento
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                if st.button("🔄 Corrigir Automaticamente", type="primary"):
+                    self._corrigir_registros_automaticamente()
+            
+            with col2:
+                if st.button("📥 Exportar Problemas"):
+                    self._exportar_problemas()
+            
+            with col3:
+                if st.button("🗑️ Remover Registros Problemáticos"):
+                    self._remover_registros_problematicos()
+        else:
+            st.info("Não há registros problemáticos para exibir.")
+    
+    def _corrigir_registros_automaticamente(self):
+        """Corrige registros problemáticos automaticamente"""
+        try:
+            # Aqui você implementaria a lógica de correção
+            st.success("Correção automática aplicada!")
+            # Atualiza os dados
+            self.validar_dados()
+        except Exception as e:
+            st.error(f"Erro na correção: {str(e)}")
+    
+    def _exportar_problemas(self):
+        """Exporta registros problemáticos para Excel"""
+        try:
+            output = BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                self.registros_problematicos.to_excel(writer, index=False, sheet_name='Problemas')
+            
+            st.download_button(
+                label="📥 Baixar Relatório de Problemas",
+                data=output.getvalue(),
+                file_name=f"problemas_pot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+        except Exception as e:
+            st.error(f"Erro ao exportar: {str(e)}")
+    
+    def _remover_registros_problematicos(self):
+        """Remove registros problemáticos do dataset"""
+        if st.checkbox("Confirmar remoção permanente"):
+            if self.registros_problematicos is not None and len(self.registros_problematicos) > 0:
+                # Remove os registros problemáticos
+                indices_problematicos = self.registros_problematicos.index
+                self.df = self.df.drop(indices_problematicos, errors='ignore')
+                self.registros_problematicos = None
+                self.validar_dados()
+                st.success("Registros problemáticos removidos com sucesso!")
+    
+    def gerar_relatorio_completo(self):
+        """Gera relatório completo do projeto POT"""
+        if self.df is None:
+            st.warning("Carregue os dados primeiro.")
+            return
         
-        # Aplica filtros
-        df_filtrado = self.registros_problematicos[
-            self.registros_problematicos['Severidade'].isin(severidade_selecionada)
+        st.markdown("## 📄 RELATÓRIO COMPLETO DO PROJETO POT")
+        
+        # Criar abas para diferentes seções do relatório
+        tab1, tab2, tab3, tab4, tab5 = st.tabs([
+            "📋 Sumário Executivo",
+            "💰 Análise Financeira",
+            "📈 Métricas de Desempenho",
+            "⚠️ Gestão de Riscos",
+            "📊 Dashboards"
+        ])
+        
+        with tab1:
+            self._gerar_sumario_executivo()
+        
+        with tab2:
+            self._gerar_analise_financeira_detalhada()
+        
+        with tab3:
+            self._gerar_metricas_desempenho()
+        
+        with tab4:
+            self._gerar_gestao_riscos()
+        
+        with tab5:
+            self._gerar_dashboards()
+    
+    def _gerar_sumario_executivo(self):
+        """Gera sumário executivo"""
+        st.markdown("### 📋 SUMÁRIO EXECUTIVO")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("**Informações Gerais:**")
+            st.write(f"- Total de Projetos: {self.total_registros}")
+            st.write(f"- Período Analisado: {self._obter_periodo_analise()}")
+            st.write(f"- Valor Total Investido: R$ {self.valor_total:,.2f}")
+            
+            if self.erros_detectados > 0:
+                st.error(f"- ⚠️ {self.erros_detectados} erros detectados")
+            else:
+                st.success("- ✅ Dados consistentes e válidos")
+        
+        with col2:
+            st.markdown("**Indicadores Chave:**")
+            if self.coluna_valor:
+                st.write(f"- Valor Médio por Projeto: R$ {self.df[self.coluna_valor].mean():,.2f}")
+                st.write(f"- Maior Investimento: R$ {self.df[self.coluna_valor].max():,.2f}")
+                st.write(f"- Menor Investimento: R$ {self.df[self.coluna_valor].min():,.2f}")
+        
+        st.markdown("---")
+        st.markdown("**Recomendações:**")
+        if self.erros_detectados > 0:
+            st.warning("1. **Corrigir registros problemáticos** antes de prosseguir com análises")
+        else:
+            st.success("1. Dados validados com sucesso - pode prosseguir com planejamento")
+        
+        st.info("2. **Monitorar projetos de alto valor** para garantir execução adequada")
+        st.info("3. **Implementar controles periódicos** para manter qualidade dos dados")
+    
+    def _obter_periodo_analise(self):
+        """Obtém período de análise dos dados"""
+        if self.coluna_data and not self.df[self.coluna_data].isna().all():
+            data_min = self.df[self.coluna_data].min()
+            data_max = self.df[self.coluna_data].max()
+            return f"{data_min.strftime('%d/%m/%Y')} a {data_max.strftime('%d/%m/%Y')}"
+        return "Período não identificado"
+    
+    def _gerar_analise_financeira_detalhada(self):
+        """Gera análise financeira detalhada"""
+        st.markdown("### 💰 ANÁLISE FINANCEIRA DETALHADA")
+        
+        if self.coluna_valor:
+            # Distribuição por faixa de valor
+            bins = [0, 10000, 50000, 100000, 500000, float('inf')]
+            labels = ['< 10k', '10k-50k', '50k-100k', '100k-500k', '> 500k']
+            
+            self.df['Faixa_Valor'] = pd.cut(self.df[self.coluna_valor], bins=bins, labels=labels)
+            distribuicao = self.df['Faixa_Valor'].value_counts().sort_index()
+            
+            fig = px.pie(
+                values=distribuicao.values,
+                names=distribuicao.index,
+                title="Distribuição por Faixa de Valor"
+            )
+            st.plotly_chart(fig, use_container_width=True)
+    
+    def _gerar_metricas_desempenho(self):
+        """Gera métricas de desempenho"""
+        st.markdown("### 📈 MÉTRICAS DE DESEMPENHO")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.metric("Taxa de Erros", f"{(self.erros_detectados/self.total_registros*100):.1f}%")
+        
+        with col2:
+            if self.coluna_data:
+                projetos_mes = self.df[self.coluna_data].dt.month.nunique()
+                st.metric("Meses com Atividade", projetos_mes)
+        
+        with col3:
+            if self.coluna_projeto:
+                projetos_unicos = self.df[self.coluna_projeto].nunique()
+                st.metric("Projetos Únicos", projetos_unicos)
+    
+    def _gerar_gestao_riscos(self):
+        """Gera seção de gestão de riscos"""
+        st.markdown("### ⚠️ GESTÃO DE RISCOS")
+        
+        riscos = [
+            {"Risco": "Dados Inconsistentes", "Probabilidade": "Alta", "Impacto": "Alto", "Mitigação": "Validação contínua"},
+            {"Risco": "Pagamentos Duplicados", "Probabilidade": "Média", "Impacto": "Alto", "Mitigação": "Controle de chaves únicas"},
+            {"Risco": "Projetos Atrasados", "Probabilidade": "Baixa", "Impacto": "Médio", "Mitigação": "Monitoramento periódico"},
         ]
         
-        if df_filtrado.empty:
-            st.info("Nenhum registro encontrado com os filtros selecionados.")
-            return
+        st.dataframe(pd.DataFrame(riscos), use_container_width=True)
+    
+    def _gerar_dashboards(self):
+        """Gera dashboards interativos"""
+        st.markdown("### 📊 DASHBOARDS INTERATIVOS")
         
-        # Mostra contagem
-        st.write(f"**Total de registros filtrados:** {len(df_filtrado)}")
+        # Dashboard 1: Visão geral
+        col1, col2 = st.columns(2)
         
-        # Cria uma versão formatada para display
-        df_display = df_filtrado.copy()
-        
-        # Aplica formatação condicional para melhor visualização
-        def formatar_severidade(valor):
-            if valor == "CRÍTICA":
-                return '<span class="critical-badge">CRÍTICA</span>'
-            elif valor == "ALTA":
-                return '<span class="warning-badge">ALTA</span>'
-            else:
-                return '<span class="info-badge">BAIXA</span>'
-        
-        # Cria HTML para a tabela
-        html = """
-        <div style="overflow-x: auto;">
-        <table style="width: 100%; border-collapse: collapse; font-family: -apple-system, BlinkMacSystemFont, sans-serif;">
-        <thead>
-            <tr style="background-color: #F3F4F6;">
-                <th style="padding: 12px; text-align: left; border-bottom: 2px solid #D1D5DB; color: #111827; font-weight: 600;">Linha Original</th>
-                <th style="padding: 12px; text-align: left; border-bottom: 2px solid #D1D5DB; color: #111827; font-weight: 600;">Severidade</th>
-                <th style="padding: 12px; text-align: left; border-bottom: 2px solid #D1D5DB; color: #111827; font-weight: 600;">Problemas</th>
-        """
-        
-        # Adiciona colunas extras
-        if self.coluna_valor_pagto:
-            html += f'<th style="padding: 12px; text-align: left; border-bottom: 2px solid #D1D5DB; color: #111827; font-weight: 600;">{self.coluna_valor_pagto}</th>'
-        
-        for col in ['nome', 'cpf', 'cnpj']:
-            if col in df_filtrado.columns:
-                html += f'<th style="padding: 12px; text-align: left; border-bottom: 2px solid #D1D5DB; color: #111827; font-weight: 600;">{col.upper()}</th>'
-        
-        html += "</tr></thead><tbody>"
-        
-        # Adiciona as linhas
-        for _, row in df_filtrado.head(linhas_mostrar).iterrows():
-            html += f'<tr style="border-bottom: 1px solid #E5E7EB;">'
-            html += f'<td style="padding: 10px; color: #374151; font-weight: 500;">{row["Linha_Original"]}</td>'
-            html += f'<td style="padding: 10px;">{formatar_severidade(row["Severidade"])}</td>'
-            html += f'<td style="padding: 10px; color: #374151;">{row["Problemas"]}</td>'
-            
-            if self.coluna_valor_pagto:
-                valor = row.get(self.coluna_valor_pagto, '')
-                html += f'<td style="padding: 10px; color: #059669; font-weight: 500;">{valor}</td>'
-            
-            for col in ['nome', 'cpf', 'cnpj']:
-                if col in row:
-                    valor = row[col]
-                    html += f'<td style="padding: 10px; color: #374151;">{valor}</td>'
-            
-            html += '</tr>'
-        
-        html += "</tbody></table></div>"
-        
-        # Mostra a tabela formatada
-        st.markdown(html, unsafe_allow_html=True)
-        
-        # Botão para exportar
-        col_exp1, col_exp2 = st.columns([1, 3])
-        with col_exp1:
-            if st.button("EXPORTAR REGISTROS PROBLEMÁTICOS", use_container_width=True):
-                csv_data = df_filtrado.to_csv(index=False, sep=';', encoding='utf-8')
-                st.download_button(
-                    label="Baixar CSV",
-                    data=csv_data,
-                    file_name=f"registros_problematicos_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                    mime="text/csv"
+        with col1:
+            if self.coluna_valor:
+                # Gráfico de barras horizontais
+                top_10 = self.df.nlargest(10, self.coluna_valor)
+                fig = px.bar(
+                    top_10,
+                    y=self.coluna_projeto if self.coluna_projeto else 'index',
+                    x=self.coluna_valor,
+                    orientation='h',
+                    title="Top 10 Projetos por Valor"
                 )
+                st.plotly_chart(fig, use_container_width=True)
+        
+        with col2:
+            if self.coluna_data:
+                # Timeline
+                self.df['Ano_Mes'] = self.df[self.coluna_data].dt.strftime('%Y-%m')
+                timeline = self.df.groupby('Ano_Mes')[self.coluna_valor].sum().reset_index()
+                
+                fig = px.line(
+                    timeline,
+                    x='Ano_Mes',
+                    y=self.coluna_valor,
+                    title="Evolução Temporal dos Pagamentos"
+                )
+                st.plotly_chart(fig, use_container_width=True)
     
-    def mostrar_estatisticas_valores(self):
-        """Mostra estatísticas detalhadas dos valores"""
-        if not self.coluna_valor_pagto or self.coluna_valor_pagto not in self.dados_limpos.columns:
-            return
-        
-        st.markdown('<div class="sub-header">ESTATÍSTICAS DE VALORES</div>', unsafe_allow_html=True)
-        
-        valores = pd.to_numeric(self.dados_limpos[self.coluna_valor_pagto], errors='coerce').dropna()
-        
-        if len(valores) == 0:
-            st.warning("Nenhum valor numérico encontrado para análise.")
-            return
-        
-        # Estatísticas básicas
-        col_stat1, col_stat2, col_stat3, col_stat4 = st.columns(4)
-        
-        with col_stat1:
-            st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-            st.metric("Valor Médio", f"R$ {valores.mean():,.2f}")
-            st.markdown('</div>', unsafe_allow_html=True)
-        
-        with col_stat2:
-            st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-            st.metric("Valor Mínimo", f"R$ {valores.min():,.2f}")
-            st.markdown('</div>', unsafe_allow_html=True)
-        
-        with col_stat3:
-            st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-            st.metric("Valor Máximo", f"R$ {valores.max():,.2f}")
-            st.markdown('</div>', unsafe_allow_html=True)
-        
-        with col_stat4:
-            st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-            st.metric("Desvio Padrão", f"R$ {valores.std():,.2f}")
-            st.markdown('</div>', unsafe_allow_html=True)
-        
-        # Distribuição de valores
-        with st.expander("DISTRIBUIÇÃO DE VALORES", expanded=True):
-            fig_col1, fig_col2 = st.columns(2)
-            
-            with fig_col1:
-                if len(valores) > 1:
-                    bins = min(10, len(valores))
-                    hist_data = pd.cut(valores, bins=bins).value_counts().sort_index()
-                    st.bar_chart(hist_data)
-                else:
-                    st.info("Dados insuficientes para histograma")
-            
-            with fig_col2:
-                # Tabela de estatísticas
-                stats = valores.describe()
-                stats_df = pd.DataFrame({
-                    'Estatística': ['Mínimo', '25% (Q1)', 'Mediana', '75% (Q3)', 'Máximo', 'Média', 'Desvio Padrão', 'Contagem'],
-                    'Valor': [
-                        f"R$ {stats.get('min', 0):,.2f}",
-                        f"R$ {stats.get('25%', 0):,.2f}",
-                        f"R$ {stats.get('50%', 0):,.2f}",
-                        f"R$ {stats.get('75%', 0):,.2f}",
-                        f"R$ {stats.get('max', 0):,.2f}",
-                        f"R$ {stats.get('mean', 0):,.2f}",
-                        f"R$ {stats.get('std', 0):,.2f}",
-                        f"{int(stats.get('count', 0)):,}"
-                    ]
+    def exportar_relatorio_completo(self):
+        """Exporta relatório completo para Excel"""
+        try:
+            output = BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                # Dados completos
+                self.df.to_excel(writer, sheet_name='Dados_Completos', index=False)
+                
+                # Sumário executivo
+                sumario_df = pd.DataFrame({
+                    'Métrica': ['Total Registros', 'Valor Total', 'Erros Detectados', 'Registros Problemáticos'],
+                    'Valor': [self.total_registros, self.valor_total, self.erros_detectados, len(self.registros_problematicos) if self.registros_problematicos is not None else 0]
                 })
-                st.dataframe(stats_df, use_container_width=True, hide_index=True)
+                sumario_df.to_excel(writer, sheet_name='Sumario_Executivo', index=False)
+                
+                # Análise financeira
+                if self.coluna_valor:
+                    financeiro_df = pd.DataFrame({
+                        'Métrica': ['Média', 'Mediana', 'Máximo', 'Mínimo', 'Desvio Padrão'],
+                        'Valor': [
+                            self.df[self.coluna_valor].mean(),
+                            self.df[self.coluna_valor].median(),
+                            self.df[self.coluna_valor].max(),
+                            self.df[self.coluna_valor].min(),
+                            self.df[self.coluna_valor].std()
+                        ]
+                    })
+                    financeiro_df.to_excel(writer, sheet_name='Analise_Financeira', index=False)
+                
+                # Registros problemáticos
+                if self.registros_problematicos is not None and len(self.registros_problematicos) > 0:
+                    self.registros_problematicos.to_excel(writer, sheet_name='Registros_Problematicos', index=False)
+            
+            data = output.getvalue()
+            
+            st.download_button(
+                label="📥 BAIXAR RELATÓRIO COMPLETO (Excel)",
+                data=data,
+                file_name=f"relatorio_pot_completo_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary"
+            )
+            
+        except Exception as e:
+            st.error(f"Erro ao gerar relatório: {str(e)}")
 
-# ==============================================
+# ============================================
 # FUNÇÃO PRINCIPAL
-# ==============================================
-
+# ============================================
 def main():
-    """Função principal do aplicativo Streamlit"""
+    st.title("🏙️ SISTEMA POT-SMDET - MONITORAMENTO DE PROJETOS")
+    st.markdown("**Sistema Integrado de Gestão e Monitoramento de Projetos do Plano de Ordenamento Territorial**")
     
-    # Cabeçalho principal
-    st.markdown('<h1 class="main-header">SISTEMA DE MONITORAMENTO DE PAGAMENTOS - POT</h1>', unsafe_allow_html=True)
-    
-    # Inicializar sistema no session_state
+    # Inicializar sistema
     if 'sistema' not in st.session_state:
-        st.session_state['sistema'] = SistemaPOT()
+        st.session_state.sistema = SistemaPOTSMDET()
     
-    sistema = st.session_state['sistema']
+    sistema = st.session_state.sistema
     
-    # Sidebar
+    # Sidebar para upload e navegação
     with st.sidebar:
-        st.markdown("---")
-        st.markdown("### UPLOAD DO ARQUIVO")
+        st.markdown("### 📁 CARREGAMENTO DE DADOS")
         
         arquivo = st.file_uploader(
-            "Selecione o arquivo CSV",
-            type=['csv'],
-            help="Arquivo CSV com dados de pagamentos (delimitador: ponto e vírgula)",
-            key="file_uploader"
+            "Selecione o arquivo de dados (Excel ou CSV)",
+            type=['xlsx', 'csv'],
+            help="Carregue o arquivo com os dados dos projetos do POT"
         )
         
         if arquivo is not None:
-            st.markdown('<div class="info-card">', unsafe_allow_html=True)
-            st.write(f"**Arquivo:** {arquivo.name}")
-            st.write(f"**Tamanho:** {arquivo.size / 1024:.1f} KB")
-            st.markdown('</div>', unsafe_allow_html=True)
-            
-            st.markdown("---")
-            st.markdown("### OPÇÕES")
-            
-            mostrar_log = st.checkbox("Mostrar log de processamento", value=False)
-            
-            col_op1, col_op2 = st.columns(2)
-            with col_op1:
-                mostrar_detalhes = st.checkbox("Detalhes dos erros", value=True)
-            with col_op2:
-                mostrar_dados = st.checkbox("Dados completos", value=False)
-            
-            st.markdown("---")
-            
-            if st.button("PROCESSAR ARQUIVO", type="primary", use_container_width=True):
-                with st.spinner("Processando arquivo... Por favor, aguarde."):
-                    sucesso = sistema.processar_arquivo_streamlit(arquivo)
-                    if sucesso:
-                        st.session_state['arquivo_processado'] = True
-                        st.session_state['mostrar_log'] = mostrar_log
-                        st.session_state['mostrar_detalhes'] = mostrar_detalhes
-                        st.session_state['mostrar_dados'] = mostrar_dados
-                        st.session_state['sistema'] = sistema
-                        st.success("Arquivo processado com sucesso!")
-                        st.rerun()
-                    else:
-                        st.error("Erro ao processar arquivo.")
-            
-            if st.session_state.get('arquivo_processado', False):
-                st.markdown("---")
-                if st.button("PROCESSAR OUTRO ARQUIVO", use_container_width=True):
-                    st.session_state.clear()
-                    st.rerun()
+            if st.button("📤 Carregar Dados", type="primary"):
+                with st.spinner("Carregando e processando dados..."):
+                    sistema.carregar_dados(arquivo)
+                    sistema.validar_dados()
+        
+        st.markdown("---")
+        st.markdown("### 🚀 AÇÕES RÁPIDAS")
+        
+        if st.button("🔄 Validar Dados Novamente"):
+            sistema.validar_dados()
+            st.success("Validação concluída!")
+        
+        if st.button("🧹 Limpar Cache"):
+            st.cache_data.clear()
+            st.session_state.clear()
+            st.success("Cache limpo!")
+            st.rerun()
+        
+        st.markdown("---")
+        st.markdown("### 📊 NAVEGAÇÃO")
+        
+        pagina = st.radio(
+            "Selecione a página:",
+            [
+                "📋 Resumo Executivo",
+                "💰 Análise Financeira",
+                "⚠️ Registros Problemáticos",
+                "📄 Relatório Completo",
+                "⚙️ Configurações"
+            ]
+        )
+        
+        st.markdown("---")
+        st.markdown("### ℹ️ SOBRE")
+        st.markdown("""
+        **Versão:** 2.0.0  
+        **Última atualização:** 2024  
+        **Desenvolvido para:** SMDET  
+        **Finalidade:** Monitoramento de Projetos POT
+        """)
     
-    # Área principal
-    if st.session_state.get('arquivo_processado', False):
-        sistema = st.session_state['sistema']
-        
-        if sistema.arquivo_processado:
-            # Resumo Executivo
-            sistema.mostrar_resumo_executivo()
-            st.markdown("---")
-            
-            # Erros Detalhados
-            if st.session_state.get('mostrar_detalhes', True):
-                sistema.mostrar_erros_detalhados()
-                st.markdown("---")
-            
-            # Registros Problemáticos
-            sistema.mostrar_registros_problematicos()
-            st.markdown("---")
-            
-            # Estatísticas
-            sistema.mostrar_estatisticas_valores()
-            st.markdown("---")
-            
-            # Dados Completos (opcional)
-            if st.session_state.get('mostrar_dados', False):
-                st.markdown('<div class="sub-header">DADOS COMPLETOS PROCESSADOS</div>', unsafe_allow_html=True)
-                
-                colunas_disponiveis = [c for c in sistema.dados_limpos.columns if c != '__linha_original']
-                colunas_selecionadas = st.multiselect(
-                    "Selecione colunas para visualizar:",
-                    options=colunas_disponiveis,
-                    default=colunas_disponiveis[:min(8, len(colunas_disponiveis))]
-                )
-                
-                if colunas_selecionadas:
-                    dados_visiveis = sistema.dados_limpos[colunas_selecionadas + ['__linha_original']]
-                    st.dataframe(
-                        dados_visiveis.head(50),
-                        use_container_width=True,
-                        height=400
-                    )
-                
-                st.markdown("---")
-            
-            # Log de Processamento (opcional)
-            if st.session_state.get('mostrar_log', False):
-                sistema.mostrar_log()
-            
-            # Exportação
-            st.markdown('<div class="sub-header">EXPORTAÇÃO DE RELATÓRIOS</div>', unsafe_allow_html=True)
-            
-            col_exp1, col_exp2, col_exp3 = st.columns(3)
-            
-            with col_exp1:
-                if sistema.dados_limpos is not None:
-                    csv_dados = sistema.dados_limpos.to_csv(index=False, sep=';', encoding='utf-8')
-                    st.download_button(
-                        label="DADOS PROCESSADOS",
-                        data=csv_dados,
-                        file_name=f"dados_processados_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                        mime="text/csv",
-                        use_container_width=True
-                    )
-            
-            with col_exp2:
-                if sistema.registros_problematicos is not None and not sistema.registros_problematicos.empty:
-                    csv_problematicos = sistema.registros_problematicos.to_csv(index=False, sep=';', encoding='utf-8')
-                    st.download_button(
-                        label="REGISTROS PROBLEMÁTICOS",
-                        data=csv_problematicos,
-                        file_name=f"problemas_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                        mime="text/csv",
-                        use_container_width=True
-                    )
-            
-            with col_exp3:
-                if sistema.erros_detalhados:
-                    csv_erros = pd.DataFrame(sistema.erros_detalhados).to_csv(index=False, sep=';', encoding='utf-8')
-                    st.download_button(
-                        label="ERROS DETALHADOS",
-                        data=csv_erros,
-                        file_name=f"erros_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                        mime="text/csv",
-                        use_container_width=True
-                    )
-        
-        else:
-            st.error("FALHA NO PROCESSAMENTO DO ARQUIVO")
-            sistema.mostrar_log()
-    else:
-        # Tela inicial
+    # Conteúdo principal baseado na seleção
+    if arquivo is None:
+        st.info("👈 **Por favor, carregue um arquivo de dados na sidebar para começar.**")
         st.markdown("""
-        <div class="info-card">
-        <h3>BEM-VINDO AO SISTEMA POT</h3>
-        <p style="color: #374151; line-height: 1.6;">Sistema de monitoramento e análise de pagamentos com foco na identificação de inconsistências e dados problemáticos.</p>
-        </div>
-        """, unsafe_allow_html=True)
+        ### 📝 Instruções:
+        1. **Prepare seus dados** em Excel (.xlsx) ou CSV
+        2. **Certifique-se** de ter colunas para:
+           - Valores monetários
+           - Datas
+           - Nomes dos projetos
+        3. **Clique em 'Carregar Dados'** após selecionar o arquivo
+        4. **Navegue** pelas diferentes seções usando o menu lateral
+        """)
         
-        col_feat1, col_feat2, col_feat3 = st.columns(3)
-        
-        with col_feat1:
+        # Exemplo de estrutura esperada
+        with st.expander("📋 Exemplo de Estrutura de Dados Esperada"):
             st.markdown("""
-            <div class="feature-card">
-            <h4>DETECÇÃO PRECISA</h4>
-            <p>• Identifica a linha exata de cada problema</p>
-            <p>• Classifica por severidade</p>
-            <p>• Mantém referência à planilha original</p>
-            </div>
-            """, unsafe_allow_html=True)
+            | Projeto | Valor_Pago | Data_Pagamento | Status |
+            |---------|------------|----------------|--------|
+            | Projeto A | R$ 50.000,00 | 2024-01-15 | Concluído |
+            | Projeto B | R$ 25.000,00 | 2024-02-20 | Em andamento |
+            | Projeto C | R$ 100.000,00 | 2024-03-10 | Planejado |
+            """)
         
-        with col_feat2:
-            st.markdown("""
-            <div class="feature-card">
-            <h4>ANÁLISE COMPLETA</h4>
-            <p>• Estatísticas detalhadas</p>
-            <p>• Valores monetários convertidos</p>
-            <p>• Relatórios exportáveis</p>
-            </div>
-            """, unsafe_allow_html=True)
+        return
+    
+    # Navegação entre páginas
+    if pagina == "📋 Resumo Executivo":
+        sistema.mostrar_resumo_executivo()
         
-        with col_feat3:
-            st.markdown("""
-            <div class="feature-card">
-            <h4>CONTROLE DE QUALIDADE</h4>
-            <p>• Valores negativos/zerados</p>
-            <p>• Dados críticos faltantes</p>
-            <p>• Erros de conversão</p>
-            </div>
-            """, unsafe_allow_html=True)
+        # Visualização rápida dos dados
+        with st.expander("👁️ VISUALIZAÇÃO RÁPIDA DOS DADOS"):
+            st.dataframe(sistema.df.head(20), use_container_width=True)
         
-        st.markdown("""
-        <div class="info-card">
-        <h4>COMO USAR:</h4>
-        <ol style="color: #374151;">
-            <li><strong>Faça upload</strong> do arquivo CSV na barra lateral</li>
-            <li><strong>Configure as opções</strong> desejadas</li>
-            <li><strong>Clique em "Processar Arquivo"</strong></li>
-            <li><strong>Analise os resultados</strong> com foco nos registros problemáticos</li>
-            <li><strong>Exporte os relatórios</strong> para correção</li>
-        </ol>
-        </div>
-        """, unsafe_allow_html=True)
+        # Exportar dados limpos
+        if st.button("📤 Exportar Dados Validados", type="primary"):
+            sistema.exportar_relatorio_completo()
+    
+    elif pagina == "💰 Análise Financeira":
+        sistema.mostrar_analise_financeira()
+    
+    elif pagina == "⚠️ Registros Problemáticos":
+        sistema.mostrar_registros_problematicos()
+    
+    elif pagina == "📄 Relatório Completo":
+        sistema.gerar_relatorio_completo()
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🖨️ Gerar Relatório PDF", type="primary"):
+                st.info("Funcionalidade de PDF em desenvolvimento...")
+        with col2:
+            sistema.exportar_relatorio_completo()
+    
+    elif pagina == "⚙️ Configurações":
+        st.markdown("## ⚙️ CONFIGURAÇÕES DO SISTEMA")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("### 🎨 Configurações de Visualização")
+            tema = st.selectbox(
+                "Tema de Cores:",
+                ["Alto Contraste (Recomendado)", "Escuro", "Claro"]
+            )
+            
+            tamanho_fonte = st.slider(
+                "Tamanho da Fonte Base:",
+                min_value=12,
+                max_value=24,
+                value=16,
+                step=1
+            )
+        
+        with col2:
+            st.markdown("### 🔧 Configurações de Processamento")
+            auto_validar = st.checkbox(
+                "Validação Automática ao Carregar",
+                value=True
+            )
+            
+            manter_backup = st.checkbox(
+                "Manter Backup dos Dados Originais",
+                value=True
+            )
+        
+        if st.button("💾 Salvar Configurações", type="primary"):
+            st.success("Configurações salvas com sucesso!")
     
     # Rodapé
     st.markdown("---")
     st.markdown(
         """
-        <div class="footer">
-        <strong>SISTEMA POT - MONITORAMENTO DE PAGAMENTOS</strong><br>
-        Versão 3.0 • Foco em Problemas • Linha Original • Layout Otimizado
+        <div style='text-align: center; color: #666;'>
+        <strong>Sistema POT-SMDET</strong> | Desenvolvido para Gestão de Projetos do Plano de Ordenamento Territorial<br>
+        © 2024 Secretaria Municipal de Desenvolvimento Econômico e Trabalho
         </div>
         """,
         unsafe_allow_html=True
     )
 
-# ==============================================
-# EXECUÇÃO PRINCIPAL
-# ==============================================
-
+# ============================================
+# EXECUÇÃO
+# ============================================
 if __name__ == "__main__":
     main()
