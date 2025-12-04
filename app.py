@@ -12,7 +12,7 @@ from functools import wraps
 warnings.filterwarnings('ignore')
 
 # ============================================
-# 1. CONFIGURAÇÃO DA PÁGINA (CORREÇÃO PONTO 1)
+# 1. CONFIGURAÇÃO DA PÁGINA
 # ============================================
 st.set_page_config(
     page_title="SMDET - POT Monitoramento de Pagamento de Benefícios",
@@ -84,21 +84,28 @@ def initialize_config():
             'auto_validar': True,
             'manter_historico': True,
             'limite_registros': 100000,
-            # CORREÇÃO PONTO 5: Removido PDF do formato de exportação para evitar ModuleNotFoundError
+            # Removido PDF do formato de exportação para evitar ModuleNotFoundError
             'formato_exportacao': 'Excel (.xlsx)', 
-            'incluir_graficos': False # Mantido mas será ignorado para PDF
+            'incluir_graficos': False 
         }
+    
+    # Inicializa os dataframes de análise se ainda não existirem
+    if 'df_analise' not in st.session_state:
+        st.session_state['df_analise'] = pd.DataFrame()
+    if 'df_pendencias' not in st.session_state:
+        st.session_state['df_pendencias'] = pd.DataFrame()
+
 
 # Função para aplicar filtros e gerar df_analise
 def apply_filters(df, filters):
     df_filtered = df.copy()
     
     # Filtro de Projeto
-    if filters['projeto']:
+    if filters['projeto'] and filters['projeto'] != 'All':
         df_filtered = df_filtered[df_filtered['Projeto'].isin(filters['projeto'])]
     
     # Filtro de Gerenciadora
-    if filters['gerenciadora']:
+    if filters['gerenciadora'] and filters['gerenciadora'] != 'All':
         df_filtered = df_filtered[df_filtered['Gerenciadora'].isin(filters['gerenciadora'])]
         
     # Filtro de Valor Pagto Mínimo
@@ -124,7 +131,7 @@ def load_data(uploaded_file):
         df = pd.read_csv(uploaded_file, sep=';', encoding='utf-8', on_bad_lines='skip')
     except UnicodeDecodeError:
         try:
-            # CORREÇÃO PARA O ERRO DE ENCODING: Tenta 'latin-1' (compatível com Windows/pt-br)
+            # Tenta 'latin-1' (compatível com Windows/pt-br)
             uploaded_file.seek(0) # Volta o ponteiro do arquivo para o início
             df = pd.read_csv(uploaded_file, sep=';', encoding='latin-1', on_bad_lines='skip')
             st.warning("⚠️ Arquivo lido usando encoding 'latin-1' para corrigir problemas de caracteres.")
@@ -143,7 +150,7 @@ def load_data(uploaded_file):
     col_map = {
         'Num_Cartao': 'Num Cartao', 'Valor_Total': 'Valor Total', 'Valor_Desconto': 'Valor Desconto', 
         'Valor_Pagto': 'Valor Pagto', 'Data_Pagto': 'Data Pagto', 'Valor_Dia': 'Valor Dia', 
-        'Dias_a_apagar': 'Dias a apagar', 'Gerenciadora': 'Gerenciadora'
+        'Dias_a_apagar': 'Dias a apagar', 'Gerenciadora': 'Gerenciadora', 'Nome': 'Nome', 'CPF': 'CPF', 'Ordem': 'Ordem', 'Projeto': 'Projeto'
     }
     df.rename(columns=col_map, inplace=True)
 
@@ -154,26 +161,24 @@ def load_data(uploaded_file):
         # Handle empty/NaN/invalid values before conversion
         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0) # Convert to numeric
     
-    # CORREÇÃO PONTO 2: Desduplicação para evitar contagem/soma duplicada de pagamentos.
-    # Usamos uma combinação de colunas que identificam o pagamento de forma única.
+    # Desduplicação
     dedup_cols = ['Ordem', 'CPF', 'Valor Pagto', 'Data Pagto']
     initial_count = len(df)
     
-    # Garante que as colunas de dedup existem
     if all(col in df.columns for col in dedup_cols):
         df.drop_duplicates(subset=dedup_cols, keep='first', inplace=True)
         final_count = len(df)
         
         if initial_count != final_count:
-            st.warning(f"⚠️ {initial_count - final_count} linhas duplicadas foram removidas para garantir a precisão dos cálculos. O número final de pagamentos é: {final_count}.")
+            st.warning(f"⚠️ {initial_count - final_count} linhas duplicadas foram removidas. Total: {final_count}.")
     else:
-        st.warning("Colunas necessárias para desduplicação (Ordem, CPF, Valor Pagto, Data Pagto) não encontradas. Prossiga sem desduplicação forçada.")
+        st.warning("Colunas necessárias para desduplicação (Ordem, CPF, Valor Pagto, Data Pagto) não encontradas.")
 
 
     # Adicionar coluna de Mês/Ano para análise temporal
     df['Mes_Ano'] = pd.to_datetime(df['Data Pagto'], format='%d/%m/%Y', errors='coerce').dt.to_period('M')
     
-    # Identificação de pendências básicas (exemplo: CPF em branco ou valor de pagamento zero)
+    # Identificação de pendências básicas 
     df['Pendencia'] = np.where(df['CPF'].isnull() | (df['CPF'] == 0) | (df['Valor Pagto'] <= 0), True, False)
     
     return df
@@ -195,7 +200,7 @@ def create_gerenciadora_pie_chart(df):
     fig.update_layout(showlegend=True, margin=dict(t=50, b=0, l=0, r=0))
     return fig
 
-# Função para criar o gráfico de barras dos projetos (CORREÇÃO PONTO 4)
+# Função para criar o gráfico de barras dos projetos
 def create_project_bar_chart(df_proj):
     fig = px.bar(
         df_proj.sort_values(by='Valor Total Pago', ascending=True), 
@@ -221,10 +226,14 @@ def create_project_bar_chart(df_proj):
         xaxis_title="Valor Total Pago (R$)",
         yaxis_title="Projeto",
         margin=dict(l=0, r=0, t=50, b=0),
-        xaxis={'tickformat': ',.2f'} # Formato de número com 2 casas decimais
+        xaxis={'tickformat': ',.2f'} 
     )
     
     return fig
+
+# Função de formatação BRL
+def format_brl(value):
+    return f"R$ {value:,.2f}".replace(",", "_").replace(".", ",").replace("_", ".")
 
 # ============================================
 # 🏠 INICIALIZAÇÃO DE ESTADO E BARRA LATERAL
@@ -232,7 +241,7 @@ def create_project_bar_chart(df_proj):
 
 initialize_config()
 
-# 1. SIDEBAR (CORREÇÃO PONTO 1)
+# 1. SIDEBAR
 st.sidebar.markdown("# SMDET - POT Monitoramento de Pagamento de Benefícios")
 st.sidebar.markdown("---")
 
@@ -244,7 +253,8 @@ uploaded_file = st.sidebar.file_uploader(
 
 if uploaded_file and 'data' not in st.session_state:
     st.session_state['data'] = load_data(uploaded_file)
-    st.session_state['analise_pronta'] = False # Reinicia a análise
+    # Força a re-execução para garantir que os filtros iniciais sejam aplicados
+    # Após o carregamento, o fluxo abaixo fará o cálculo inicial.
 
 if 'data' in st.session_state and not st.session_state['data'].empty:
     df = st.session_state['data']
@@ -257,12 +267,12 @@ if 'data' in st.session_state and not st.session_state['data'].empty:
     # Botão de Limpar Dados
     if st.sidebar.button("🧹 Limpar dados carregados", type="secondary", use_container_width=True):
         # Limpa o estado da sessão de dados e da análise
-        keys_to_delete = ['data', 'df_analise', 'df_pendencias', 'analise_pronta', 'filters']
+        keys_to_delete = ['data', 'df_analise', 'df_pendencias', 'filters']
         for key in keys_to_delete:
             if key in st.session_state:
                 del st.session_state[key]
         st.info("Dados removidos com sucesso. Reiniciando a aplicação...")
-        st.rerun() # CORREÇÃO PONTO 6: Substituído st.experimental_rerun() por st.rerun()
+        st.rerun() 
 
 # ============================================
 # ⚠️ FLUXO PRINCIPAL: CARREGAMENTO DE DADOS
@@ -280,44 +290,67 @@ df = st.session_state['data']
 
 st.sidebar.markdown("### 🔍 FILTROS DE ANÁLISE")
 
-# Filtro de Múltipla Seleção (Projeto)
+# Definir valores padrão para os filtros
 unique_projects = sorted(df['Projeto'].unique())
+unique_gerenciadoras = sorted(df['Gerenciadora'].dropna().unique())
+valor_min, valor_max = float(df['Valor Pagto'].min()), float(df['Valor Pagto'].max())
+data_col_dt = pd.to_datetime(df['Data Pagto'], format='%d/%m/%Y', errors='coerce').dropna()
+min_date = data_col_dt.min().date() if not data_col_dt.empty else datetime.now().date()
+max_date = data_col_dt.max().date() if not data_col_dt.empty else datetime.now().date()
+
+# Recupera filtros armazenados ou define padrões
+if 'filters' not in st.session_state:
+    st.session_state['filters'] = {
+        'projeto': unique_projects,
+        'gerenciadora': unique_gerenciadoras,
+        'valor_min': valor_min,
+        'valor_max': valor_max,
+        'data_inicio': min_date,
+        'data_fim': max_date
+    }
+
+stored_filters = st.session_state['filters']
+
+
+# Filtro de Múltipla Seleção (Projeto)
 selected_projects = st.sidebar.multiselect(
     "Projetos:",
     options=unique_projects,
-    default=unique_projects,
+    default=stored_filters.get('projeto', unique_projects),
     help="Selecione os projetos para análise."
 )
 
 # Filtro de Múltipla Seleção (Gerenciadora)
-unique_gerenciadoras = sorted(df['Gerenciadora'].dropna().unique())
 selected_gerenciadoras = st.sidebar.multiselect(
     "Gerenciadoras:",
     options=unique_gerenciadoras,
-    default=unique_gerenciadoras,
+    default=stored_filters.get('gerenciadora', unique_gerenciadoras),
     help="Selecione as gerenciadoras para análise."
 )
 
 # Filtro de Range de Valor
-valor_min, valor_max = float(df['Valor Pagto'].min()), float(df['Valor Pagto'].max())
 selected_min_value, selected_max_value = st.sidebar.slider(
     "Valor de Pagamento (R$):",
     min_value=valor_min,
     max_value=valor_max,
-    value=(valor_min, valor_max),
+    value=(stored_filters.get('valor_min', valor_min), stored_filters.get('valor_max', valor_max)),
     step=100.0,
     format='R$ %.2f'
 )
 
 # Filtro de Range de Data
-data_col_dt = pd.to_datetime(df['Data Pagto'], format='%d/%m/%Y', errors='coerce').dropna()
-min_date = data_col_dt.min().date() if not data_col_dt.empty else datetime.now().date()
-max_date = data_col_dt.max().date() if not data_col_dt.empty else datetime.now().date()
-
 try:
+    # Garante que as datas padrão estejam dentro do range de min_date e max_date
+    default_start = stored_filters.get('data_inicio', min_date)
+    default_end = stored_filters.get('data_fim', max_date)
+    
+    # Ajusta as datas padrão se elas estiverem fora do intervalo atual da base
+    if default_start < min_date: default_start = min_date
+    if default_end > max_date: default_end = max_date
+    
     selected_date_range = st.sidebar.date_input(
         "Período de Pagamento:",
-        value=(min_date, max_date),
+        value=(default_start, default_end),
         min_value=min_date,
         max_value=max_date
     )
@@ -331,6 +364,7 @@ except Exception:
     st.sidebar.error("Problema ao carregar o filtro de datas. Verifique a coluna 'Data Pagto'.")
 
 
+# Dicionário dos filtros atuais dos widgets
 current_filters = {
     'projeto': selected_projects,
     'gerenciadora': selected_gerenciadoras,
@@ -342,18 +376,20 @@ current_filters = {
 
 # Botão para aplicar filtros
 if st.sidebar.button("✅ APLICAR FILTROS E RECALCULAR", type="primary", use_container_width=True):
+    # Ao clicar no botão, armazena os filtros e recalcula a análise
     st.session_state['filters'] = current_filters
     st.session_state['df_analise'] = apply_filters(df, current_filters)
     st.session_state['df_pendencias'] = st.session_state['df_analise'][st.session_state['df_analise']['Pendencia'] == True].copy()
-    st.session_state['analise_pronta'] = True
     st.success("Filtros aplicados e análise recalculada!")
+    st.rerun() # Força o Streamlit a atualizar todo o dashboard
 
-# Garante que a análise inicial esteja pronta se os filtros não foram tocados
-if 'analise_pronta' not in st.session_state:
-    st.session_state['df_analise'] = df.copy()
+
+# === LÓGICA DE CÁLCULO INICIAL OU APÓS RECARGA ===
+# Se o df_analise não foi populado OU o arquivo foi recém-carregado/limpo, 
+# aplica os filtros iniciais baseados nos defaults dos widgets.
+if st.session_state['df_analise'].empty or 'data' in st.session_state and not st.session_state['df_analise'].equals(df):
+    st.session_state['df_analise'] = apply_filters(df, current_filters)
     st.session_state['df_pendencias'] = st.session_state['df_analise'][st.session_state['df_analise']['Pendencia'] == True].copy()
-    st.session_state['analise_pronta'] = True
-    st.session_state['filters'] = current_filters
 
 
 df_analise = st.session_state['df_analise']
@@ -372,28 +408,23 @@ aba_dashboard, aba_processamento, aba_pendencias, aba_config = st.tabs([
 # ===========================================
 with aba_dashboard:
     if df_analise.empty:
-        st.warning("Nenhum dado corresponde aos filtros aplicados.")
+        st.warning("Nenhum dado corresponde aos filtros aplicados. Tente ajustar os filtros na barra lateral.")
         st.stop()
 
     col1, col2, col3, col4 = st.columns(4)
 
-    # CORREÇÃO PONTO 3: Cálculo e exibição da Quantidade de Pagamentos
+    # Cálculo dos KPIs
     total_pago = df_analise['Valor Pagto'].sum()
     num_pagamentos = len(df_analise) 
     num_beneficiarios = df_analise['CPF'].nunique()
     num_pendencias = len(df_pendencias)
     
-    # Função de formatação BRL
-    def format_brl(value):
-        return f"R$ {value:,.2f}".replace(",", "_").replace(".", ",").replace("_", ".")
-
     # Métricas Principais
     with col1:
         st.metric(label="💰 VALOR TOTAL PAGO", 
                   value=format_brl(total_pago))
     
     with col2:
-        # CORREÇÃO PONTO 3: Substituído Valor Total Bruto por Quantidade de Pagamentos
         st.metric(label="👤 QUANTIDADE DE PAGAMENTOS", 
                   value=f"{num_pagamentos:,.0f}".replace(",", "_").replace(".", ",").replace("_", "."))
     
@@ -402,8 +433,10 @@ with aba_dashboard:
                   value=f"{num_beneficiarios:,.0f}".replace(",", "_").replace(".", ",").replace("_", "."))
     
     with col4:
+        # Evita divisão por zero
+        percentual_pendencia = num_pendencias / num_pagamentos if num_pagamentos > 0 else 0
         st.metric(label="🚨 PAGAMENTOS C/ PENDÊNCIA", 
-                  value=f"{num_pendencias:,.0f} ({num_pendencias/num_pagamentos:.2%})".replace(",", "_").replace(".", ",").replace("_", "."))
+                  value=f"{num_pendencias:,.0f} ({percentual_pendencia:.2%})".replace(",", "_").replace(".", ",").replace("_", "."))
     
     st.markdown("---")
     
@@ -416,7 +449,6 @@ with aba_dashboard:
         st.plotly_chart(fig_pie, use_container_width=True)
         
     with col_g2:
-        # CORREÇÃO PONTO 4: Remover TOP 10 e mostrar todos os projetos
         st.markdown('<p class="chart-title">🏛️ VALORES TOTAIS POR PROJETO</p>', unsafe_allow_html=True)
         
         df_proj = df_analise.groupby('Projeto').agg(
@@ -424,7 +456,7 @@ with aba_dashboard:
             Valor_Total_Bruto=('Valor Total', 'sum'),
             Total_Beneficiarios=('CPF', 'nunique'),
             Media_Pagto=('Valor Pagto', 'mean')
-        ).reset_index().sort_values(by='Valor_Total_Pago', ascending=False) # Removido .head(10)
+        ).reset_index()
         
         # Renaming for display
         df_proj.columns = ['Projeto', 'Valor Total Pago', 'Valor Total Bruto', 'Total de Beneficiários', 'Média de Pagamento']
@@ -481,7 +513,6 @@ with aba_processamento:
     
     st.markdown("### ⬇️ EXPORTAÇÃO DE DADOS FILTRADOS")
     
-    # CORREÇÃO PONTO 5: Otimização da lógica de exportação usando st.download_button
     export_format = st.session_state['config']['formato_exportacao']
     
     if not df_analise.empty:
@@ -491,7 +522,6 @@ with aba_processamento:
         
         if export_format == "Excel (.xlsx)":
             output = BytesIO()
-            # Uso de 'openpyxl' como engine mais robusto em ambientes Streamlit
             try:
                 with pd.ExcelWriter(output, engine='openpyxl') as writer: 
                     df_analise.to_excel(writer, index=False, sheet_name='Dados Analisados')
@@ -501,11 +531,9 @@ with aba_processamento:
                  st.error("O motor 'openpyxl' não está instalado. Por favor, exporte como CSV.")
                  export_format = "CSV (.csv)" # Fallback
             
-        elif export_format == "CSV (.csv)":
+        if export_format == "CSV (.csv)":
             data_to_download = df_analise.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
             mime_type = "text/csv"
-        
-        # O PDF foi removido do menu de configurações para evitar erros.
         
         filename = f"analise_smdet_pot_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         if export_format == "Excel (.xlsx)":
@@ -523,7 +551,8 @@ with aba_processamento:
                 use_container_width=True
             )
         else:
-            st.warning("Selecione um formato de exportação válido nas Configurações.")
+            # Caso o fallback para CSV não tenha funcionado
+            st.warning("Não foi possível gerar o arquivo para download.")
 
 # ===========================================
 # 🚨 Aba Análise de Pendências
@@ -543,7 +572,6 @@ with aba_pendencias:
         
         st.markdown("### ⬇️ EXPORTAR LISTA DE PENDÊNCIAS")
         
-        # Lógica de exportação para a lista de pendências (reutilizando a lógica do Ponto 5)
         pendencias_export_format = st.session_state['config']['formato_exportacao']
         
         data_to_download_pend = None
@@ -560,7 +588,7 @@ with aba_pendencias:
                  st.error("O motor 'openpyxl' não está instalado. Por favor, exporte como CSV.")
                  pendencias_export_format = "CSV (.csv)" # Fallback
             
-        elif pendencias_export_format == "CSV (.csv)":
+        if pendencias_export_format == "CSV (.csv)":
             data_to_download_pend = df_pendencias.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
             mime_type_pend = "text/csv"
         
@@ -621,7 +649,6 @@ with aba_config:
     col_e1, col_e2 = st.columns(2)
     
     with col_e1:
-        # CORREÇÃO PONTO 5: Removido PDF
         export_options = ["Excel (.xlsx)", "CSV (.csv)"]
         formato_exportacao = st.selectbox(
             "Formato padrão de exportação:",
@@ -633,7 +660,7 @@ with aba_config:
         incluir_graficos = st.checkbox(
             "Incluir gráficos nos relatórios (Opção desativada para exportação)",
             value=current_config['incluir_graficos'],
-            disabled=True # Desabilitado pois o PDF foi removido
+            disabled=True 
         )
     
     # Botão para salvar configurações
