@@ -38,7 +38,7 @@ def format_brl(value):
 def generate_mock_data():
     """
     Gera um dataset simulando o arquivo mestre do Programa Operação Trabalho.
-    Contém 2054 registros, múltiplos projetos e casos de teste para a regra de R$ 5k.
+    Agora ajustado para ter pagamentos únicos altos, ao invés de focar na soma.
     """
     np.random.seed(42) # Semente para reprodutibilidade
     n_rows = 2054
@@ -48,7 +48,7 @@ def generate_mock_data():
         "POT - Horta", "POT - Mães Guardiãs"
     ]
     
-    # Geração de Cartões (Beneficiários Únicos)
+    # Geração de Cartões
     unique_cards = np.random.randint(1000000000, 9999999999, size=1800, dtype=np.int64)
     cards_column = np.random.choice(unique_cards, size=n_rows)
     
@@ -59,14 +59,18 @@ def generate_mock_data():
     noise = np.random.random(size=n_rows) * 10 
     values_column += noise
     
-    # Casos de Teste (Regra > 5k)
-    cards_column[0] = 1234567890
+    # Casos de Teste (Valor Único > 5k)
+    # Linha específica com valor alto (suspeito individual)
     values_column[0] = 5500.00 
     
-    cards_column[1:4] = 9876543210
-    values_column[1] = 2000.00
+    # Linha com valor alto mas abaixo do limite
+    values_column[1] = 4900.00
+    
+    # Mesmo cartão com vários pagamentos (Total > 5k, mas linhas individuais < 5k -> DEVE PASSAR)
+    cards_column[2:5] = 9876543210
     values_column[2] = 2000.00
-    values_column[3] = 1500.00 
+    values_column[3] = 2000.00
+    values_column[4] = 2000.00
     
     df = pd.DataFrame({
         "Num Cartao": cards_column,
@@ -81,19 +85,32 @@ def generate_mock_data():
     return df
 
 def load_from_file(uploaded_file):
-    """Carrega e normaliza arquivo real enviado pelo usuário"""
+    """
+    Carrega e normaliza arquivo real enviado pelo usuário.
+    Implementa tratamento de encoding para evitar erros com arquivos BR (Latin-1).
+    """
     try:
         if uploaded_file.name.endswith('.csv'):
-            df = pd.read_csv(uploaded_file)
+            # Tenta ler como UTF-8 padrão
+            try:
+                df = pd.read_csv(uploaded_file)
+            except UnicodeDecodeError:
+                # Se falhar, tenta Latin-1 (comum em Excel BR) e separador de ponto e vírgula
+                uploaded_file.seek(0)
+                try:
+                    df = pd.read_csv(uploaded_file, encoding='latin-1', sep=';')
+                except:
+                    # Última tentativa com encoding comum
+                    uploaded_file.seek(0)
+                    df = pd.read_csv(uploaded_file, encoding='iso-8859-1')
         else:
             df = pd.read_excel(uploaded_file)
         
-        # Tentativa de normalizar colunas caso venham com nomes diferentes
+        # Tentativa de normalizar colunas
         cols_map = {c.lower(): c for c in df.columns}
         rename_dict = {}
         
         if 'num cartao' not in df.columns:
-            # Procura variantes
             for key in cols_map:
                 if 'cartao' in key or 'cartão' in key:
                     rename_dict[cols_map[key]] = 'Num Cartao'
@@ -107,13 +124,13 @@ def load_from_file(uploaded_file):
                     
         df = df.rename(columns=rename_dict)
         
-        # Força conversão de Num Cartao para string para agrupar corretamente
+        # Força conversão de Num Cartao para string
         if 'Num Cartao' in df.columns:
             df['Num Cartao'] = df['Num Cartao'].astype(str)
             
         return df
     except Exception as e:
-        st.error(f"Erro ao ler arquivo: {e}")
+        st.error(f"Erro Crítico ao ler arquivo: {str(e)}")
         return pd.DataFrame()
 
 # --- LÓGICA DE NEGÓCIO ---
@@ -122,23 +139,25 @@ def process_business_rules(df, threshold=5000.00):
         return df
 
     # Limpeza/Conversão do Valor
-    # Verifica se a coluna é object/string e limpa, senão usa direto
     if df['Valor Pagto'].dtype == 'object':
         df['Valor_Calculo'] = df['Valor Pagto'].apply(clean_currency)
     else:
         df['Valor_Calculo'] = df['Valor Pagto']
 
-    # 1. Agrupamento por Cartão
-    grouped = df.groupby('Num Cartao')['Valor_Calculo'].sum().reset_index()
-    grouped.rename(columns={'Valor_Calculo': 'Soma_Total_Cartao'}, inplace=True)
+    # --- REGRA ATUALIZADA ---
+    # Validação LINHA A LINHA.
+    # O limite de R$ 5.000,00 se aplica ao valor individual do pagamento, não ao saldo da conta.
     
-    # 2. Status
-    grouped['Status_Validacao'] = grouped['Soma_Total_Cartao'].apply(
+    df['Status_Validacao'] = df['Valor_Calculo'].apply(
         lambda x: '⚠️ Análise Admin' if x > threshold else '✅ Liberado'
     )
     
-    # 3. Merge
-    df_final = df.merge(grouped[['Num Cartao', 'Soma_Total_Cartao', 'Status_Validacao']], on='Num Cartao', how='left')
+    # Opcional: Ainda calculamos o total por cartão apenas para informação, sem bloquear
+    grouped = df.groupby('Num Cartao')['Valor_Calculo'].sum().reset_index()
+    grouped.rename(columns={'Valor_Calculo': 'Info_Total_Acumulado'}, inplace=True)
+    
+    # Merge apenas para trazer a info de acumulado (informativo)
+    df_final = df.merge(grouped, on='Num Cartao', how='left')
     
     return df_final
 
@@ -155,22 +174,19 @@ if st.sidebar.button("🎲 Usar Dados de Teste (Simulação)"):
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 2. Regras e Ações")
 limite_teto = st.sidebar.number_input(
-    "Teto Máximo por Cartão (R$)",
+    "Teto Máximo por Pagamento Único (R$)",
     value=5000.00,
-    step=100.00
+    step=100.00,
+    help="Qualquer linha de pagamento acima deste valor será retida para análise."
 )
 
-# Botão de Limpeza com Lógica de Session State
 if st.sidebar.button("🗑️ Limpar Banco de Dados (Admin)", type="primary"):
     st.session_state['df_pagamentos'] = pd.DataFrame()
     st.cache_data.clear()
     st.rerun()
 
 # --- PROCESSAMENTO DO UPLOAD ---
-# Se o usuário subiu um arquivo, ele tem prioridade sobre o estado atual
 if uploaded_file is not None:
-    # Só carrega se o dataframe estiver vazio ou se o arquivo mudou
-    # (Streamlit reloda o script a cada interação, então carregamos e salvamos no state)
     df_loaded = load_from_file(uploaded_file)
     if not df_loaded.empty:
         st.session_state['df_pagamentos'] = df_loaded
@@ -179,36 +195,28 @@ if uploaded_file is not None:
 
 st.title("Sistema de Gestão Financeira - POT")
 
-# Verifica se há dados no estado
 df_raw = st.session_state['df_pagamentos']
 
 if df_raw.empty:
-    # TELA DE ESPERA / ESTADO VAZIO
     st.info("""
         ℹ️ **Sistema Aguardando Dados**
         
-        Utilize o menu lateral para:
-        1. **Carregar um arquivo real** (Excel ou CSV) com as colunas 'Num Cartao' e 'Valor Pagto'.
-        2. Ou clique em **'Usar Dados de Teste'** para gerar uma simulação de 2054 registros.
+        Carregue um arquivo .xlsx/.csv ou use os dados de teste.
     """)
-    
-    # Mostra um placeholder visual
     st.markdown("---")
     c1, c2, c3 = st.columns(3)
     with c2:
         st.markdown("### 🚫 Nenhum dado carregado")
 
 else:
-    # TELA DE DASHBOARD (SÓ APARECE SE TIVER DADOS)
-    
     # Processamento
     try:
         df_processed = process_business_rules(df_raw, threshold=limite_teto)
         
-        # Separação
+        # Filtros
         df_analise = df_processed[df_processed['Status_Validacao'] == '⚠️ Análise Admin']
         
-        # 2. DASHBOARD (KPIs)
+        # KPIs
         col1, col2, col3, col4 = st.columns(4)
         
         total_valor = df_processed['Valor_Calculo'].sum()
@@ -225,19 +233,23 @@ else:
             
         st.markdown("---")
         
-        # 3. ALERTAS
+        # ALERTAS
         if not df_analise.empty:
-            st.error(f"🚨 **Atenção:** {df_analise['Num Cartao'].nunique()} cartões excederam o teto de R$ {limite_teto:,.2f} (Soma acumulada).")
-            with st.expander("Ver Detalhes da Malha Fina"):
+            st.error(f"🚨 **Atenção:** {len(df_analise)} pagamentos individuais excedem o teto de R$ {limite_teto:,.2f}.")
+            with st.expander("Ver Detalhes da Malha Fina (Valores Individuais Altos)"):
                 st.dataframe(
-                    df_analise[['Num Cartao', 'Nome Beneficiário', 'Valor Pagto', 'Soma_Total_Cartao']]
-                    .sort_values(by='Soma_Total_Cartao', ascending=False),
+                    df_analise[['Num Cartao', 'Nome Beneficiário', 'Valor Pagto', 'Info_Total_Acumulado']]
+                    .sort_values(by='Valor Pagto', ascending=False),
+                    column_config={
+                        "Valor Pagto": st.column_config.NumberColumn("Valor do Pagamento (Alerta)", format="R$ %.2f"),
+                        "Info_Total_Acumulado": st.column_config.NumberColumn("Total Acumulado (Info)", format="R$ %.2f")
+                    },
                     use_container_width=True
                 )
         else:
-            st.success("✅ Nenhum pagamento excedeu o limite acumulado por cartão.")
+            st.success("✅ Nenhum pagamento individual excede o limite estabelecido.")
             
-        # 4. GRÁFICOS
+        # GRÁFICOS
         tab1, tab2 = st.tabs(["📊 Visão Gráfica", "📋 Dados Brutos"])
         
         with tab1:
@@ -256,5 +268,4 @@ else:
             st.dataframe(df_processed, use_container_width=True)
             
     except KeyError as e:
-        st.error(f"Erro de Estrutura: O arquivo carregado não possui as colunas esperadas. ({str(e)})")
-        st.warning("Certifique-se que o arquivo tem as colunas 'Num Cartao' e 'Valor Pagto'.")
+        st.error(f"Erro de Estrutura: Coluna não encontrada ({str(e)}). Verifique se o arquivo tem 'Num Cartao' e 'Valor Pagto'.")
