@@ -464,313 +464,326 @@ class SistemaPOT:
                 st.write(f"**Colunas:** {list(self.df_original.columns)}")
                 st.dataframe(self.df_original.head(5), use_container_width=True)
 
-# Inicializar sistema
-sistema = SistemaPOT()
-
 # ==============================================
-# INTERFACE STREAMLIT - SIMPLIFICADA
+# FUNÇÃO PRINCIPAL
 # ==============================================
 
-st.title("💰 SISTEMA DE MONITORAMENTO DE PAGAMENTOS - POT")
-st.markdown("---")
-
-# Sidebar
-with st.sidebar:
-    st.header("📁 UPLOAD DO ARQUIVO")
+def main():
+    """Função principal do aplicativo Streamlit"""
     
-    arquivo = st.file_uploader(
-        "Selecione o arquivo CSV",
-        type=['csv'],
-        help="Arquivo CSV com dados de pagamentos (delimitador: ponto e vírgula)"
-    )
+    st.title("💰 SISTEMA DE MONITORAMENTO DE PAGAMENTOS - POT")
+    st.markdown("---")
     
-    if arquivo is not None:
-        st.info(f"📄 **Arquivo:** {arquivo.name}")
-        st.info(f"📊 **Tamanho:** {arquivo.size / 1024:.1f} KB")
+    # Inicializar sistema
+    sistema = SistemaPOT()
+    
+    # Sidebar
+    with st.sidebar:
+        st.header("📁 UPLOAD DO ARQUIVO")
         
-        st.markdown("---")
-        st.header("⚙️ OPÇÕES")
-        mostrar_log = st.checkbox("📝 Mostrar log de processamento", value=True)
-        mostrar_debug = st.checkbox("🔍 Mostrar dados originais (debug)", value=False)
+        arquivo = st.file_uploader(
+            "Selecione o arquivo CSV",
+            type=['csv'],
+            help="Arquivo CSV com dados de pagamentos (delimitador: ponto e vírgula)"
+        )
         
-        if st.button("🚀 PROCESSAR ARQUIVO", type="primary", use_container_width=True):
-            with st.spinner("Processando arquivo... Por favor, aguarde."):
-                sucesso = sistema.processar_arquivo_streamlit(arquivo)
-                if sucesso:
-                    st.session_state['arquivo_processado'] = True
-                    st.session_state['mostrar_log'] = mostrar_log
-                    st.session_state['mostrar_debug'] = mostrar_debug
-                    st.success("✅ Arquivo processado com sucesso!")
-                else:
-                    st.error("❌ Erro ao processar arquivo. Verifique o log.")
-        
-        if 'arquivo_processado' in st.session_state and st.session_state['arquivo_processado']:
+        if arquivo is not None:
+            st.info(f"📄 **Arquivo:** {arquivo.name}")
+            st.info(f"📊 **Tamanho:** {arquivo.size / 1024:.1f} KB")
+            
             st.markdown("---")
-            if st.button("🔄 PROCESSAR OUTRO ARQUIVO", use_container_width=True):
-                st.session_state.clear()
-                st.rerun()
-
-# Área principal
-if 'arquivo_processado' in st.session_state and st.session_state['arquivo_processado']:
-    if sistema.arquivo_processado:
-        
-        if st.session_state.get('mostrar_log', False):
-            sistema.mostrar_log()
-        
-        if st.session_state.get('mostrar_debug', False):
-            sistema.mostrar_dados_originais()
-        
-        if sistema.dados_limpos is None or len(sistema.dados_limpos) == 0:
-            st.error("""
-            ❌ **ERRO: NENHUM DADO VÁLIDO PROCESSADO**
+            st.header("⚙️ OPÇÕES")
+            mostrar_log = st.checkbox("📝 Mostrar log de processamento", value=True)
+            mostrar_debug = st.checkbox("🔍 Mostrar dados originais (debug)", value=False)
             
-            **Possíveis causas:**
-            1. Arquivo vazio ou corrompido
-            2. Encoding não compatível
-            3. Delimitador incorreto (não é ponto e vírgula)
-            4. Formato de dados inválido
-            """)
+            if st.button("🚀 PROCESSAR ARQUIVO", type="primary", use_container_width=True):
+                with st.spinner("Processando arquivo... Por favor, aguarde."):
+                    sucesso = sistema.processar_arquivo_streamlit(arquivo)
+                    if sucesso:
+                        st.session_state['arquivo_processado'] = True
+                        st.session_state['mostrar_log'] = mostrar_log
+                        st.session_state['mostrar_debug'] = mostrar_debug
+                        st.session_state['sistema'] = sistema
+                        st.success("✅ Arquivo processado com sucesso!")
+                    else:
+                        st.error("❌ Erro ao processar arquivo. Verifique o log.")
             
-            if sistema.df_original is not None:
-                st.write(f"Arquivo original tem {len(sistema.df_original)} linhas")
-                if len(sistema.df_original) > 0:
-                    st.write("Primeiras linhas do arquivo original:")
-                    st.dataframe(sistema.df_original.head(3))
+            if 'arquivo_processado' in st.session_state and st.session_state['arquivo_processado']:
+                st.markdown("---")
+                if st.button("🔄 PROCESSAR OUTRO ARQUIVO", use_container_width=True):
+                    st.session_state.clear()
+                    st.rerun()
+    
+    # Área principal
+    if 'arquivo_processado' in st.session_state and st.session_state['arquivo_processado']:
+        sistema = st.session_state['sistema']
+        
+        if sistema.arquivo_processado:
             
-            return
-        
-        # RESUMO EXECUTIVO
-        st.header("📊 RESUMO EXECUTIVO")
-        
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            st.metric("📄 TOTAL DE REGISTROS", f"{len(sistema.dados_limpos):,}")
-        
-        with col2:
-            if sistema.coluna_valor_pagto:
-                valor_total = sistema.total_pagamentos
-                st.metric("💰 VALOR TOTAL", f"R$ {valor_total:,.2f}")
-            else:
-                st.metric("💰 VALOR TOTAL", "N/A")
-        
-        with col3:
-            if sistema.dados_faltantes is not None:
-                total_faltantes = sistema.dados_faltantes['Valores_Faltantes'].sum()
-                st.metric("⚠️ DADOS FALTANTES", f"{total_faltantes:,}")
-            else:
-                st.metric("⚠️ DADOS FALTANTES", "0")
-        
-        with col4:
-            if sistema.inconsistencias is not None and not sistema.inconsistencias.empty:
-                total_inconsistencias = sistema.inconsistencias['Quantidade'].sum()
-                st.metric("🚨 INCONSISTÊNCIAS", f"{total_inconsistencias:,}")
-            else:
-                st.metric("🚨 INCONSISTÊNCIAS", "0")
-        
-        if sistema.coluna_valor_pagto:
-            st.info(f"**Coluna de valor identificada:** `{sistema.coluna_valor_pagto}`")
+            if st.session_state.get('mostrar_log', False):
+                sistema.mostrar_log()
             
-            valores = sistema.dados_limpos[sistema.coluna_valor_pagto]
-            col_stat1, col_stat2, col_stat3 = st.columns(3)
+            if st.session_state.get('mostrar_debug', False):
+                sistema.mostrar_dados_originais()
             
-            with col_stat1:
-                st.metric("📊 Valor Médio", f"R$ {valores.mean():,.2f}")
-            
-            with col_stat2:
-                st.metric("⬇️ Valor Mínimo", f"R$ {valores.min():,.2f}")
-            
-            with col_stat3:
-                st.metric("⬆️ Valor Máximo", f"R$ {valores.max():,.2f}")
-        
-        st.markdown("---")
-        
-        # DADOS FALTANTES
-        st.header("🔍 ANÁLISE DE DADOS FALTANTES")
-        
-        if sistema.dados_faltantes is not None and not sistema.dados_faltantes.empty:
-            dados_faltantes_filtrados = sistema.dados_faltantes[
-                sistema.dados_faltantes['Valores_Faltantes'] > 0
-            ].copy()
-            
-            if not dados_faltantes_filtrados.empty:
-                st.subheader("📋 DADOS FALTANTES POR COLUNA")
+            if sistema.dados_limpos is None or len(sistema.dados_limpos) == 0:
+                st.error("""
+                ❌ **ERRO: NENHUM DADO VÁLIDO PROCESSADO**
                 
-                dados_faltantes_filtrados['Percentual_Faltante'] = dados_faltantes_filtrados['Percentual_Faltante'].apply(
-                    lambda x: f"{x}%"
-                )
+                **Possíveis causas:**
+                1. Arquivo vazio ou corrompido
+                2. Encoding não compatível
+                3. Delimitador incorreto (não é ponto e vírgula)
+                4. Formato de dados inválido
+                """)
+                
+                if sistema.df_original is not None:
+                    st.write(f"Arquivo original tem {len(sistema.df_original)} linhas")
+                    if len(sistema.df_original) > 0:
+                        st.write("Primeiras linhas do arquivo original:")
+                        st.dataframe(sistema.df_original.head(3))
+                
+                return
+            
+            # RESUMO EXECUTIVO
+            st.header("📊 RESUMO EXECUTIVO")
+            
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                st.metric("📄 TOTAL DE REGISTROS", f"{len(sistema.dados_limpos):,}")
+            
+            with col2:
+                if sistema.coluna_valor_pagto:
+                    valor_total = sistema.total_pagamentos
+                    st.metric("💰 VALOR TOTAL", f"R$ {valor_total:,.2f}")
+                else:
+                    st.metric("💰 VALOR TOTAL", "N/A")
+            
+            with col3:
+                if sistema.dados_faltantes is not None:
+                    total_faltantes = sistema.dados_faltantes['Valores_Faltantes'].sum()
+                    st.metric("⚠️ DADOS FALTANTES", f"{total_faltantes:,}")
+                else:
+                    st.metric("⚠️ DADOS FALTANTES", "0")
+            
+            with col4:
+                if sistema.inconsistencias is not None and not sistema.inconsistencias.empty:
+                    total_inconsistencias = sistema.inconsistencias['Quantidade'].sum()
+                    st.metric("🚨 INCONSISTÊNCIAS", f"{total_inconsistencias:,}")
+                else:
+                    st.metric("🚨 INCONSISTÊNCIAS", "0")
+            
+            if sistema.coluna_valor_pagto:
+                st.info(f"**Coluna de valor identificada:** `{sistema.coluna_valor_pagto}`")
+                
+                valores = sistema.dados_limpos[sistema.coluna_valor_pagto]
+                col_stat1, col_stat2, col_stat3 = st.columns(3)
+                
+                with col_stat1:
+                    st.metric("📊 Valor Médio", f"R$ {valores.mean():,.2f}")
+                
+                with col_stat2:
+                    st.metric("⬇️ Valor Mínimo", f"R$ {valores.min():,.2f}")
+                
+                with col_stat3:
+                    st.metric("⬆️ Valor Máximo", f"R$ {valores.max():,.2f}")
+            
+            st.markdown("---")
+            
+            # DADOS FALTANTES
+            st.header("🔍 ANÁLISE DE DADOS FALTANTES")
+            
+            if sistema.dados_faltantes is not None and not sistema.dados_faltantes.empty:
+                dados_faltantes_filtrados = sistema.dados_faltantes[
+                    sistema.dados_faltantes['Valores_Faltantes'] > 0
+                ].copy()
+                
+                if not dados_faltantes_filtrados.empty:
+                    st.subheader("📋 DADOS FALTANTES POR COLUNA")
+                    
+                    dados_faltantes_filtrados['Percentual_Faltante'] = dados_faltantes_filtrados['Percentual_Faltante'].apply(
+                        lambda x: f"{x}%"
+                    )
+                    
+                    st.dataframe(
+                        dados_faltantes_filtrados[['Coluna', 'Valores_Faltantes', 'Percentual_Faltante', 'Tipo_Dado']],
+                        use_container_width=True,
+                        height=300
+                    )
+                    
+                    if hasattr(sistema, 'linhas_com_faltantes_criticos') and not sistema.linhas_com_faltantes_criticos.empty:
+                        st.subheader("🚨 LINHAS COM FALTANTES CRÍTICOS")
+                        st.dataframe(
+                            sistema.linhas_com_faltantes_criticos,
+                            use_container_width=True,
+                            height=200
+                        )
+                else:
+                    st.success("✅ NENHUM DADO FALTANTE DETECTADO!")
+            else:
+                st.success("✅ NENHUM DADO FALTANTE DETECTADO!")
+            
+            st.markdown("---")
+            
+            # INCONSISTÊNCIAS
+            st.header("🚨 ANÁLISE DE INCONSISTÊNCIAS")
+            
+            if sistema.inconsistencias is not None and not sistema.inconsistencias.empty:
+                st.subheader("📋 TIPOS DE INCONSISTÊNCIAS DETECTADAS")
                 
                 st.dataframe(
-                    dados_faltantes_filtrados[['Coluna', 'Valores_Faltantes', 'Percentual_Faltante', 'Tipo_Dado']],
+                    sistema.inconsistencias,
                     use_container_width=True,
                     height=300
                 )
-                
-                if hasattr(sistema, 'linhas_com_faltantes_criticos') and not sistema.linhas_com_faltantes_criticos.empty:
-                    st.subheader("🚨 LINHAS COM FALTANTES CRÍTICOS")
-                    st.dataframe(
-                        sistema.linhas_com_faltantes_criticos,
-                        use_container_width=True,
-                        height=200
-                    )
             else:
-                st.success("✅ NENHUM DADO FALTANTE DETECTADO!")
-        else:
-            st.success("✅ NENHUM DADO FALTANTE DETECTADO!")
-        
-        st.markdown("---")
-        
-        # INCONSISTÊNCIAS
-        st.header("🚨 ANÁLISE DE INCONSISTÊNCIAS")
-        
-        if sistema.inconsistencias is not None and not sistema.inconsistencias.empty:
-            st.subheader("📋 TIPOS DE INCONSISTÊNCIAS DETECTADAS")
+                st.success("✅ NENHUMA INCONSISTÊNCIA GRAVE DETECTADA!")
             
-            st.dataframe(
-                sistema.inconsistencias,
-                use_container_width=True,
-                height=300
-            )
-        else:
-            st.success("✅ NENHUMA INCONSISTÊNCIA GRAVE DETECTADA!")
-        
-        st.markdown("---")
-        
-        # VISUALIZAÇÃO DOS DADOS
-        st.header("👀 VISUALIZAÇÃO DOS DADOS PROCESSADOS")
-        
-        tab1, tab2 = st.tabs(["📋 TABELA DE DADOS", "📊 ESTATÍSTICAS"])
-        
-        with tab1:
-            col_vis1, col_vis2 = st.columns(2)
+            st.markdown("---")
             
-            with col_vis1:
-                colunas_disponiveis = sistema.dados_limpos.columns.tolist()
-                colunas_selecionadas = st.multiselect(
-                    "Selecione as colunas para visualizar:",
-                    options=colunas_disponiveis,
-                    default=colunas_disponiveis[:min(6, len(colunas_disponiveis))]
-                )
+            # VISUALIZAÇÃO DOS DADOS
+            st.header("👀 VISUALIZAÇÃO DOS DADOS PROCESSADOS")
             
-            with col_vis2:
-                num_linhas = st.slider(
-                    "Número de linhas para mostrar:",
-                    min_value=5,
-                    max_value=100,
-                    value=20,
-                    step=5
-                )
+            tab1, tab2 = st.tabs(["📋 TABELA DE DADOS", "📊 ESTATÍSTICAS"])
             
-            if colunas_selecionadas:
-                dados_visiveis = sistema.dados_limpos[colunas_selecionadas].head(num_linhas).copy()
+            with tab1:
+                col_vis1, col_vis2 = st.columns(2)
                 
-                if sistema.coluna_valor_pagto and sistema.coluna_valor_pagto in dados_visiveis.columns:
-                    dados_visiveis[sistema.coluna_valor_pagto] = dados_visiveis[sistema.coluna_valor_pagto].apply(
-                        lambda x: f"R$ {x:,.2f}" if pd.notna(x) else ""
+                with col_vis1:
+                    colunas_disponiveis = sistema.dados_limpos.columns.tolist()
+                    colunas_selecionadas = st.multiselect(
+                        "Selecione as colunas para visualizar:",
+                        options=colunas_disponiveis,
+                        default=colunas_disponiveis[:min(6, len(colunas_disponiveis))]
                     )
                 
-                st.dataframe(
-                    dados_visiveis,
-                    use_container_width=True,
-                    height=400
-                )
-        
-        with tab2:
-            if sistema.coluna_valor_pagto:
-                valores = sistema.dados_limpos[sistema.coluna_valor_pagto]
-                stats = valores.describe()
+                with col_vis2:
+                    num_linhas = st.slider(
+                        "Número de linhas para mostrar:",
+                        min_value=5,
+                        max_value=100,
+                        value=20,
+                        step=5
+                    )
                 
-                col_stats1, col_stats2 = st.columns(2)
-                
-                with col_stats1:
-                    st.markdown("**📈 ESTATÍSTICAS DESCRITIVAS**")
+                if colunas_selecionadas:
+                    dados_visiveis = sistema.dados_limpos[colunas_selecionadas].head(num_linhas).copy()
                     
-                    stats_df = pd.DataFrame({
-                        'Estatística': ['Mínimo', '25% (Q1)', 'Mediana', '75% (Q3)', 'Máximo', 'Média', 'Desvio Padrão'],
-                        'Valor': [
-                            f"R$ {stats.get('min', 0):,.2f}",
-                            f"R$ {stats.get('25%', 0):,.2f}",
-                            f"R$ {stats.get('50%', 0):,.2f}",
-                            f"R$ {stats.get('75%', 0):,.2f}",
-                            f"R$ {stats.get('max', 0):,.2f}",
-                            f"R$ {stats.get('mean', 0):,.2f}",
-                            f"R$ {stats.get('std', 0):,.2f}"
-                        ]
-                    })
-                    st.dataframe(stats_df, use_container_width=True, hide_index=True)
+                    if sistema.coluna_valor_pagto and sistema.coluna_valor_pagto in dados_visiveis.columns:
+                        dados_visiveis[sistema.coluna_valor_pagto] = dados_visiveis[sistema.coluna_valor_pagto].apply(
+                            lambda x: f"R$ {x:,.2f}" if pd.notna(x) else ""
+                        )
+                    
+                    st.dataframe(
+                        dados_visiveis,
+                        use_container_width=True,
+                        height=400
+                    )
+            
+            with tab2:
+                if sistema.coluna_valor_pagto:
+                    valores = sistema.dados_limpos[sistema.coluna_valor_pagto]
+                    stats = valores.describe()
+                    
+                    col_stats1, col_stats2 = st.columns(2)
+                    
+                    with col_stats1:
+                        st.markdown("**📈 ESTATÍSTICAS DESCRITIVAS**")
+                        
+                        stats_df = pd.DataFrame({
+                            'Estatística': ['Mínimo', '25% (Q1)', 'Mediana', '75% (Q3)', 'Máximo', 'Média', 'Desvio Padrão'],
+                            'Valor': [
+                                f"R$ {stats.get('min', 0):,.2f}",
+                                f"R$ {stats.get('25%', 0):,.2f}",
+                                f"R$ {stats.get('50%', 0):,.2f}",
+                                f"R$ {stats.get('75%', 0):,.2f}",
+                                f"R$ {stats.get('max', 0):,.2f}",
+                                f"R$ {stats.get('mean', 0):,.2f}",
+                                f"R$ {stats.get('std', 0):,.2f}"
+                            ]
+                        })
+                        st.dataframe(stats_df, use_container_width=True, hide_index=True)
+            
+            st.markdown("---")
+            
+            # EXPORTAÇÃO
+            st.header("📥 EXPORTAÇÃO DE RELATÓRIOS")
+            
+            col_exp1, col_exp2, col_exp3 = st.columns(3)
+            
+            with col_exp1:
+                if sistema.dados_limpos is not None:
+                    csv_dados = sistema.dados_limpos.to_csv(index=False, sep=';', encoding='utf-8')
+                    st.download_button(
+                        label="📋 DADOS PROCESSADOS (CSV)",
+                        data=csv_dados,
+                        file_name=f"dados_processados_pot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                        mime="text/csv",
+                        use_container_width=True
+                    )
+            
+            with col_exp2:
+                if sistema.inconsistencias is not None and not sistema.inconsistencias.empty:
+                    csv_incon = sistema.inconsistencias.to_csv(index=False, sep=';', encoding='utf-8')
+                    st.download_button(
+                        label="🚨 INCONSISTÊNCIAS (CSV)",
+                        data=csv_incon,
+                        file_name=f"inconsistencias_pot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                        mime="text/csv",
+                        use_container_width=True
+                    )
+            
+            with col_exp3:
+                if sistema.dados_faltantes is not None and not sistema.dados_faltantes.empty:
+                    csv_faltantes = sistema.dados_faltantes.to_csv(index=False, sep=';', encoding='utf-8')
+                    st.download_button(
+                        label="⚠️ DADOS FALTANTES (CSV)",
+                        data=csv_faltantes,
+                        file_name=f"dados_faltantes_pot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                        mime="text/csv",
+                        use_container_width=True
+                    )
         
-        st.markdown("---")
-        
-        # EXPORTAÇÃO
-        st.header("📥 EXPORTAÇÃO DE RELATÓRIOS")
-        
-        col_exp1, col_exp2, col_exp3 = st.columns(3)
-        
-        with col_exp1:
-            if sistema.dados_limpos is not None:
-                csv_dados = sistema.dados_limpos.to_csv(index=False, sep=';', encoding='utf-8')
-                st.download_button(
-                    label="📋 DADOS PROCESSADOS (CSV)",
-                    data=csv_dados,
-                    file_name=f"dados_processados_pot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                    mime="text/csv",
-                    use_container_width=True
-                )
-        
-        with col_exp2:
-            if sistema.inconsistencias is not None and not sistema.inconsistencias.empty:
-                csv_incon = sistema.inconsistencias.to_csv(index=False, sep=';', encoding='utf-8')
-                st.download_button(
-                    label="🚨 INCONSISTÊNCIAS (CSV)",
-                    data=csv_incon,
-                    file_name=f"inconsistencias_pot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                    mime="text/csv",
-                    use_container_width=True
-                )
-        
-        with col_exp3:
-            if sistema.dados_faltantes is not None and not sistema.dados_faltantes.empty:
-                csv_faltantes = sistema.dados_faltantes.to_csv(index=False, sep=';', encoding='utf-8')
-                st.download_button(
-                    label="⚠️ DADOS FALTANTES (CSV)",
-                    data=csv_faltantes,
-                    file_name=f"dados_faltantes_pot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                    mime="text/csv",
-                    use_container_width=True
-                )
-    
+        else:
+            st.error("❌ FALHA NO PROCESSAMENTO DO ARQUIVO")
+            sistema.mostrar_log()
     else:
-        st.error("❌ FALHA NO PROCESSAMENTO DO ARQUIVO")
-        sistema.mostrar_log()
-else:
-    # Tela inicial
-    st.markdown("""
-    # 🚀 SISTEMA DE MONITORAMENTO DE PAGAMENTOS - POT
+        # Tela inicial
+        st.markdown("""
+        # 🚀 SISTEMA DE MONITORAMENTO DE PAGAMENTOS - POT
+        
+        ### 📋 **FUNCIONALIDADES:**
+        
+        ✅ **PROCESSAMENTO ROBUSTO** com múltiplos encodings
+        ✅ **ANÁLISE DE DADOS FALTANTES** com tabelas detalhadas
+        ✅ **DETECÇÃO DE INCONSISTÊNCIAS** automática
+        ✅ **CÁLCULO PRECISO** de valores totais
+        ✅ **EXPORTAÇÃO** em formato CSV
+        
+        ### 📁 **COMO USAR:**
+        
+        1. **Faça upload** do arquivo CSV na barra lateral
+        2. **Clique em "Processar Arquivo"**
+        3. **Analise** os dados faltantes e inconsistências
+        4. **Exporte** os relatórios para correção
+        """)
     
-    ### 📋 **FUNCIONALIDADES:**
-    
-    ✅ **PROCESSAMENTO ROBUSTO** com múltiplos encodings
-    ✅ **ANÁLISE DE DADOS FALTANTES** com tabelas detalhadas
-    ✅ **DETECÇÃO DE INCONSISTÊNCIAS** automática
-    ✅ **CÁLCULO PRECISO** de valores totais
-    ✅ **EXPORTAÇÃO** em formato CSV
-    
-    ### 📁 **COMO USAR:**
-    
-    1. **Faça upload** do arquivo CSV na barra lateral
-    2. **Clique em "Processar Arquivo"**
-    3. **Analise** os dados faltantes e inconsistências
-    4. **Exporte** os relatórios para correção
-    """)
+    # Rodapé
+    st.markdown("---")
+    st.markdown(
+        """
+        <div style='text-align: center; color: gray; padding: 20px;'>
+        <strong>💰 SISTEMA POT - MONITORAMENTO DE PAGAMENTOS</strong><br>
+        Versão Final • Processamento Robusto • Análise Completa
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
-# Rodapé
-st.markdown("---")
-st.markdown(
-    """
-    <div style='text-align: center; color: gray; padding: 20px;'>
-    <strong>💰 SISTEMA POT - MONITORAMENTO DE PAGAMENTOS</strong><br>
-    Versão Final • Processamento Robusto • Análise Completa
-    </div>
-    """,
-    unsafe_allow_html=True
-)
+# ==============================================
+# EXECUÇÃO PRINCIPAL
+# ==============================================
+
+if __name__ == "__main__":
+    main()
