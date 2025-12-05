@@ -487,6 +487,7 @@ def detect_inconsistencies(df):
             
         if is_error:
             errors.append({
+                'ID': row.get('id', None),
                 'ARQUIVO': row.get('arquivo_origem', '-'),
                 'LINHA': row.get('linha_arquivo', '-'),
                 'CPF': cpf_val if cpf_val else "VAZIO",
@@ -527,6 +528,7 @@ def detect_inconsistencies(df):
             for _, row in group.iterrows():
                 # Só adiciona se não for erro de ausência já detectado (opcional, mas bom pra limpar visualização)
                 errors.append({
+                    'ID': row.get('id', None),
                     'ARQUIVO': row.get('arquivo_origem', '-'),
                     'LINHA': row.get('linha_arquivo', '-'),
                     'CPF': row.get('cpf', '-'),
@@ -545,6 +547,7 @@ def detect_inconsistencies(df):
         if len(unique_cpfs) > 1:
             for _, row in group.iterrows():
                 errors.append({
+                    'ID': row.get('id', None),
                     'ARQUIVO': row.get('arquivo_origem', '-'),
                     'LINHA': row.get('linha_arquivo', '-'),
                     'CPF': row.get('cpf', '-'),
@@ -1033,18 +1036,72 @@ def main_app():
                 st.markdown("Estes registros precisam de correção (CPF/Cartão Ausente ou Duplicidade).")
                 
                 # REMOVIDO highlight por questão de contraste
-                st.dataframe(crit_all, use_container_width=True)
+                st.dataframe(crit_all.drop(columns=['ID'], errors='ignore'), use_container_width=True)
+                
+                # ---- NOVA SEÇÃO DE CORREÇÃO ----
+                if user['role'] in ['admin_ti', 'admin_equipe']:
+                    st.markdown("### ✏️ Correção Rápida de Inconsistências")
+                    st.info("Abaixo estão APENAS os registros com inconsistências críticas para edição e correção imediata.")
+                    
+                    # Filtra do df_payments original apenas os IDs que estão com erro
+                    ids_com_erro = crit_all['ID'].dropna().unique()
+                    
+                    if len(ids_com_erro) > 0:
+                        df_para_editar = df_payments[df_payments['id'].isin(ids_com_erro)].copy()
+                        
+                        edited_errors = st.data_editor(
+                            df_para_editar,
+                            column_config={
+                                "id": st.column_config.NumberColumn(disabled=True),
+                                "arquivo_origem": st.column_config.TextColumn(disabled=True),
+                                "linha_arquivo": st.column_config.NumberColumn(disabled=True),
+                            },
+                            key="editor_errors_critical",
+                            use_container_width=True,
+                            hide_index=True
+                        )
+                        
+                        if st.button("💾 Salvar Correções de Inconsistências"):
+                            conn = get_db_connection()
+                            cursor = conn.cursor()
+                            try:
+                                # Update records one by one
+                                for index, row in edited_errors.iterrows():
+                                    cursor.execute("""
+                                        UPDATE payments 
+                                        SET nome = ?, cpf = ?, num_cartao = ?, rg = ?, valor_pagto = ?
+                                        WHERE id = ?
+                                    """, (
+                                        row['nome'], 
+                                        row['cpf'], 
+                                        row['num_cartao'],
+                                        row['rg'],
+                                        row['valor_pagto'],
+                                        row['id']
+                                    ))
+                                conn.commit()
+                                log_action(user['email'], "CORRECAO_CRITICA", f"Corrigiu registros críticos")
+                                st.success("✅ Registros corrigidos com sucesso! Atualizando...")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Erro ao atualizar: {e}")
+                            finally:
+                                conn.close()
+                    else:
+                        st.warning("Não foi possível carregar os registros originais para edição (IDs não encontrados).")
+                # --------------------------------
+                
             else:
                 st.success("✅ Base íntegra. Nenhuma ausência de CPF/Cartão ou duplicidade detectada.")
             
             st.markdown("---")
             
             if user['role'] in ['admin_ti', 'admin_equipe']:
-                st.markdown("### 📝 Editor de Dados (Malha Fina)")
+                st.markdown("### 📝 Editor de Dados (Malha Fina - Base Completa)")
                 st.warning("⚠️ Atenção: As alterações feitas aqui são aplicadas diretamente ao Banco de Dados.")
                 edited_df = st.data_editor(df_payments, num_rows="dynamic", key="editor_analise", use_container_width=True)
                 
-                if st.button("💾 Salvar Correções no Banco de Dados"):
+                if st.button("💾 Salvar Correções no Banco de Dados (Base Completa)"):
                     try:
                         conn = get_db_connection()
                         with conn:
