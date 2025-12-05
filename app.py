@@ -647,10 +647,21 @@ def main_app():
         
         if uploaded_files:
             if st.button(f"Processar {len(uploaded_files)} Arquivos"):
+                # Obter arquivos já processados para evitar duplicidade
+                conn = get_db_connection()
+                existing_files_df = pd.read_sql("SELECT DISTINCT arquivo_origem FROM payments", conn)
+                conn.close()
+                existing_files = set(existing_files_df['arquivo_origem'].tolist()) if not existing_files_df.empty else set()
+                
                 all_data = []
                 progress_bar = st.progress(0)
                 
                 for idx, file in enumerate(uploaded_files):
+                    # Checagem de Duplicidade
+                    if file.name in existing_files:
+                        st.warning(f"⚠️ O arquivo '{file.name}' já consta no banco de dados e foi ignorado.")
+                        continue
+                        
                     try:
                         if file.name.endswith('.csv'):
                             try:
@@ -692,12 +703,12 @@ def main_app():
                     conn.close()
                     
                     # === EXIBIR TOTAL APÓS UPLOAD ===
-                    st.success(f"Sucesso! {len(final_df)} registros processados e salvos.")
+                    st.success(f"Sucesso! {len(final_df)} novos registros processados e salvos.")
                     
                     if 'valor_pagto' in final_df.columns:
                         total_importado = final_df['valor_pagto'].sum()
                         st.metric(
-                            label="💰 Valor Total nos Arquivos Processados (Sem a linha de totais)", 
+                            label="💰 Valor Total nos Novos Arquivos", 
                             value=f"R$ {total_importado:,.2f}"
                         )
                     else:
@@ -706,7 +717,10 @@ def main_app():
                     st.markdown("### Prévia dos Dados:")
                     st.dataframe(final_df.head())
                 else:
-                    st.warning("Nenhum dado válido processado.")
+                    if not uploaded_files:
+                        st.warning("Nenhum arquivo selecionado.")
+                    else:
+                        st.info("Nenhum novo dado para processar (arquivos repetidos ou vazios).")
 
     elif choice == "Análise e Correção":
         render_header()
