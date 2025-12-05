@@ -806,10 +806,11 @@ def main_app():
                         divergencias = []
                         
                         for _, row in merged.iterrows():
-                            nome_sis = str(row['nome']).strip().upper()
+                            # CORREÇÃO KEYERROR: Usar os sufixos corretos definidos no merge (_sis e _bb)
+                            nome_sis = str(row['nome_sis']).strip().upper() if 'nome_sis' in row else str(row.get('nome', '')).strip().upper()
                             nome_bb = str(row['nome_bb']).strip().upper()
                             
-                            cpf_sis = str(row['cpf']).strip()
+                            cpf_sis = str(row['cpf_sis']).strip() if 'cpf_sis' in row else str(row.get('cpf', '')).strip()
                             cpf_bb = str(row['cpf_bb']).strip()
                             
                             motivos = []
@@ -820,11 +821,11 @@ def main_app():
                                 
                             if motivos:
                                 divergencias.append({
-                                    'Cartão': row['num_cartao'],
-                                    'Nome Sistema': row['nome'],
-                                    'Nome Banco': row['nome_bb'],
-                                    'CPF Sistema': row['cpf'],
-                                    'CPF Banco': row['cpf_bb'],
+                                    'Cartão': row['num_cartao_sis'] if 'num_cartao_sis' in row else row.get('num_cartao', 'N/A'),
+                                    'Nome Sistema': nome_sis,
+                                    'Nome Banco': nome_bb,
+                                    'CPF Sistema': cpf_sis,
+                                    'CPF Banco': cpf_bb,
                                     'Divergência': ", ".join(motivos),
                                     'Arquivo BB': row['arquivo_bb']
                                 })
