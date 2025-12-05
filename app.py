@@ -6,6 +6,9 @@ import sqlite3
 import hashlib
 import io
 import re
+import os
+import tempfile
+import matplotlib.pyplot as plt
 from datetime import datetime
 from fpdf import FPDF
 
@@ -288,7 +291,7 @@ def generate_bb_txt(df):
     return buffer.getvalue()
 
 def generate_pdf_report(df_filtered):
-    """Gera Relatório Executivo em PDF com cabeçalho oficial e análises detalhadas."""
+    """Gera Relatório Executivo em PDF com cabeçalho oficial, gráficos e tabelas de inconsistências."""
     pdf = FPDF()
     pdf.add_page()
     
@@ -305,13 +308,11 @@ def generate_pdf_report(df_filtered):
     pdf.ln(10)
     
     # --- DADOS GERAIS ---
-    # Cálculos
     total_valor = df_filtered['valor_pagto'].sum() if 'valor_pagto' in df_filtered.columns else 0.0
     total_benef = df_filtered['num_cartao'].nunique() if 'num_cartao' in df_filtered.columns else 0
     total_projetos = df_filtered['programa'].nunique() if 'programa' in df_filtered.columns else 0
     total_registros = len(df_filtered)
     
-    # Texto
     pdf.set_font("Arial", '', 10)
     pdf.cell(0, 6, f"Data de Geração: {datetime.now().strftime('%d/%m/%Y às %H:%M')}", 0, 1, 'R')
     pdf.ln(5)
@@ -322,7 +323,7 @@ def generate_pdf_report(df_filtered):
     pdf.set_font("Arial", '', 12)
     pdf.cell(100, 8, "Total de Valores Pagos:", 1)
     pdf.set_font("Arial", 'B', 12)
-    pdf.cell(0, 8, f"R$ {total_valor:,.2f}", 1, 1) # Negrito para o valor
+    pdf.cell(0, 8, f"R$ {total_valor:,.2f}", 1, 1)
     
     pdf.set_font("Arial", '', 12)
     pdf.cell(100, 8, "Total de Beneficiários Únicos:", 1)
@@ -334,30 +335,61 @@ def generate_pdf_report(df_filtered):
     pdf.cell(100, 8, "Total de Registros Processados:", 1)
     pdf.cell(0, 8, str(total_registros), 1, 1)
     
-    pdf.ln(10)
-    
-    # --- DETALHAMENTO POR PROJETO ---
+    pdf.ln(5)
+
+    # --- GRÁFICOS (Matplotlib inserido no PDF) ---
     pdf.set_font("Arial", 'B', 12)
-    pdf.cell(0, 10, "2. Detalhamento Financeiro por Projeto", 0, 1)
+    pdf.cell(0, 10, "2. Visualização Gráfica", 0, 1)
     
     if 'programa' in df_filtered.columns and 'valor_pagto' in df_filtered.columns:
-        # Agrupamento
-        group_proj = df_filtered.groupby('programa').agg({
+        # Gerar gráfico de barras
+        group_proj = df_filtered.groupby('programa')['valor_pagto'].sum().sort_values(ascending=True)
+        
+        plt.figure(figsize=(10, 5))
+        # Ajuste de cores e estilo
+        colors = plt.cm.Paired(range(len(group_proj)))
+        bars = plt.barh(group_proj.index, group_proj.values, color=colors)
+        plt.xlabel('Valor Pago (R$)')
+        plt.title('Total Pago por Projeto')
+        plt.grid(axis='x', linestyle='--', alpha=0.7)
+        plt.tight_layout()
+        
+        # Salvar em arquivo temporário
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmpfile:
+            plt.savefig(tmpfile.name, dpi=100)
+            tmp_filename = tmpfile.name
+        
+        # Inserir no PDF
+        pdf.image(tmp_filename, x=10, w=190)
+        pdf.ln(5)
+        
+        # Limpar
+        plt.close()
+        os.remove(tmp_filename)
+    else:
+        pdf.set_font("Arial", 'I', 12)
+        pdf.cell(0, 10, "Dados insuficientes para geração de gráficos.", 0, 1)
+
+    # --- DETALHAMENTO POR PROJETO ---
+    pdf.add_page() # Quebra de página para tabelas
+    pdf.set_font("Arial", 'B', 12)
+    pdf.cell(0, 10, "3. Detalhamento Financeiro por Projeto", 0, 1)
+    
+    if 'programa' in df_filtered.columns and 'valor_pagto' in df_filtered.columns:
+        group_proj_det = df_filtered.groupby('programa').agg({
             'valor_pagto': 'sum',
-            'num_cartao': 'count' # Contagem de registros por projeto
+            'num_cartao': 'count'
         }).reset_index().sort_values('valor_pagto', ascending=False)
         
-        # Cabeçalho da Tabela
         pdf.set_font("Arial", 'B', 10)
         pdf.set_fill_color(240, 240, 240)
         pdf.cell(90, 8, "PROJETO", 1, 0, 'L', True)
         pdf.cell(40, 8, "QTD REGISTROS", 1, 0, 'C', True)
         pdf.cell(60, 8, "VALOR TOTAL (R$)", 1, 1, 'R', True)
         
-        # Linhas da Tabela
         pdf.set_font("Arial", '', 10)
-        for _, row in group_proj.iterrows():
-            nome_proj = str(row['programa'])[:40] # Truncar nomes muito longos
+        for _, row in group_proj_det.iterrows():
+            nome_proj = str(row['programa'])[:40]
             qtd = str(row['num_cartao'])
             val = f"{row['valor_pagto']:,.2f}"
             
@@ -371,20 +403,79 @@ def generate_pdf_report(df_filtered):
         
     pdf.ln(10)
     
-    # --- NOTAS DE ANÁLISE ---
+    # --- RELATÓRIO DE INCONSISTÊNCIAS ---
     pdf.set_font("Arial", 'B', 12)
-    pdf.cell(0, 10, "3. Observações de Processamento", 0, 1)
+    pdf.cell(0, 10, "4. Relatório de Inconsistências (Ação Necessária)", 0, 1)
+    
+    # Identificar inconsistências: CPF vazio, Nome vazio ou Cartão vazio
+    # Garantir que colunas existem
+    cols_check = [c for c in ['cpf', 'nome', 'num_cartao'] if c in df_filtered.columns]
+    
+    if cols_check:
+        # Filtrar onde qualquer coluna chave é vazia/nula
+        mask = pd.Series(False, index=df_filtered.index)
+        for col in cols_check:
+            # Verifica nulo ou string vazia
+            mask |= (df_filtered[col].isnull()) | (df_filtered[col].astype(str).str.strip() == '') | (df_filtered[col].astype(str).str.lower() == 'nan')
+        
+        inconsistent_df = df_filtered[mask]
+        
+        if not inconsistent_df.empty:
+            pdf.set_font("Arial", '', 10)
+            pdf.multi_cell(0, 6, f"Foram encontrados {len(inconsistent_df)} registros com dados cadastrais incompletos (CPF, Nome ou Cartão ausentes). Estes registros devem ser corrigidos antes do envio bancário.")
+            pdf.ln(5)
+            
+            # Agrupar por projeto
+            projetos_errados = inconsistent_df['programa'].unique()
+            
+            for proj in projetos_errados:
+                pdf.set_font("Arial", 'B', 10)
+                pdf.cell(0, 8, f"Projeto: {proj}", 0, 1)
+                
+                # Cabeçalho Tabela de Erros
+                pdf.set_font("Arial", 'B', 8)
+                pdf.set_fill_color(255, 230, 230) # Fundo avermelhado
+                pdf.cell(70, 6, "NOME", 1, 0, 'L', True)
+                pdf.cell(40, 6, "CPF", 1, 0, 'C', True)
+                pdf.cell(40, 6, "CARTÃO", 1, 0, 'C', True)
+                pdf.cell(40, 6, "OBSERVAÇÃO", 1, 1, 'L', True)
+                
+                # Linhas
+                pdf.set_font("Arial", '', 8)
+                subset = inconsistent_df[inconsistent_df['programa'] == proj]
+                
+                for _, row in subset.iterrows():
+                    nome = str(row.get('nome', ''))[:35]
+                    cpf = str(row.get('cpf', ''))
+                    cartao = str(row.get('num_cartao', ''))
+                    
+                    obs = []
+                    if not nome or nome.lower() == 'nan': obs.append("Sem Nome")
+                    if not cpf or cpf.lower() == 'nan': obs.append("Sem CPF")
+                    if not cartao or cartao.lower() == 'nan': obs.append("Sem Cartão")
+                    obs_str = ", ".join(obs)
+                    
+                    pdf.cell(70, 6, nome, 1)
+                    pdf.cell(40, 6, cpf, 1, 0, 'C')
+                    pdf.cell(40, 6, cartao, 1, 0, 'C')
+                    pdf.cell(40, 6, obs_str, 1, 1)
+                
+                pdf.ln(5)
+        else:
+            pdf.set_font("Arial", '', 10)
+            pdf.cell(0, 10, "Nenhuma inconsistência de cadastro (CPF/Nome/Cartão) identificada.", 0, 1)
+    else:
+        pdf.cell(0, 10, "Colunas de verificação não encontradas.", 0, 1)
+    
+    # --- NOTAS FINAIS ---
+    pdf.ln(5)
+    pdf.set_font("Arial", 'B', 12)
+    pdf.cell(0, 10, "5. Observações de Processamento", 0, 1)
     pdf.set_font("Arial", '', 10)
     
-    # Verificar CPFs vazios para o relatório
-    sem_cpf = 0
-    if 'cpf' in df_filtered.columns:
-        sem_cpf = df_filtered[ (df_filtered['cpf'] == '') | (df_filtered['cpf'].isnull()) ].shape[0]
-        
     pdf.multi_cell(0, 6, 
         f"O presente relatório consolida os dados disponíveis na base do sistema. "
-        f"Foram identificados {sem_cpf} registros com ausência de CPF, o que pode impactar a remessa bancária. "
-        "A última linha dos arquivos originais (totais) foi desconsiderada para evitar duplicidade nos cálculos."
+        "A integridade dos dados é fundamental para o sucesso dos pagamentos."
     )
     
     return pdf.output(dest='S').encode('latin-1')
