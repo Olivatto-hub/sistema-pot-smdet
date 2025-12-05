@@ -579,6 +579,8 @@ def generate_pdf_report(df_filtered):
             grp = df_filtered.groupby('programa')['valor_pagto'].sum().sort_values()
             plt.barh(grp.index, grp.values, color='#4682B4') 
             plt.title('Valor Total por Projeto')
+            plt.xlabel('Valor (R$)')
+            plt.grid(axis='x', linestyle='--', alpha=0.7)
             plt.tight_layout()
             with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
                 plt.savefig(tmp.name, dpi=100)
@@ -840,19 +842,39 @@ def main_app():
             sel_proj = st.multiselect("Filtrar Projeto", projs, default=projs)
             df_exp = df[df['programa'].isin(sel_proj)]
             
+            st.markdown("---")
+            
             c1, c2, c3, c4 = st.columns(4)
-            csv = df_exp.to_csv(index=False, sep=';').encode('utf-8-sig')
-            c1.download_button("📄 Baixar CSV", csv, "dados_pot.csv", "text/csv")
             
-            buffer = io.BytesIO()
-            with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer: df_exp.to_excel(writer, index=False)
-            c2.download_button("📊 Baixar Excel", buffer.getvalue(), "dados_pot.xlsx", "application/vnd.ms-excel")
+            # 1. PDF (Esquerda - Destaque)
+            with c1:
+                st.markdown("###### 📑 Relatório Executivo")
+                if st.button("Gerar Relatório PDF"):
+                    pdf_data = generate_pdf_report(df_exp)
+                    if isinstance(pdf_data, bytes):
+                        st.download_button("⬇️ Baixar PDF", pdf_data, "relatorio_executivo.pdf", "application/pdf")
+                        log_action(user['email'], "RELATORIO_PDF", "Gerou relatório executivo")
+                    else:
+                        st.error(pdf_data)
             
-            if c4.button("📑 Gerar Relatório PDF"):
-                pdf_data = generate_pdf_report(df_exp)
-                if isinstance(pdf_data, bytes):
-                    st.download_button("Baixar PDF Completo", pdf_data, "relatorio_executivo.pdf", "application/pdf")
-                    log_action(user['email'], "RELATORIO_PDF", "Gerou relatório executivo")
+            # 2. CSV
+            with c2:
+                st.markdown("###### 📄 Dados Completos")
+                csv = df_exp.to_csv(index=False, sep=';').encode('utf-8-sig')
+                st.download_button("⬇️ Baixar CSV", csv, "dados_pot.csv", "text/csv")
+            
+            # 3. Excel
+            with c3:
+                st.markdown("###### 📊 Planilha Excel")
+                buffer = io.BytesIO()
+                with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer: df_exp.to_excel(writer, index=False)
+                st.download_button("⬇️ Baixar Excel", buffer.getvalue(), "dados_pot.xlsx", "application/vnd.ms-excel")
+            
+            # 4. TXT
+            with c4:
+                st.markdown("###### 🏦 Layout Banco (BB)")
+                txt = generate_bb_txt(df_exp)
+                st.download_button("⬇️ Baixar TXT", txt, "remessa_bb.txt", "text/plain")
 
     elif choice == "Conferência Bancária (BB)":
         render_header()
