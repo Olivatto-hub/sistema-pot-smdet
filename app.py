@@ -8,7 +8,6 @@ import io
 import re
 import os
 import tempfile
-import matplotlib.pyplot as plt
 from datetime import datetime
 from fpdf import FPDF
 
@@ -25,13 +24,28 @@ st.set_page_config(
 # Estilo CSS Personalizado
 st.markdown("""
 <style>
-    .main-header {
-        font-size: 2rem;
-        color: #1E3A8A;
+    .header-container {
         text-align: center;
-        margin-bottom: 20px;
+        padding-bottom: 20px;
         border-bottom: 2px solid #ddd;
-        padding-bottom: 10px;
+        margin-bottom: 30px;
+    }
+    .header-secretaria {
+        color: #555;
+        font-size: 1rem;
+        margin-bottom: 5px;
+        font-weight: 500;
+    }
+    .header-programa {
+        color: #1E3A8A;
+        font-size: 1.5rem;
+        font-weight: bold;
+        margin-bottom: 5px;
+    }
+    .header-sistema {
+        color: #2563EB;
+        font-size: 1.8rem;
+        font-weight: bold;
     }
     .metric-card {
         background-color: #f8f9fa;
@@ -50,12 +64,22 @@ st.markdown("""
             background-color: #262730;
             border-color: #444;
         }
-        .main-header {
-            color: #60A5FA;
-        }
+        .header-secretaria { color: #bbb; }
+        .header-programa { color: #93C5FD; }
+        .header-sistema { color: #60A5FA; }
     }
 </style>
 """, unsafe_allow_html=True)
+
+# Função para renderizar o cabeçalho padrão
+def render_header():
+    st.markdown("""
+        <div class="header-container">
+            <div class="header-secretaria">Secretaria Municipal de Desenvolvimento Econômico e Trabalho (SMDET)</div>
+            <div class="header-programa">Programa Operação Trabalho (POT)</div>
+            <div class="header-sistema">Sistema de Gestão e Monitoramento de Pagamentos</div>
+        </div>
+    """, unsafe_allow_html=True)
 
 # ===========================================
 # GESTÃO DE BANCO DE DADOS (SQLite)
@@ -342,30 +366,40 @@ def generate_pdf_report(df_filtered):
     pdf.cell(0, 10, "2. Visualização Gráfica", 0, 1)
     
     if 'programa' in df_filtered.columns and 'valor_pagto' in df_filtered.columns:
-        # Gerar gráfico de barras
-        group_proj = df_filtered.groupby('programa')['valor_pagto'].sum().sort_values(ascending=True)
-        
-        plt.figure(figsize=(10, 5))
-        # Ajuste de cores e estilo
-        colors = plt.cm.Paired(range(len(group_proj)))
-        bars = plt.barh(group_proj.index, group_proj.values, color=colors)
-        plt.xlabel('Valor Pago (R$)')
-        plt.title('Total Pago por Projeto')
-        plt.grid(axis='x', linestyle='--', alpha=0.7)
-        plt.tight_layout()
-        
-        # Salvar em arquivo temporário
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmpfile:
-            plt.savefig(tmpfile.name, dpi=100)
-            tmp_filename = tmpfile.name
-        
-        # Inserir no PDF
-        pdf.image(tmp_filename, x=10, w=190)
-        pdf.ln(5)
-        
-        # Limpar
-        plt.close()
-        os.remove(tmp_filename)
+        try:
+            # Importação Local para evitar erro se não estiver instalado no ambiente
+            import matplotlib.pyplot as plt
+            
+            # Gerar gráfico de barras
+            group_proj = df_filtered.groupby('programa')['valor_pagto'].sum().sort_values(ascending=True)
+            
+            plt.figure(figsize=(10, 5))
+            # Ajuste de cores e estilo
+            colors = plt.cm.Paired(range(len(group_proj)))
+            bars = plt.barh(group_proj.index, group_proj.values, color=colors)
+            plt.xlabel('Valor Pago (R$)')
+            plt.title('Total Pago por Projeto')
+            plt.grid(axis='x', linestyle='--', alpha=0.7)
+            plt.tight_layout()
+            
+            # Salvar em arquivo temporário
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmpfile:
+                plt.savefig(tmpfile.name, dpi=100)
+                tmp_filename = tmpfile.name
+            
+            # Inserir no PDF
+            pdf.image(tmp_filename, x=10, w=190)
+            pdf.ln(5)
+            
+            # Limpar
+            plt.close()
+            os.remove(tmp_filename)
+        except ImportError:
+            pdf.set_font("Arial", 'I', 10)
+            pdf.cell(0, 10, "Biblioteca gráfica (matplotlib) não encontrada. Gráfico não gerado.", 0, 1)
+        except Exception as e:
+            pdf.set_font("Arial", 'I', 10)
+            pdf.cell(0, 10, f"Erro ao gerar gráfico: {str(e)}", 0, 1)
     else:
         pdf.set_font("Arial", 'I', 12)
         pdf.cell(0, 10, "Dados insuficientes para geração de gráficos.", 0, 1)
@@ -408,14 +442,11 @@ def generate_pdf_report(df_filtered):
     pdf.cell(0, 10, "4. Relatório de Inconsistências (Ação Necessária)", 0, 1)
     
     # Identificar inconsistências: CPF vazio, Nome vazio ou Cartão vazio
-    # Garantir que colunas existem
     cols_check = [c for c in ['cpf', 'nome', 'num_cartao'] if c in df_filtered.columns]
     
     if cols_check:
-        # Filtrar onde qualquer coluna chave é vazia/nula
         mask = pd.Series(False, index=df_filtered.index)
         for col in cols_check:
-            # Verifica nulo ou string vazia
             mask |= (df_filtered[col].isnull()) | (df_filtered[col].astype(str).str.strip() == '') | (df_filtered[col].astype(str).str.lower() == 'nan')
         
         inconsistent_df = df_filtered[mask]
@@ -485,11 +516,12 @@ def generate_pdf_report(df_filtered):
 # ===========================================
 
 def login_screen():
-    st.markdown("<div class='main-header'>🔐 Acesso ao Sistema POT</div>", unsafe_allow_html=True)
+    render_header()
     
     col1, col2, col3 = st.columns([1,2,1])
     with col2:
         with st.form("login_form"):
+            st.markdown("<h3 style='text-align: center;'>Acesso Restrito</h3>", unsafe_allow_html=True)
             email = st.text_input("E-mail (@prefeitura.sp.gov.br)")
             password = st.text_input("Senha", type="password")
             submitted = st.form_submit_button("Entrar", use_container_width=True)
@@ -518,6 +550,7 @@ def login_screen():
                     st.error("Credenciais inválidas.")
 
 def change_password_screen():
+    render_header()
     st.warning("⚠️ Este é seu primeiro acesso. Por favor, defina uma nova senha.")
     with st.form("new_pass_form"):
         new_pass = st.text_input("Nova Senha", type="password")
@@ -561,7 +594,8 @@ def main_app():
     # --- PÁGINAS ---
     
     if choice == "Upload e Processamento":
-        st.markdown("<h2 class='main-header'>📂 Upload de Arquivos</h2>", unsafe_allow_html=True)
+        render_header()
+        st.markdown("<h3 class='main-header'>📂 Upload de Arquivos</h3>", unsafe_allow_html=True)
         st.info("Arraste arquivos CSV ou Excel. O sistema padronizará automaticamente as colunas.")
         
         uploaded_files = st.file_uploader("Selecione os arquivos", accept_multiple_files=True, type=['csv', 'xlsx', 'txt'])
@@ -630,7 +664,8 @@ def main_app():
                     st.warning("Nenhum dado válido processado.")
 
     elif choice == "Análise e Correção":
-        st.markdown("<h2 class='main-header'>🛠️ Análise e Correção de Dados</h2>", unsafe_allow_html=True)
+        render_header()
+        st.markdown("<h3 class='main-header'>🛠️ Análise e Correção de Dados</h3>", unsafe_allow_html=True)
         
         conn = get_db_connection()
         try:
@@ -675,7 +710,8 @@ def main_app():
                     st.dataframe(missing_cpf)
 
     elif choice == "Dashboard":
-        st.markdown("<h2 class='main-header'>📊 Dashboard Executivo</h2>", unsafe_allow_html=True)
+        render_header()
+        st.markdown("<h3 class='main-header'>📊 Dashboard Executivo</h3>", unsafe_allow_html=True)
         
         conn = get_db_connection()
         try:
@@ -709,7 +745,8 @@ def main_app():
             st.info("Sem dados suficientes para exibir dashboard.")
 
     elif choice == "Relatórios e Exportação":
-        st.markdown("<h2 class='main-header'>📥 Exportação</h2>", unsafe_allow_html=True)
+        render_header()
+        st.markdown("<h3 class='main-header'>📥 Exportação</h3>", unsafe_allow_html=True)
         
         conn = get_db_connection()
         try:
@@ -751,7 +788,8 @@ def main_app():
             st.warning("Sem dados.")
 
     elif choice == "Administração TI (DB)":
-        st.markdown("<h2 class='main-header'>⚙️ Administração TI</h2>", unsafe_allow_html=True)
+        render_header()
+        st.markdown("<h3 class='main-header'>⚙️ Administração TI</h3>", unsafe_allow_html=True)
         st.error("Zona de Perigo! Ações irreversíveis.")
         
         if st.button("🗑️ LIMPAR TODO O BANCO DE DADOS"):
@@ -773,6 +811,7 @@ def main_app():
                 st.error(f"Erro SQL: {e}")
 
     elif choice == "Gestão de Equipe":
+        render_header()
         st.markdown("### Adicionar Usuário")
         with st.form("add_user"):
             new_email = st.text_input("E-mail")
