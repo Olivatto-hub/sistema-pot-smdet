@@ -2,12 +2,14 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from io import BytesIO, StringIO
-import plotly.express as px
 from datetime import datetime, timezone, timedelta
 import warnings
 import re
 import traceback
 import chardet
+import base64
+import matplotlib.pyplot as plt
+import seaborn as sns
 warnings.filterwarnings('ignore')
 
 # ============================================
@@ -75,6 +77,15 @@ st.markdown("""
         margin: 10px 0;
         border-radius: 4px;
     }
+    
+    .stProgress > div > div > div > div {
+        background-color: #1E3A8A;
+    }
+    
+    .stDataFrame {
+        border-radius: 10px;
+        overflow: hidden;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -85,25 +96,21 @@ st.markdown("""
 def get_local_time():
     """Obtém o horário local correto."""
     try:
-        # Tenta usar o fuso horário de Brasília
         utc_now = datetime.now(timezone.utc)
-        # Brasília é UTC-3 (ou UTC-2 durante horário de verão)
         brasilia_offset = timedelta(hours=-3)
         brasilia_tz = timezone(brasilia_offset)
         brasilia_now = utc_now.astimezone(brasilia_tz)
         return brasilia_now.strftime("%d/%m/%Y %H:%M")
     except:
-        # Fallback para horário do servidor
         return datetime.now().strftime("%d/%m/%Y %H:%M")
 
 def detect_encoding(file_content):
     """Detecta a codificação do arquivo."""
     try:
-        result = chardet.detect(file_content[:10000])  # Analisa os primeiros 10KB
+        result = chardet.detect(file_content[:10000])
         encoding = result['encoding']
         confidence = result['confidence']
         
-        # Mapeia encodings comuns
         encoding_map = {
             'ISO-8859-1': 'latin-1',
             'Windows-1252': 'cp1252',
@@ -113,7 +120,6 @@ def detect_encoding(file_content):
         if encoding in encoding_map:
             encoding = encoding_map[encoding]
         
-        # Se confiança baixa, tenta utf-8
         if confidence < 0.7:
             encoding = 'utf-8'
             
@@ -124,22 +130,19 @@ def detect_encoding(file_content):
 def detect_delimiter(file_content, encoding='utf-8'):
     """Detecta o delimitador do CSV."""
     try:
-        # Converte para string
         sample = file_content[:5000].decode(encoding, errors='ignore')
         
-        # Conta ocorrências de delimitadores comuns
         delimiters = [';', ',', '\t', '|']
         counts = {}
         
         for delim in delimiters:
             counts[delim] = sample.count(delim)
         
-        # Encontra o delimitador mais comum
         if sum(counts.values()) > 0:
             best_delim = max(counts, key=counts.get)
             return best_delim
         else:
-            return ';'  # Default para CSV brasileiro
+            return ';'
     except:
         return ';'
 
@@ -149,34 +152,26 @@ def safe_convert_to_float(value):
         return 0.0
     
     try:
-        # Se já for numérico
         if isinstance(value, (int, float, np.number)):
             return float(value)
         
-        # Se for string, tenta limpar
         if isinstance(value, str):
             value = str(value).strip()
-            
-            # Remove R$, $ e outros símbolos
             value = re.sub(r'[R\$\s]', '', value)
             
             if not value or value == '':
                 return 0.0
             
-            # Substitui vírgula por ponto se for decimal brasileiro
             if ',' in value and '.' in value:
-                # Se tem ambos, assume que vírgula é decimal e ponto é milhar
                 value = value.replace('.', '')
                 value = value.replace(',', '.')
             elif ',' in value:
-                # Verifica se vírgula é separador decimal ou milhar
                 parts = value.split(',')
-                if len(parts[-1]) <= 2:  # Provavelmente decimal
+                if len(parts[-1]) <= 2:
                     value = value.replace(',', '.')
-                else:  # Provavelmente milhar
+                else:
                     value = value.replace(',', '')
             
-            # Remove caracteres não numéricos restantes
             value = re.sub(r'[^\d\.\-]', '', value)
             
             if not value:
@@ -195,10 +190,8 @@ def processar_coluna_numerica(serie):
         if serie.empty:
             return pd.Series([], dtype='float64')
         
-        # Converte todos os valores para float
         serie_processada = serie.apply(safe_convert_to_float)
         
-        # Remove outliers extremos (acima de 100 milhões)
         if len(serie_processada) > 0:
             q99 = serie_processada.quantile(0.99)
             if q99 > 10000000:
@@ -217,7 +210,6 @@ def clean_column_name(col):
         
         col_str = str(col).strip().upper()
         
-        # Remove acentos
         col_str = re.sub(r'[ÁÀÂÃ]', 'A', col_str)
         col_str = re.sub(r'[ÉÈÊ]', 'E', col_str)
         col_str = re.sub(r'[ÍÌÎ]', 'I', col_str)
@@ -225,7 +217,6 @@ def clean_column_name(col):
         col_str = re.sub(r'[ÚÙÛ]', 'U', col_str)
         col_str = re.sub(r'[Ç]', 'C', col_str)
         
-        # Remove caracteres especiais
         col_str = re.sub(r'[^A-Z0-9_]+', '_', col_str)
         col_str = re.sub(r'_+', '_', col_str)
         col_str = col_str.strip('_')
@@ -242,7 +233,6 @@ def ler_csv_com_tentativas(file_content, limite_registros):
     """Tenta ler um arquivo CSV com diferentes abordagens."""
     tentativas = []
     
-    # Tentativa 1: Detectar encoding e delimitador
     try:
         encoding = detect_encoding(file_content)
         delimiter = detect_delimiter(file_content, encoding)
@@ -264,7 +254,6 @@ def ler_csv_com_tentativas(file_content, limite_registros):
     except Exception as e:
         tentativas.append((None, f"Tentativa 1 falhou: {str(e)[:50]}"))
     
-    # Tentativa 2: Leitura com diferentes encodings
     encodings_to_try = ['latin-1', 'iso-8859-1', 'cp1252', 'utf-8', 'utf-8-sig']
     delimiters_to_try = [';', ',', '\t']
     
@@ -292,7 +281,6 @@ def ler_csv_com_tentativas(file_content, limite_registros):
         if tentativas and tentativas[-1][0] is not None:
             break
     
-    # Tentativa 3: Leitura linha por linha
     if not tentativas or all(t[0] is None for t in tentativas):
         try:
             file_content.seek(0)
@@ -302,19 +290,16 @@ def ler_csv_com_tentativas(file_content, limite_registros):
                     break
                 lines.append(line.decode('latin-1', errors='ignore').strip())
             
-            # Tenta encontrar um delimitador comum
             sample_line = lines[0] if lines else ''
             possible_delimiters = [';', ',', '\t', '|']
             
             for delim in possible_delimiters:
                 if delim in sample_line:
-                    # Processa manualmente
                     data = []
                     for line in lines:
                         parts = line.split(delim)
                         data.append(parts)
                     
-                    # Cria DataFrame com número consistente de colunas
                     max_cols = max(len(row) for row in data) if data else 0
                     for i, row in enumerate(data):
                         if len(row) < max_cols:
@@ -327,7 +312,6 @@ def ler_csv_com_tentativas(file_content, limite_registros):
         except:
             pass
     
-    # Retorna a melhor tentativa
     for df, metodo in tentativas:
         if df is not None and not df.empty:
             return df, metodo
@@ -382,7 +366,6 @@ def processar_arquivos(uploaded_files, limite_registros):
         try:
             file_name = file_obj.name
             
-            # Tenta ler o arquivo
             df, metodo = ler_arquivo_com_tentativas(file_obj, limite_registros)
             
             if df is None:
@@ -393,13 +376,10 @@ def processar_arquivos(uploaded_files, limite_registros):
                 resultados['warnings'].append(f"{file_name}: Arquivo está vazio")
                 continue
             
-            # Registra método usado
             resultados['metodos'][file_name] = metodo
             
-            # Limpa nomes das colunas
             df.columns = [clean_column_name(col) for col in df.columns]
             
-            # Remove colunas completamente vazias
             colunas_antes = len(df.columns)
             df = df.dropna(axis=1, how='all')
             colunas_depois = len(df.columns)
@@ -411,59 +391,46 @@ def processar_arquivos(uploaded_files, limite_registros):
                 resultados['warnings'].append(f"{file_name}: Nenhum dado válido após limpeza")
                 continue
             
-            # Identifica colunas de valor
             colunas_valor = []
             for col in df.columns:
                 col_upper = col.upper()
                 if any(term in col_upper for term in ['VALOR', 'VLR', 'TOTAL', 'PAGAMENTO', 'PAGTO', 'BRUTO', 'LIQUIDO']):
                     colunas_valor.append(col)
             
-            # Processa colunas de valor
             for col in colunas_valor:
                 if col in df.columns:
                     df[col] = processar_coluna_numerica(df[col])
-                    # Verifica se há valores não numéricos
-                    if df[col].isna().sum() > len(df) * 0.5:  # Mais de 50% nulos
+                    if df[col].isna().sum() > len(df) * 0.5:
                         resultados['warnings'].append(f"{file_name}: Coluna '{col}' tem muitos valores não numéricos")
             
-            # Processa colunas de texto
             for col in df.columns:
                 if df[col].dtype == 'object':
-                    # Limpa strings
                     df[col] = df[col].astype(str).str.strip()
                     
-                    # Aplica formatação específica
                     col_upper = col.upper()
                     if 'NOME' in col_upper:
                         df[col] = df[col].str.title()
                     elif 'PROJETO' in col_upper or 'PROGRAMA' in col_upper:
                         df[col] = df[col].str.upper()
                     elif 'CPF' in col_upper or 'CNPJ' in col_upper:
-                        # Remove caracteres não numéricos
                         df[col] = df[col].str.replace(r'\D', '', regex=True)
             
-            # Adiciona metadados
             df['ARQUIVO_ORIGEM'] = file_name
             df['DATA_CARREGAMENTO'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             
-            # Salva individualmente
             resultados['dataframes'][f"ARQUIVO_{file_idx}"] = df
             dados_consolidados.append(df)
             
-            # Log de sucesso
             resultados['warnings'].append(f"✅ {file_name}: Processado com sucesso ({len(df)} registros)")
             
         except Exception as e:
             error_msg = f"{file_name}: {str(e)[:100]}"
             resultados['errors'].append(error_msg)
     
-    # Consolida todos os dados
     if dados_consolidados:
         try:
-            # Concatena todos os DataFrames
             df_consolidado = pd.concat(dados_consolidados, ignore_index=True, sort=False)
             
-            # Remove duplicatas completas
             registros_antes = len(df_consolidado)
             df_consolidado = df_consolidado.drop_duplicates()
             registros_depois = len(df_consolidado)
@@ -471,25 +438,19 @@ def processar_arquivos(uploaded_files, limite_registros):
             if registros_antes != registros_depois:
                 resultados['warnings'].append(f"Removidas {registros_antes - registros_depois} duplicatas")
             
-            # Garante colunas essenciais
-            # Encontra coluna de valor principal
             colunas_valor = [col for col in df_consolidado.columns if 'VALOR' in col]
             
             if colunas_valor:
-                # Ordena por preferência
                 ordem_preferencia = ['VALOR_PAGAMENTO', 'VALOR_TOTAL', 'VALOR', 'VLR_PAGTO', 'VLR_TOTAL']
                 
                 for col_pref in ordem_preferencia:
                     if col_pref in df_consolidado.columns:
-                        # Renomeia para padronizar
                         if col_pref != 'VALOR_PAGAMENTO':
                             df_consolidado = df_consolidado.rename(columns={col_pref: 'VALOR_PAGAMENTO'})
                         break
                 else:
-                    # Usa a primeira coluna de valor
                     df_consolidado = df_consolidado.rename(columns={colunas_valor[0]: 'VALOR_PAGAMENTO'})
             
-            # Processa colunas numéricas novamente
             colunas_numericas = []
             for col in ['VALOR_TOTAL', 'VALOR_PAGAMENTO', 'VALOR_DESCONTO', 'VALOR_BRUTO', 'VALOR_LIQUIDO']:
                 if col in df_consolidado.columns:
@@ -498,7 +459,6 @@ def processar_arquivos(uploaded_files, limite_registros):
             for col in colunas_numericas:
                 df_consolidado[col] = processar_coluna_numerica(df_consolidado[col])
             
-            # Cria coluna de status
             if 'VALOR_PAGAMENTO' in df_consolidado.columns:
                 df_consolidado['STATUS_PAGAMENTO'] = np.where(
                     df_consolidado['VALOR_PAGAMENTO'] > 0, 
@@ -509,18 +469,15 @@ def processar_arquivos(uploaded_files, limite_registros):
                 df_consolidado['STATUS_PAGAMENTO'] = 'PENDENTE'
                 resultados['warnings'].append("Coluna 'VALOR_PAGAMENTO' não encontrada, todos marcados como PENDENTE")
             
-            # Calcula valor pendente se tiver total
             if 'VALOR_TOTAL' in df_consolidado.columns and 'VALOR_PAGAMENTO' in df_consolidado.columns:
                 df_consolidado['VALOR_PENDENTE'] = df_consolidado['VALOR_TOTAL'] - df_consolidado['VALOR_PAGAMENTO'].fillna(0)
                 
                 if 'VALOR_DESCONTO' in df_consolidado.columns:
                     df_consolidado['VALOR_PENDENTE'] = df_consolidado['VALOR_PENDENTE'] - df_consolidado['VALOR_DESCONTO'].fillna(0)
             
-            # Adiciona ao dicionário de resultados
             resultados['dataframes']['DADOS_CONSOLIDADOS'] = df_consolidado
             resultados['total_registros'] = len(df_consolidado)
             
-            # Log de consolidação
             resultados['warnings'].append(f"✅ Consolidação concluída: {len(df_consolidado)} registros")
             
         except Exception as e:
@@ -568,6 +525,46 @@ def create_download_link(df, filename, file_format):
     except Exception as e:
         return None, None, f"Erro: {str(e)}"
 
+def criar_grafico_barras(dados, titulo, x_label, y_label, cor='#1E3A8A'):
+    """Cria um gráfico de barras usando matplotlib."""
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    bars = ax.bar(range(len(dados)), dados.values(), color=cor)
+    ax.set_title(titulo, fontsize=14, fontweight='bold')
+    ax.set_xlabel(x_label)
+    ax.set_ylabel(y_label)
+    ax.set_xticks(range(len(dados)))
+    ax.set_xticklabels(dados.keys(), rotation=45, ha='right')
+    
+    for bar in bars:
+        height = bar.get_height()
+        ax.annotate(f'{height:,.0f}',
+                   xy=(bar.get_x() + bar.get_width() / 2, height),
+                   xytext=(0, 3),
+                   textcoords="offset points",
+                   ha='center', va='bottom',
+                   fontsize=9)
+    
+    plt.tight_layout()
+    return fig
+
+def criar_grafico_pizza(labels, sizes, titulo):
+    """Cria um gráfico de pizza usando matplotlib."""
+    fig, ax = plt.subplots(figsize=(8, 8))
+    
+    colors = plt.cm.Set3(np.linspace(0, 1, len(labels)))
+    wedges, texts, autotexts = ax.pie(sizes, labels=labels, colors=colors,
+                                     autopct='%1.1f%%', startangle=90)
+    
+    ax.set_title(titulo, fontsize=14, fontweight='bold')
+    
+    for autotext in autotexts:
+        autotext.set_color('white')
+        autotext.set_fontweight('bold')
+    
+    plt.tight_layout()
+    return fig
+
 # ============================================
 # INICIALIZAÇÃO DO ESTADO
 # ============================================
@@ -581,8 +578,6 @@ if 'config' not in st.session_state:
         'formato_exportacao': "Excel (.xlsx)",
         'auto_validar': True
     }
-if 'current_page' not in st.session_state:
-    st.session_state.current_page = 1
 
 # ============================================
 # LAYOUT PRINCIPAL
@@ -591,7 +586,6 @@ if 'current_page' not in st.session_state:
 try:
     st.markdown("<p class='main-header'>💰 SMDET - POT Monitoramento de Pagamento de Benefícios</p>", unsafe_allow_html=True)
     
-    # Barra de status com horário corrigido
     with st.container():
         col1, col2, col3, col4 = st.columns(4)
         with col1:
@@ -645,7 +639,6 @@ try:
         
         st.markdown("---")
         
-        # Botão de processamento
         processar_col1, processar_col2 = st.columns([3, 1])
         
         with processar_col1:
@@ -653,25 +646,19 @@ try:
                 if uploaded_files:
                     with st.spinner(f"Processando {len(uploaded_files)} arquivo(s)..."):
                         try:
-                            # Atualiza configurações
                             st.session_state.config['limite_registros'] = limite_registros
                             
-                            # Processa arquivos
                             resultados = processar_arquivos(uploaded_files, limite_registros)
                             
-                            # Atualiza session state
                             st.session_state.dataframes = resultados['dataframes']
                             
-                            # Verifica se há dados consolidados
                             if 'DADOS_CONSOLIDADOS' in resultados['dataframes']:
                                 df_consolidado = resultados['dataframes']['DADOS_CONSOLIDADOS']
                                 if not df_consolidado.empty:
                                     st.session_state.is_processed = True
                                     
-                                    # Mostra sucesso
                                     st.success(f"✅ Processamento concluído com {len(df_consolidado):,} registros!")
                                     
-                                    # Mostra resumo
                                     col_res1, col_res2, col_res3 = st.columns(3)
                                     with col_res1:
                                         st.metric("Registros", formatar_numero(len(df_consolidado)))
@@ -685,13 +672,11 @@ try:
                                             pagos = (df_consolidado['STATUS_PAGAMENTO'] == 'PAGO').sum()
                                             st.metric("Pagamentos", formatar_numero(pagos))
                                     
-                                    # Mostra métodos usados
                                     if resultados.get('metodos'):
                                         with st.expander("📊 Métodos de leitura", expanded=False):
                                             for file_name, metodo in resultados['metodos'].items():
                                                 st.write(f"**{file_name}:** {metodo}")
                                     
-                                    # Mostra avisos se houver
                                     if resultados.get('warnings'):
                                         with st.expander("⚠️ Avisos do processamento", expanded=False):
                                             for warning in resultados['warnings']:
@@ -700,7 +685,6 @@ try:
                                                 else:
                                                     st.warning(warning)
                                     
-                                    # Mostra erros se houver
                                     if resultados.get('errors'):
                                         with st.expander("❌ Erros encontrados", expanded=False):
                                             for error in resultados['errors']:
@@ -711,7 +695,6 @@ try:
                             else:
                                 st.error("❌ Não foi possível consolidar os dados")
                                 
-                                # Mostra erros detalhados
                                 if resultados.get('errors'):
                                     with st.expander("❌ Erros detalhados", expanded=True):
                                         for error in resultados['errors']:
@@ -734,7 +717,6 @@ try:
         
         st.markdown("---")
         
-        # Status do sistema
         st.markdown("### 📊 STATUS")
         
         if st.session_state.is_processed:
@@ -742,7 +724,6 @@ try:
         else:
             st.info("⏳ Aguardando dados")
         
-        # Ações rápidas
         st.markdown("### ⚡ AÇÕES")
         
         col_btn1, col_btn2 = st.columns(2)
@@ -750,19 +731,17 @@ try:
             if st.button("🗑️ Limpar", use_container_width=True, help="Limpar todos os dados"):
                 st.session_state.dataframes = {}
                 st.session_state.is_processed = False
-                st.session_state.current_page = 1
                 st.success("✅ Dados limpos!")
                 st.rerun()
         
         with col_btn2:
             if st.button("📊 Testar", use_container_width=True, help="Testar com dados de exemplo"):
-                # Cria dados de exemplo
                 dados_exemplo = pd.DataFrame({
-                    'NOME': ['João Silva', 'Maria Santos', 'Pedro Oliveira'],
-                    'PROJETO': ['PROJETO A', 'PROJETO B', 'PROJETO A'],
-                    'VALOR_TOTAL': [1500.00, 2000.00, 1800.00],
-                    'VALOR_PAGAMENTO': [1500.00, 0.00, 1800.00],
-                    'STATUS': ['PAGO', 'PENDENTE', 'PAGO']
+                    'NOME': ['João Silva', 'Maria Santos', 'Pedro Oliveira', 'Ana Costa', 'Carlos Lima'],
+                    'PROJETO': ['PROJETO A', 'PROJETO B', 'PROJETO A', 'PROJETO C', 'PROJETO B'],
+                    'VALOR_TOTAL': [1500.00, 2000.00, 1800.00, 2200.00, 1900.00],
+                    'VALOR_PAGAMENTO': [1500.00, 0.00, 1800.00, 2200.00, 950.00],
+                    'STATUS_PAGAMENTO': ['PAGO', 'PENDENTE', 'PAGO', 'PAGO', 'PARCIAL']
                 })
                 st.session_state.dataframes['DADOS_CONSOLIDADOS'] = dados_exemplo
                 st.session_state.is_processed = True
@@ -808,7 +787,6 @@ try:
             **Formato recomendado:** CSV com colunas como NOME, PROJETO, VALOR_TOTAL, VALOR_PAGAMENTO
             """)
             
-            # Botão para dados de exemplo
             if st.button("📋 Carregar dados de exemplo", type="secondary"):
                 dados_exemplo = pd.DataFrame({
                     'NOME': ['João Silva', 'Maria Santos', 'Pedro Oliveira', 'Ana Costa', 'Carlos Lima'],
@@ -823,15 +801,12 @@ try:
                 st.rerun()
         else:
             try:
-                # Métricas principais
                 total_registros = len(df_consolidado)
                 
-                # Conta projetos
                 total_projetos = 0
                 if 'PROJETO' in df_consolidado.columns:
                     total_projetos = df_consolidado['PROJETO'].nunique()
                 
-                # Calcula valores
                 if 'VALOR_PAGAMENTO' in df_consolidado.columns:
                     df_consolidado['VALOR_PAGAMENTO'] = processar_coluna_numerica(df_consolidado['VALOR_PAGAMENTO'])
                     valor_total_pago = df_consolidado['VALOR_PAGAMENTO'].sum()
@@ -846,7 +821,6 @@ try:
                 else:
                     valor_total = valor_total_pago
                 
-                # Cards de métricas
                 col1, col2, col3, col4 = st.columns(4)
                 
                 with col1:
@@ -863,7 +837,6 @@ try:
                 
                 st.markdown("---")
                 
-                # Gráficos
                 col_g1, col_g2 = st.columns(2)
                 
                 with col_g1:
@@ -872,21 +845,15 @@ try:
                     if 'STATUS_PAGAMENTO' in df_consolidado.columns:
                         status_counts = df_consolidado['STATUS_PAGAMENTO'].value_counts()
                         
-                        fig_status = px.pie(
-                            values=status_counts.values,
-                            names=status_counts.index,
-                            title='Distribuição por Status',
-                            color_discrete_sequence=px.colors.qualitative.Set2,
-                            hole=0.4
-                        )
-                        
-                        fig_status.update_traces(
-                            textposition='inside',
-                            textinfo='percent+label',
-                            hovertemplate='<b>%{label}</b><br>%{value} registros<br>%{percent}'
-                        )
-                        
-                        st.plotly_chart(fig_status, use_container_width=True)
+                        if len(status_counts) > 0:
+                            fig = criar_grafico_pizza(
+                                status_counts.index.tolist(),
+                                status_counts.values.tolist(),
+                                'Distribuição por Status'
+                            )
+                            st.pyplot(fig)
+                        else:
+                            st.info("Sem dados de status para exibir")
                     else:
                         st.info("Coluna 'STATUS_PAGAMENTO' não encontrada")
                 
@@ -898,32 +865,27 @@ try:
                             projeto_summary = df_consolidado.groupby('PROJETO')['VALOR_TOTAL'].sum()
                             projeto_summary = projeto_summary.sort_values(ascending=False).head(10)
                             
-                            fig_projeto = px.bar(
-                                x=projeto_summary.index,
-                                y=projeto_summary.values,
-                                title='Top 10 Projetos por Valor Total',
-                                labels={'x': 'Projeto', 'y': 'Valor Total (R$)'},
-                                color=projeto_summary.values,
-                                color_continuous_scale='Viridis'
-                            )
-                            
-                            fig_projeto.update_layout(
-                                xaxis_tickangle=-45,
-                                coloraxis_showscale=False
-                            )
-                            st.plotly_chart(fig_projeto, use_container_width=True)
-                        except:
-                            st.info("Não foi possível gerar gráfico")
+                            if len(projeto_summary) > 0:
+                                fig = criar_grafico_barras(
+                                    projeto_summary.to_dict(),
+                                    'Top 10 Projetos por Valor Total',
+                                    'Projeto',
+                                    'Valor Total (R$)',
+                                    '#1E3A8A'
+                                )
+                                st.pyplot(fig)
+                            else:
+                                st.info("Sem dados de projetos para exibir")
+                        except Exception as e:
+                            st.info(f"Não foi possível gerar gráfico: {str(e)[:50]}")
                     else:
                         st.info("Dados insuficientes para gráfico de projetos")
                 
-                # Tabela de resumo
                 st.markdown("---")
                 st.markdown("### 📋 Resumo por Projeto")
                 
                 if 'PROJETO' in df_consolidado.columns:
                     try:
-                        # Prepara dados para resumo
                         colunas_resumo = ['NOME']
                         for col in ['VALOR_TOTAL', 'VALOR_PAGAMENTO']:
                             if col in df_consolidado.columns:
@@ -934,22 +896,17 @@ try:
                             **{col: 'sum' for col in colunas_resumo if col != 'NOME'}
                         }).reset_index()
                         
-                        # Renomeia colunas
                         resumo = resumo.rename(columns={'NOME': 'Beneficiários'})
                         
-                        # Adiciona coluna de % pago
                         if 'VALOR_TOTAL' in resumo.columns and 'VALOR_PAGAMENTO' in resumo.columns:
                             resumo['% Pago'] = (resumo['VALOR_PAGAMENTO'] / resumo['VALOR_TOTAL'] * 100).round(1)
                             resumo['% Pago'] = resumo['% Pago'].apply(lambda x: f"{x}%")
                         
-                        # Formata valores
                         for col in ['VALOR_TOTAL', 'VALOR_PAGAMENTO']:
                             if col in resumo.columns:
                                 resumo[col] = resumo[col].apply(formatar_valor_brl)
                         
-                        # Ordena por valor total
                         if 'VALOR_TOTAL' in resumo.columns:
-                            # Extrai valor numérico para ordenação
                             resumo['VALOR_TOTAL_NUM'] = resumo['VALOR_TOTAL'].str.replace('R\$ ', '').str.replace('.', '').str.replace(',', '.').astype(float)
                             resumo = resumo.sort_values('VALOR_TOTAL_NUM', ascending=False)
                             resumo = resumo.drop('VALOR_TOTAL_NUM', axis=1)
@@ -974,7 +931,6 @@ try:
         if df_consolidado is None or df_consolidado.empty:
             st.info("Nenhum dado disponível. Processe arquivos primeiro.")
         else:
-            # Estatísticas
             col_s1, col_s2, col_s3, col_s4 = st.columns(4)
             with col_s1:
                 st.metric("Registros", formatar_numero(len(df_consolidado)))
@@ -993,10 +949,8 @@ try:
                 else:
                     st.metric("Status", "-")
             
-            # Visualização dos dados
             st.markdown("### 👁️ Visualização")
             
-            # Configurações
             col_v1, col_v2 = st.columns(2)
             with col_v1:
                 linhas_por_pagina = st.slider(
@@ -1020,7 +974,6 @@ try:
                     key="pagina_tab2"
                 )
             
-            # Seleção de colunas
             colunas_disponiveis = df_consolidado.columns.tolist()
             colunas_padrao = []
             for col in ['NOME', 'PROJETO', 'VALOR_TOTAL', 'VALOR_PAGAMENTO', 'STATUS_PAGAMENTO']:
@@ -1035,14 +988,13 @@ try:
             )
             
             if not colunas_selecionadas:
-                colunas_selecionadas = colunas_disponiveis[:10]  # Limita a 10 colunas se nenhuma selecionada
+                colunas_selecionadas = colunas_disponiveis[:10]
             
             inicio = (pagina - 1) * linhas_por_pagina
             fim = min(inicio + linhas_por_pagina, len(df_consolidado))
             
             df_exibir = df_consolidado[colunas_selecionadas].iloc[inicio:fim].copy()
             
-            # Formata valores monetários
             for col in df_exibir.columns:
                 if 'VALOR' in col.upper():
                     try:
@@ -1054,18 +1006,15 @@ try:
             
             st.caption(f"Mostrando {inicio + 1} a {fim} de {len(df_consolidado):,} registros")
             
-            # Informações sobre os dados
             with st.expander("📊 Informações do Dataset", expanded=False):
                 st.write(f"**Total de colunas:** {len(df_consolidado.columns)}")
                 st.write(f"**Colunas:** {', '.join(df_consolidado.columns.tolist())}")
                 
-                # Tipos de dados
                 st.write("**Tipos de dados:**")
                 tipos = df_consolidado.dtypes.astype(str).value_counts()
                 for tipo, count in tipos.items():
                     st.write(f"  - {tipo}: {count} colunas")
             
-            # Exportação
             st.markdown("---")
             st.markdown("### 💾 Exportação")
             
@@ -1116,13 +1065,11 @@ try:
         if df_consolidado is None or df_consolidado.empty:
             st.info("Carregue dados primeiro na barra lateral.")
         else:
-            # Filtros
             st.markdown("### 🎯 Filtros")
             
             col_f1, col_f2, col_f3 = st.columns(3)
             
             with col_f1:
-                # Filtro por projeto
                 if 'PROJETO' in df_consolidado.columns:
                     projetos = ['Todos'] + sorted(df_consolidado['PROJETO'].dropna().unique().tolist())
                     projeto_selecionado = st.selectbox(
@@ -1135,7 +1082,6 @@ try:
                     st.info("Coluna 'PROJETO' não encontrada")
             
             with col_f2:
-                # Filtro por status
                 if 'STATUS_PAGAMENTO' in df_consolidado.columns:
                     status_opcoes = ['Todos'] + sorted(df_consolidado['STATUS_PAGAMENTO'].dropna().unique().tolist())
                     status_selecionado = st.selectbox(
@@ -1148,7 +1094,6 @@ try:
                     st.info("Coluna 'STATUS_PAGAMENTO' não encontrada")
             
             with col_f3:
-                # Filtro por valor mínimo
                 if 'VALOR_PAGAMENTO' in df_consolidado.columns:
                     valor_min = st.number_input(
                         "Valor mínimo:",
@@ -1161,7 +1106,6 @@ try:
                 else:
                     valor_min = 0.0
             
-            # Aplicar filtros
             df_filtrado = df_consolidado.copy()
             
             if projeto_selecionado != 'Todos' and 'PROJETO' in df_filtrado.columns:
@@ -1178,7 +1122,6 @@ try:
             if df_filtrado.empty:
                 st.warning("Nenhum registro encontrado com os filtros aplicados.")
             else:
-                # Métricas
                 col_m1, col_m2, col_m3, col_m4 = st.columns(4)
                 
                 with col_m1:
@@ -1212,7 +1155,6 @@ try:
                     else:
                         st.metric("% Pago", "-")
                 
-                # Dados filtrados
                 st.markdown("### 📋 Dados Filtrados")
                 
                 colunas_importantes = []
@@ -1229,7 +1171,6 @@ try:
                 else:
                     st.info("Colunas importantes não encontradas")
                 
-                # Análises
                 st.markdown("---")
                 st.markdown("### 📈 Análises")
                 
@@ -1241,16 +1182,17 @@ try:
                             projeto_valores = df_filtrado.groupby('PROJETO')['VALOR_TOTAL'].sum()
                             projeto_valores = projeto_valores.sort_values(ascending=False).head(10)
                             
-                            fig = px.bar(
-                                x=projeto_valores.index,
-                                y=projeto_valores.values,
-                                title='Top 10 Projetos por Valor Total',
-                                labels={'x': 'Projeto', 'y': 'Valor Total (R$)'},
-                                color=projeto_valores.values,
-                                color_continuous_scale='Blues'
-                            )
-                            fig.update_layout(coloraxis_showscale=False)
-                            st.plotly_chart(fig, use_container_width=True)
+                            if len(projeto_valores) > 0:
+                                fig = criar_grafico_barras(
+                                    projeto_valores.to_dict(),
+                                    'Top 10 Projetos por Valor Total',
+                                    'Projeto',
+                                    'Valor Total (R$)',
+                                    '#3B82F6'
+                                )
+                                st.pyplot(fig)
+                            else:
+                                st.info("Sem dados para exibir")
                         except:
                             st.info("Não foi possível gerar análise de projetos")
                 
@@ -1258,13 +1200,17 @@ try:
                     if 'AGENCIA' in df_filtrado.columns:
                         try:
                             agencia_counts = df_filtrado['AGENCIA'].value_counts().head(10)
-                            fig = px.bar(
-                                x=agencia_counts.index,
-                                y=agencia_counts.values,
-                                title='Top 10 Agências',
-                                labels={'x': 'Agência', 'y': 'Quantidade'}
-                            )
-                            st.plotly_chart(fig, use_container_width=True)
+                            if len(agencia_counts) > 0:
+                                fig = criar_grafico_barras(
+                                    agencia_counts.to_dict(),
+                                    'Top 10 Agências',
+                                    'Agência',
+                                    'Quantidade',
+                                    '#10B981'
+                                )
+                                st.pyplot(fig)
+                            else:
+                                st.info("Sem dados de agências para exibir")
                         except:
                             st.info("Não foi possível gerar análise de agências")
                     else:
@@ -1273,18 +1219,21 @@ try:
                 with tab_a3:
                     if 'DATA_CARREGAMENTO' in df_filtrado.columns:
                         try:
-                            # Extrai data
                             df_filtrado['DATA'] = pd.to_datetime(df_filtrado['DATA_CARREGAMENTO']).dt.date
                             data_counts = df_filtrado.groupby('DATA').size().reset_index(name='Quantidade')
                             
-                            fig = px.line(
-                                data_counts,
-                                x='DATA',
-                                y='Quantidade',
-                                title='Registros por Data',
-                                markers=True
-                            )
-                            st.plotly_chart(fig, use_container_width=True)
+                            if len(data_counts) > 1:
+                                fig, ax = plt.subplots(figsize=(10, 6))
+                                ax.plot(data_counts['DATA'], data_counts['Quantidade'], marker='o', linewidth=2)
+                                ax.set_title('Registros por Data', fontsize=14, fontweight='bold')
+                                ax.set_xlabel('Data')
+                                ax.set_ylabel('Quantidade')
+                                ax.grid(True, alpha=0.3)
+                                plt.xticks(rotation=45)
+                                plt.tight_layout()
+                                st.pyplot(fig)
+                            else:
+                                st.info("Dados insuficientes para linha do tempo")
                         except:
                             st.info("Não foi possível gerar linha do tempo")
                     else:
@@ -1341,7 +1290,6 @@ try:
                 key="manter_originais_tab4"
             )
         
-        # Botões
         st.markdown("---")
         
         col_b1, col_b2 = st.columns(2)
@@ -1367,7 +1315,6 @@ try:
                 st.success("✅ Configurações padrão restauradas!")
                 st.rerun()
         
-        # Informações do sistema
         st.markdown("---")
         st.markdown("### 📊 Sistema")
         
@@ -1387,7 +1334,6 @@ try:
             **Horário:** {get_local_time()}
             """)
         
-        # Depuração
         with st.expander("🐛 Depuração (Avançado)", expanded=False):
             st.write("**Session State:**")
             st.json({k: str(type(v)) for k, v in st.session_state.items()})
