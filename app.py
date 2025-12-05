@@ -303,7 +303,8 @@ COLUMN_MAP = {
     'cpf': 'cpf', 'rg': 'rg',
     'valor pagto': 'valor_pagto', 'valorpagto': 'valor_pagto', 'valor total': 'valor_pagto',
     'dias a apagar': 'qtd_dias', 'dias': 'qtd_dias',
-    'data pagto': 'data_pagto', 'datapagto': 'data_pagto',
+    'data pagto': 'data_pagto', 'datapagto': 'data_pagto', 'dt pagto': 'data_pagto', 
+    'dt. pagto': 'data_pagto', 'data do pagamento': 'data_pagto', 'dt pagamento': 'data_pagto',
     'projeto': 'programa', 'mês': 'mes_ref', 'mes': 'mes_ref',
     'gerenciadora': 'gerenciadora', 'entidade': 'gerenciadora', 'parceiro': 'gerenciadora', 'os': 'gerenciadora'
 }
@@ -359,15 +360,48 @@ def standardize_dataframe(df, filename):
     else:
         df['gerenciadora'] = df['gerenciadora'].fillna('NÃO IDENTIFICADA')
         
-    meses = ['JANEIRO', 'FEVEREIRO', 'MARÇO', 'ABRIL', 'MAIO', 'JUNHO', 'JULHO', 'AGOSTO', 'SETEMBRO', 'OUTUBRO', 'NOVEMBRO', 'DEZEMBRO']
+    # --- EXTRAÇÃO DE MÊS E ANO ---
+    meses_dict = {
+        'JANEIRO': 1, 'FEVEREIRO': 2, 'MARÇO': 3, 'ABRIL': 4, 'MAIO': 5, 'JUNHO': 6,
+        'JULHO': 7, 'AGOSTO': 8, 'SETEMBRO': 9, 'OUTUBRO': 10, 'NOVEMBRO': 11, 'DEZEMBRO': 12
+    }
+    
     mes_ref = 'N/A'
-    for mes in meses:
+    ano_ref = str(datetime.now().year)
+    
+    # 1. Tentar extrair MÊS do nome do arquivo
+    for mes in meses_dict.keys():
         if mes in filename_upper:
             mes_ref = mes
             break
+    
+    # 2. Tentar extrair ANO do nome do arquivo (ex: 2024, 2025)
+    ano_match = re.search(r'(20\d{2})', filename_upper)
+    if ano_match:
+        ano_ref = ano_match.group(1)
+        
+    # 3. Fallback: Se não achou no nome, tentar extrair da coluna 'data_pagto'
+    if (mes_ref == 'N/A' or ano_match is None) and 'data_pagto' in df.columns:
+        try:
+            # Pega a primeira data válida não nula para estimar o período do arquivo
+            first_valid_date = pd.to_datetime(df['data_pagto'], dayfirst=True, errors='coerce').dropna().iloc[0]
+            if mes_ref == 'N/A':
+                # Converte numero do mês para nome em PT-BR (mapeamento reverso simples)
+                mes_num = first_valid_date.month
+                for nome, num in meses_dict.items():
+                    if num == mes_num:
+                        mes_ref = nome
+                        break
+            if ano_match is None:
+                ano_ref = str(first_valid_date.year)
+        except:
+            pass # Se der erro na conversão, mantém o padrão
             
     if 'mes_ref' not in df.columns:
         df['mes_ref'] = mes_ref
+        
+    if 'ano_ref' not in df.columns:
+        df['ano_ref'] = ano_ref
         
     essential_check = ['num_cartao', 'nome', 'cpf', 'rg', 'valor_pagto']
     for col in essential_check:
@@ -583,7 +617,20 @@ def generate_pdf_report(df_filtered, inconsistency_df=None):
     pdf.set_fill_color(220, 220, 220)
     pdf.set_font("Arial", 'B', 16)
     pdf.cell(0, 12, sanitize_text("Relatório Executivo POT"), 1, 1, 'C', fill=True)
-    pdf.ln(5)
+    
+    # -- PERÍODO DE REFERÊNCIA NO PDF --
+    periods = df_filtered[['mes_ref', 'ano_ref']].drop_duplicates().sort_values(['ano_ref', 'mes_ref'])
+    period_list = []
+    for _, row in periods.iterrows():
+        m = str(row['mes_ref'])
+        a = str(row['ano_ref'])
+        if m != 'N/A': period_list.append(f"{m}/{a}")
+        else: period_list.append(f"{a}")
+    period_str = ", ".join(period_list) if period_list else "N/A"
+    
+    pdf.set_font("Arial", 'B', 10)
+    pdf.cell(0, 8, sanitize_text(f"Período(s) de Referência: {period_str}"), 0, 1, 'C')
+    pdf.ln(2)
     
     data_br = get_brasilia_time().strftime('%d/%m/%Y às %H:%M')
     pdf.set_font("Arial", '', 10)
@@ -847,6 +894,20 @@ def main_app():
         st.markdown("### 📊 Dashboard Executivo")
         
         if not df_payments.empty:
+            # MOSTRAR PERÍODOS DE REFERÊNCIA NO TOPO
+            periods = df_payments[['mes_ref', 'ano_ref']].drop_duplicates().sort_values(['ano_ref', 'mes_ref'])
+            period_list = []
+            for _, row in periods.iterrows():
+                m = str(row['mes_ref'])
+                a = str(row['ano_ref'])
+                if m != 'N/A':
+                    period_list.append(f"{m}/{a}")
+                else:
+                    period_list.append(f"{a}")
+            period_str = ", ".join(period_list)
+            
+            st.info(f"📅 **Período(s) de Referência Identificado(s):** {period_str}")
+            
             k1, k2, k3, k4 = st.columns(4)
             total = df_payments['valor_pagto'].sum()
             benef = df_payments['num_cartao'].nunique()
