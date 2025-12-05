@@ -357,16 +357,18 @@ def standardize_dataframe(df, filename):
     df = remove_total_row(df)
 
     # Limpeza básica e Garantia de que Nulos sejam strings vazias para validação posterior
+    # CORREÇÃO: Utilizando regex com flag (?i) para case-insensitive em vez do argumento 'case=False'
+    
     if 'num_cartao' in df.columns:
         # Primeiro converte nan para string vazia
         df['num_cartao'] = df['num_cartao'].fillna('').astype(str).str.strip()
-        # Remove sufixo .0 de floats convertidos
-        df['num_cartao'] = df['num_cartao'].str.replace(r'\.0$', '', regex=True).replace('nan', '', case=False)
+        # Remove sufixo .0 de floats convertidos e remove strings 'nan'
+        df['num_cartao'] = df['num_cartao'].str.replace(r'\.0$', '', regex=True).replace(r'(?i)^nan$', '', regex=True)
         
     if 'cpf' in df.columns:
         df['cpf'] = df['cpf'].fillna('').astype(str).str.strip()
-        # Remove formatação apenas se houver conteudo, se for 'nan' vira vazio
-        df['cpf'] = df['cpf'].str.replace(r'\D', '', regex=True).replace('nan', '', case=False)
+        # Remove formatação e strings 'nan'
+        df['cpf'] = df['cpf'].str.replace(r'\D', '', regex=True).replace(r'(?i)^nan$', '', regex=True)
     
     def clean_currency(x):
         if isinstance(x, str):
@@ -420,15 +422,15 @@ def detect_inconsistencies(df):
         motivos = []
         is_error = False
         
-        # Validação CPF Ausente
+        # Validação CPF Ausente (checa vazio ou string 'nan')
         cpf_val = row['cpf_raw']
-        if not cpf_val or cpf_val.lower() == 'nan' or cpf_val.lower() == 'none':
+        if not cpf_val or str(cpf_val).lower() == 'nan':
             motivos.append("CPF NÃO INFORMADO")
             is_error = True
             
         # Validação Cartão Ausente
         card_val = row['card_raw']
-        if not card_val or card_val.lower() == 'nan' or card_val.lower() == 'none':
+        if not card_val or str(card_val).lower() == 'nan':
             motivos.append("CARTÃO NÃO INFORMADO")
             is_error = True
             
