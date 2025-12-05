@@ -946,17 +946,15 @@ def main_app():
                 st.error(f"🚨 {len(crit_all)} Registros com Inconsistências Críticas")
                 st.markdown("Estes registros precisam de correção (CPF/Cartão Ausente ou Duplicidade).")
                 
-                def highlight_critical(s):
-                    return ['background-color: #ffebee'] * len(s) # Vermelho bem claro
-                
-                st.dataframe(crit_all.style.apply(highlight_critical, axis=1), use_container_width=True)
+                # REMOVIDO highlight por questão de contraste
+                st.dataframe(crit_all, use_container_width=True)
             else:
                 st.success("✅ Base íntegra. Nenhuma ausência de CPF/Cartão ou duplicidade detectada.")
             
             st.markdown("---")
-            st.markdown("### 📝 Editor de Dados (Malha Fina)")
             
             if user['role'] in ['admin_ti', 'admin_equipe']:
+                st.markdown("### 📝 Editor de Dados (Malha Fina)")
                 st.warning("⚠️ Atenção: As alterações feitas aqui são aplicadas diretamente ao Banco de Dados.")
                 edited_df = st.data_editor(df_payments, num_rows="dynamic", key="editor_analise", use_container_width=True)
                 
@@ -973,7 +971,9 @@ def main_app():
                     except Exception as e:
                         st.error(f"Erro ao salvar: {e}")
             else:
-                st.dataframe(df_payments)
+                # Para usuários comuns, apenas visualização
+                st.markdown("### 👁️ Visualização de Dados (Somente Leitura)")
+                st.dataframe(df_payments, use_container_width=True)
 
     # --- RELATÓRIOS ---
     elif choice == "Relatórios e Exportação":
