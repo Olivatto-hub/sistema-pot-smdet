@@ -271,6 +271,15 @@ def create_manual_pdf(title, content):
     if FPDF is None: return None
     pdf = FPDF()
     pdf.add_page()
+    
+    # --- CABEÇALHO OFICIAL ---
+    pdf.set_font("Arial", 'B', 14)
+    pdf.cell(0, 8, sanitize_text("Prefeitura de São Paulo"), 0, 1, 'C')
+    pdf.set_font("Arial", 'B', 12)
+    pdf.cell(0, 8, sanitize_text("Secretaria Municipal do Desenvolvimento Econômico e Trabalho"), 0, 1, 'C')
+    pdf.ln(5)
+    # -------------------------
+
     pdf.set_font("Arial", 'B', 16)
     pdf.cell(0, 10, sanitize_text(title), 0, 1, 'C')
     pdf.ln(10)
