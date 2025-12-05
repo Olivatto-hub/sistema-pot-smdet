@@ -168,7 +168,6 @@ def remove_total_row(df):
             
     # Se não tem identificação mas tem valor (ou apenas não tem identificação), remove
     if is_id_empty:
-        # Log para depuração se necessário: print(f"Removendo linha de total: {df.loc[last_idx].to_dict()}")
         df = df.drop(last_idx)
         
     return df
@@ -200,8 +199,7 @@ def standardize_dataframe(df, filename):
     
     df = df.rename(columns=rename_dict)
     
-    # CORREÇÃO CRÍTICA PARA O ERRO DO STREAMLIT: Remover colunas duplicadas
-    # Se houver duas colunas que foram mapeadas para 'nome', mantemos apenas a primeira
+    # CORREÇÃO: Remover colunas duplicadas
     df = df.loc[:, ~df.columns.duplicated()]
     
     # 3. Extrair Projeto e Data do Nome do Arquivo se não existir nas colunas
@@ -231,35 +229,30 @@ def standardize_dataframe(df, filename):
     if 'mes_ref' not in df.columns:
         df['mes_ref'] = mes_ref
         
-    # 4. Garantir colunas essenciais existentes no DataFrame
-    # Não criamos todas como None ainda para facilitar a verificação da última linha
+    # 4. Garantir colunas essenciais
     essential_check = ['num_cartao', 'nome', 'cpf', 'rg', 'valor_pagto']
     for col in essential_check:
         if col not in df.columns:
-            df[col] = None # Cria vazia se não existir para evitar erro no filtro
+            df[col] = None 
 
-    # === NOVA FUNCIONALIDADE: REMOVER LINHA DE TOTAL ===
+    # === REMOVER LINHA DE TOTAL ===
     df = remove_total_row(df)
-    # ===================================================
+    # ==============================
 
-    # 5. Limpeza de Dados (Pós remoção da última linha)
+    # 5. Limpeza de Dados
     
-    # Num Cartão: Converter para string e remover decimais
     if 'num_cartao' in df.columns:
         df['num_cartao'] = df['num_cartao'].astype(str).str.replace(r'\.0$', '', regex=True).replace('nan', '')
     
-    # CPF: Remover caracteres não numéricos
     if 'cpf' in df.columns:
         df['cpf'] = df['cpf'].astype(str).str.replace(r'\D', '', regex=True).replace('nan', '')
     
-    # Valor: Converter para float
     def clean_currency(x):
         if isinstance(x, str):
-            # Remove R$, troca ponto de milhar por nada, vírgula decimal por ponto
             x = x.replace('R$', '').replace(' ', '')
-            if ',' in x and '.' in x: # formato brasileiro 1.000,00
+            if ',' in x and '.' in x: 
                 x = x.replace('.', '').replace(',', '.')
-            elif ',' in x: # apenas virgula 1000,00
+            elif ',' in x: 
                 x = x.replace(',', '.')
         try:
             return float(x)
@@ -271,15 +264,13 @@ def standardize_dataframe(df, filename):
         
     df['arquivo_origem'] = filename
     
-    # Seleção Final de Colunas (Evita sujeira que causa erro no PyArrow)
     cols_to_keep = ['programa', 'num_cartao', 'nome', 'cpf', 'rg', 'valor_pagto', 'data_pagto', 'qtd_dias', 'mes_ref', 'ano_ref', 'arquivo_origem']
-    # Filtra apenas colunas que existem no df atual
     final_cols = [c for c in cols_to_keep if c in df.columns]
     
     return df[final_cols]
 
 def generate_bb_txt(df):
-    """Gera string no formato Fixed-Width do Banco do Brasil (Simulado)."""
+    """Gera string no formato Fixed-Width do Banco do Brasil."""
     buffer = io.StringIO()
     header = f"{'0':<11}{'Projeto':<31}{'NumCartão':<10} {'Nome':<40} {'RG':<12} {'CPF':<15}\n"
     buffer.write(header)
@@ -297,49 +288,105 @@ def generate_bb_txt(df):
     return buffer.getvalue()
 
 def generate_pdf_report(df_filtered):
-    """Gera Relatório Executivo em PDF."""
+    """Gera Relatório Executivo em PDF com cabeçalho oficial e análises detalhadas."""
     pdf = FPDF()
     pdf.add_page()
+    
+    # --- CABEÇALHO ---
+    pdf.set_font("Arial", 'B', 14)
+    pdf.cell(0, 8, "Prefeitura de São Paulo", 0, 1, 'C')
+    pdf.set_font("Arial", 'B', 12)
+    pdf.cell(0, 8, "Secretaria Municipal do Desenvolvimento Econômico e Trabalho", 0, 1, 'C')
+    pdf.ln(5)
+    
+    pdf.set_fill_color(220, 220, 220)
     pdf.set_font("Arial", 'B', 16)
-    pdf.cell(0, 10, "Relatório Executivo - Monitoramento POT", 0, 1, 'C')
+    pdf.cell(0, 12, "Relatório Executivo POT", 1, 1, 'C', fill=True)
     pdf.ln(10)
     
-    # Métricas
-    total_valor = df_filtered['valor_pagto'].sum() if 'valor_pagto' in df_filtered.columns else 0
+    # --- DADOS GERAIS ---
+    # Cálculos
+    total_valor = df_filtered['valor_pagto'].sum() if 'valor_pagto' in df_filtered.columns else 0.0
     total_benef = df_filtered['num_cartao'].nunique() if 'num_cartao' in df_filtered.columns else 0
     total_projetos = df_filtered['programa'].nunique() if 'programa' in df_filtered.columns else 0
+    total_registros = len(df_filtered)
     
-    pdf.set_font("Arial", '', 12)
-    pdf.cell(0, 10, f"Data de Geração: {datetime.now().strftime('%d/%m/%Y %H:%M')}", 0, 1)
+    # Texto
+    pdf.set_font("Arial", '', 10)
+    pdf.cell(0, 6, f"Data de Geração: {datetime.now().strftime('%d/%m/%Y às %H:%M')}", 0, 1, 'R')
     pdf.ln(5)
     
     pdf.set_font("Arial", 'B', 12)
-    pdf.cell(0, 10, "Resumo Financeiro e Operacional:", 0, 1)
+    pdf.cell(0, 10, "1. Resumo Analítico Consolidado", 0, 1)
+    
     pdf.set_font("Arial", '', 12)
-    pdf.cell(0, 10, f"Valor Total de Pagamentos: R$ {total_valor:,.2f}", 0, 1)
-    pdf.cell(0, 10, f"Total de Beneficiários Únicos: {total_benef}", 0, 1)
-    pdf.cell(0, 10, f"Projetos Ativos: {total_projetos}", 0, 1)
+    pdf.cell(100, 8, "Total de Valores Pagos:", 1)
+    pdf.set_font("Arial", 'B', 12)
+    pdf.cell(0, 8, f"R$ {total_valor:,.2f}", 1, 1) # Negrito para o valor
+    
+    pdf.set_font("Arial", '', 12)
+    pdf.cell(100, 8, "Total de Beneficiários Únicos:", 1)
+    pdf.cell(0, 8, str(total_benef), 1, 1)
+    
+    pdf.cell(100, 8, "Total de Projetos Contemplados:", 1)
+    pdf.cell(0, 8, str(total_projetos), 1, 1)
+    
+    pdf.cell(100, 8, "Total de Registros Processados:", 1)
+    pdf.cell(0, 8, str(total_registros), 1, 1)
+    
     pdf.ln(10)
     
-    # Detalhe por Projeto
+    # --- DETALHAMENTO POR PROJETO ---
     pdf.set_font("Arial", 'B', 12)
-    pdf.cell(0, 10, "Detalhamento por Projeto:", 0, 1)
+    pdf.cell(0, 10, "2. Detalhamento Financeiro por Projeto", 0, 1)
     
     if 'programa' in df_filtered.columns and 'valor_pagto' in df_filtered.columns:
-        group_proj = df_filtered.groupby('programa')['valor_pagto'].sum().reset_index()
+        # Agrupamento
+        group_proj = df_filtered.groupby('programa').agg({
+            'valor_pagto': 'sum',
+            'num_cartao': 'count' # Contagem de registros por projeto
+        }).reset_index().sort_values('valor_pagto', ascending=False)
         
-        pdf.set_font("Courier", '', 10)
-        pdf.cell(50, 10, "PROJETO", 1)
-        pdf.cell(50, 10, "VALOR TOTAL", 1)
-        pdf.ln()
+        # Cabeçalho da Tabela
+        pdf.set_font("Arial", 'B', 10)
+        pdf.set_fill_color(240, 240, 240)
+        pdf.cell(90, 8, "PROJETO", 1, 0, 'L', True)
+        pdf.cell(40, 8, "QTD REGISTROS", 1, 0, 'C', True)
+        pdf.cell(60, 8, "VALOR TOTAL (R$)", 1, 1, 'R', True)
         
+        # Linhas da Tabela
+        pdf.set_font("Arial", '', 10)
         for _, row in group_proj.iterrows():
-            pdf.cell(50, 10, str(row['programa'])[:20], 1)
-            pdf.cell(50, 10, f"R$ {row['valor_pagto']:,.2f}", 1)
-            pdf.ln()
+            nome_proj = str(row['programa'])[:40] # Truncar nomes muito longos
+            qtd = str(row['num_cartao'])
+            val = f"{row['valor_pagto']:,.2f}"
+            
+            pdf.cell(90, 8, nome_proj, 1)
+            pdf.cell(40, 8, qtd, 1, 0, 'C')
+            pdf.cell(60, 8, val, 1, 1, 'R')
+            
     else:
-        pdf.cell(0, 10, "Dados insuficientes para detalhamento.", 0, 1)
+        pdf.set_font("Arial", 'I', 12)
+        pdf.cell(0, 10, "Dados insuficientes para detalhamento por projeto.", 0, 1)
         
+    pdf.ln(10)
+    
+    # --- NOTAS DE ANÁLISE ---
+    pdf.set_font("Arial", 'B', 12)
+    pdf.cell(0, 10, "3. Observações de Processamento", 0, 1)
+    pdf.set_font("Arial", '', 10)
+    
+    # Verificar CPFs vazios para o relatório
+    sem_cpf = 0
+    if 'cpf' in df_filtered.columns:
+        sem_cpf = df_filtered[ (df_filtered['cpf'] == '') | (df_filtered['cpf'].isnull()) ].shape[0]
+        
+    pdf.multi_cell(0, 6, 
+        f"O presente relatório consolida os dados disponíveis na base do sistema. "
+        f"Foram identificados {sem_cpf} registros com ausência de CPF, o que pode impactar a remessa bancária. "
+        "A última linha dos arquivos originais (totais) foi desconsiderada para evitar duplicidade nos cálculos."
+    )
+    
     return pdf.output(dest='S').encode('latin-1')
 
 # ===========================================
@@ -459,23 +506,34 @@ def main_app():
                     progress_bar.progress((idx + 1) / len(uploaded_files))
                 
                 if all_data:
-                    # Concatenação segura: resetar index para evitar problemas
                     final_df = pd.concat(all_data, ignore_index=True)
                     
                     # Salvar no Banco de Dados
                     conn = get_db_connection()
                     
                     db_cols = ['programa', 'num_cartao', 'nome', 'cpf', 'rg', 'valor_pagto', 'mes_ref', 'arquivo_origem']
-                    # Filtrar colunas para salvar apenas o que o DB suporta
                     cols_to_save = [c for c in db_cols if c in final_df.columns]
                     
                     df_to_save = final_df[cols_to_save].copy()
-                    
                     df_to_save['status'] = 'IMPORTADO'
+                    
+                    # Evitar duplicatas exatas ao salvar
                     df_to_save.to_sql('payments', conn, if_exists='append', index=False)
                     conn.close()
                     
-                    st.success(f"Sucesso! {len(final_df)} registros importados para o Banco de Dados.")
+                    # === EXIBIR TOTAL APÓS UPLOAD ===
+                    st.success(f"Sucesso! {len(final_df)} registros processados e salvos.")
+                    
+                    if 'valor_pagto' in final_df.columns:
+                        total_importado = final_df['valor_pagto'].sum()
+                        st.metric(
+                            label="💰 Valor Total nos Arquivos Processados (Sem a linha de totais)", 
+                            value=f"R$ {total_importado:,.2f}"
+                        )
+                    else:
+                        st.warning("Coluna de valor não encontrada para cálculo do total.")
+                    
+                    st.markdown("### Prévia dos Dados:")
                     st.dataframe(final_df.head())
                 else:
                     st.warning("Nenhum dado válido processado.")
