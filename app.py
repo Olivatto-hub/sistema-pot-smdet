@@ -68,16 +68,6 @@ st.markdown("""
         padding: 10px;
         border-radius: 5px;
     }
-    /* Ajuste para tema escuro automático do Streamlit */
-    @media (prefers-color-scheme: dark) {
-        .metric-card {
-            background-color: #262730;
-            border-color: #444;
-        }
-        .header-secretaria { color: #bbb; }
-        .header-programa { color: #93C5FD; }
-        .header-sistema { color: #60A5FA; }
-    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -184,9 +174,8 @@ def sanitize_text(text):
     """Remove caracteres não-Latin-1 para evitar erro no FPDF."""
     if not isinstance(text, str):
         return str(text)
-    # Substituições comuns
+    # Substituições comuns para evitar crash no PDF
     text = text.replace('–', '-').replace('—', '-').replace('“', '"').replace('”', '"')
-    # Codifica para latin-1 ignorando erros e decodifica de volta
     return text.encode('latin-1', 'replace').decode('latin-1')
 
 def get_brasilia_time():
@@ -310,30 +299,79 @@ def standardize_dataframe(df, filename):
     return df[final_cols]
 
 def detect_critical_duplicates(df):
-    if 'cpf' not in df.columns or df.empty: return pd.DataFrame()
-    df_valid = df[ (df['cpf'].notna()) & (df['cpf'].astype(str).str.strip() != '') ].copy()
-    dupes = df_valid[df_valid.duplicated('cpf', keep=False)]
-    critical_errors = []
+    """
+    Detecta conflitos reais de dados.
+    Ignora duplicatas exatas (mesma pessoa, meses diferentes).
+    """
+    if 'cpf' not in df.columns or 'num_cartao' not in df.columns or df.empty:
+        return pd.DataFrame()
     
-    if not dupes.empty:
-        for cpf, group in dupes.groupby('cpf'):
-            unique_cards = group['num_cartao'].unique()
-            unique_names = group['nome'].astype(str).str.strip().str.upper().unique()
-            if len(unique_cards) > 1 or len(unique_names) > 1:
-                motivo = []
-                if len(unique_cards) > 1: motivo.append("CARTÕES DIFERENTES")
-                if len(unique_names) > 1: motivo.append("NOMES DIFERENTES")
-                motivo_str = " | ".join(motivo)
-                for _, row in group.iterrows():
-                    critical_errors.append({
-                        'ARQUIVO': row.get('arquivo_origem', '-'),
-                        'LINHA': row.get('linha_arquivo', '-'),
-                        'CPF': cpf,
-                        'CARTÃO': row.get('num_cartao', '-'),
-                        'NOME': row.get('nome', '-'),
-                        'ERRO': motivo_str
-                    })
-    return pd.DataFrame(critical_errors)
+    # 1. Preparação: Normalizar para comparação
+    df_check = df.copy()
+    df_check['cpf_clean'] = df_check['cpf'].astype(str).str.strip()
+    df_check['card_clean'] = df_check['num_cartao'].astype(str).str.strip().str.replace(r'^0+', '', regex=True)
+    # Normalização forte de nome para ignorar espaços extras ou casing
+    df_check['nome_clean'] = df_check['nome'].astype(str).str.strip().str.upper()
+    
+    critical_errors = []
+
+    # 2. Regra A: Mesmo CPF com Cartões Diferentes ou Nomes Diferentes
+    # Agrupa por CPF e vê quantos cartões/nomes únicos existem
+    cpf_groups = df_check.groupby('cpf_clean')
+    
+    for cpf, group in cpf_groups:
+        if not cpf or cpf.lower() == 'nan' or cpf == '': continue
+        
+        unique_cards = group['card_clean'].unique()
+        unique_names = group['nome_clean'].unique()
+        
+        has_card_conflict = len(unique_cards) > 1
+        has_name_conflict = len(unique_names) > 1
+        
+        if has_card_conflict or has_name_conflict:
+            motivo = []
+            if has_card_conflict: motivo.append(f"CONFLITO DE CARTÃO ({', '.join(unique_cards)})")
+            if has_name_conflict: motivo.append("CONFLITO DE NOME")
+            
+            err_msg = " | ".join(motivo)
+            
+            # Adiciona todos os registros desse grupo para o relatório
+            for _, row in group.iterrows():
+                critical_errors.append({
+                    'ARQUIVO': row.get('arquivo_origem', '-'),
+                    'LINHA': row.get('linha_arquivo', '-'),
+                    'CPF': cpf,
+                    'CARTÃO': row.get('num_cartao', '-'),
+                    'NOME': row.get('nome', '-'),
+                    'ERRO': err_msg
+                })
+
+    # 3. Regra B: Indício de Fraude (Mesmo Cartão para CPFs diferentes)
+    card_groups = df_check.groupby('card_clean')
+    
+    for card, group in card_groups:
+        if not card or card.lower() == 'nan': continue
+        
+        unique_cpfs = group['cpf_clean'].unique()
+        
+        if len(unique_cpfs) > 1:
+            for _, row in group.iterrows():
+                # Evitar duplicar se já caiu na regra anterior
+                critical_errors.append({
+                    'ARQUIVO': row.get('arquivo_origem', '-'),
+                    'LINHA': row.get('linha_arquivo', '-'),
+                    'CPF': row.get('cpf', '-'),
+                    'CARTÃO': card,
+                    'NOME': row.get('nome', '-'),
+                    'ERRO': f"INDÍCIO DE FRAUDE: CARTÃO COM MÚLTIPLOS CPFs ({', '.join(unique_cpfs)})"
+                })
+
+    # Remove duplicatas exatas na lista de erros (caso o mesmo registro caia em 2 regras)
+    if not critical_errors:
+        return pd.DataFrame()
+        
+    res_df = pd.DataFrame(critical_errors)
+    return res_df.drop_duplicates(subset=['ARQUIVO', 'LINHA', 'CPF', 'CARTÃO'])
 
 def generate_bb_txt(df):
     buffer = io.StringIO()
@@ -349,11 +387,47 @@ def generate_bb_txt(df):
         buffer.write(line)
     return buffer.getvalue()
 
+def print_pdf_row(pdf, widths, data, align='L', fill=False):
+    """
+    Função auxiliar para imprimir uma linha no PDF com quebra de texto (MultiCell) 
+    para evitar extrapolação dos limites da célula.
+    """
+    # Altura base da linha
+    line_height = 6
+    
+    # Calcular a altura máxima necessária para esta linha
+    max_lines = 1
+    for i, datum in enumerate(data):
+        # Simula o MultiCell para saber quantas linhas ocuparia
+        # get_string_width retorna a largura. Dividimos pela largura da coluna.
+        # FPDF não tem método direto 'dry run', então estimamos ou usamos uma lógica simples.
+        # Uma abordagem robusta é salvar X, Y, imprimir e ver onde o Y para.
+        pass # FPDF é chato com isso. Vamos usar uma abordagem de "cursor reset".
+
+    # Abordagem de Cursor Reset:
+    # 1. Salvar posição Y inicial
+    x_start = pdf.get_x()
+    y_start = pdf.get_y()
+    
+    # 2. Imprimir cada célula e descobrir qual empurrou o Y mais para baixo
+    max_y = y_start
+    
+    for i, width in enumerate(widths):
+        pdf.set_xy(x_start + sum(widths[:i]), y_start)
+        # MultiCell(w, h, txt, border, align, fill)
+        pdf.multi_cell(width, line_height, sanitize_text(str(data[i])), 1, align, fill)
+        if pdf.get_y() > max_y:
+            max_y = pdf.get_y()
+            
+    # 3. Definir o Y para a próxima linha como o maior Y alcançado
+    pdf.set_xy(x_start, max_y)
+
 def generate_pdf_report(df_filtered):
     if FPDF is None: return b"Erro: FPDF ausente."
     pdf = FPDF()
-    pdf.add_page(orientation='L')
+    pdf.add_page(orientation='L') # Paisagem para caber tudo
     
+    # --- CABEÇALHO ---
     pdf.set_font("Arial", 'B', 14)
     pdf.cell(0, 8, sanitize_text("Prefeitura de São Paulo"), 0, 1, 'C')
     pdf.set_font("Arial", 'B', 12)
@@ -369,71 +443,92 @@ def generate_pdf_report(df_filtered):
     pdf.cell(0, 6, sanitize_text(f"Gerado em: {data_br}"), 0, 1, 'R')
     pdf.ln(5)
 
-    # ALERTA CRÍTICO
-    critical_df = detect_critical_duplicates(df_filtered)
-    if not critical_df.empty:
-        pdf.set_text_color(255, 0, 0)
-        pdf.set_font("Arial", 'B', 12)
-        pdf.cell(0, 10, sanitize_text(f"⚠️ ALERTA CRÍTICO: {len(critical_df)} REGISTROS COM DUPLICIDADE CONFLITANTE"), 0, 1)
-        pdf.set_text_color(0, 0, 0)
-        pdf.set_font("Arial", '', 10)
-        pdf.multi_cell(0, 6, sanitize_text("Registros com mesmo CPF mas nomes ou cartões diferentes."))
-        pdf.ln(2)
-        
-        pdf.set_font("Arial", 'B', 9)
-        pdf.set_fill_color(255, 230, 230)
-        w = [45, 15, 30, 25, 70, 50]
-        cols = ['ARQUIVO', 'LINHA', 'CPF', 'CARTÃO', 'NOME', 'ERRO']
-        for i, col in enumerate(cols):
-            pdf.cell(w[i], 8, sanitize_text(col), 1, 0, 'C', True)
-        pdf.ln()
-        
-        pdf.set_font("Arial", '', 8)
-        for _, row in critical_df.iterrows():
-            pdf.cell(w[0], 6, sanitize_text(str(row['ARQUIVO'])[:20]), 1, 0, 'L')
-            pdf.cell(w[1], 6, str(row['LINHA']), 1, 0, 'C')
-            pdf.cell(w[2], 6, str(row['CPF']), 1, 0, 'C')
-            pdf.cell(w[3], 6, str(row['CARTÃO']), 1, 0, 'C')
-            pdf.cell(w[4], 6, sanitize_text(str(row['NOME'])[:35]), 1, 0, 'L')
-            pdf.set_text_color(200, 0, 0)
-            pdf.cell(w[5], 6, sanitize_text(str(row['ERRO'])), 1, 1, 'C')
-            pdf.set_text_color(0, 0, 0)
-        pdf.ln(10)
-
-    # RESUMO
+    # --- 1. RESUMO ANALÍTICO (SEMPRE APARECE) ---
     total_valor = df_filtered['valor_pagto'].sum() if 'valor_pagto' in df_filtered.columns else 0.0
     total_benef = df_filtered['num_cartao'].nunique() if 'num_cartao' in df_filtered.columns else 0
+    total_projetos = df_filtered['programa'].nunique() if 'programa' in df_filtered.columns else 0
     total_registros = len(df_filtered)
     
     pdf.set_font("Arial", 'B', 12)
     pdf.cell(0, 10, sanitize_text("1. Resumo Analítico"), 0, 1)
     pdf.set_font("Arial", '', 11)
     pdf.cell(100, 8, f"Total Pago: R$ {total_valor:,.2f}", 1)
-    pdf.cell(0, 8, sanitize_text(f"Beneficiários: {total_benef}"), 1, 1)
-    pdf.cell(100, 8, sanitize_text(f"Total Registros: {total_registros}"), 1, 1)
+    pdf.cell(0, 8, sanitize_text(f"Beneficiários Únicos: {total_benef}"), 1, 1)
+    pdf.cell(100, 8, sanitize_text(f"Projetos Ativos: {total_projetos}"), 1)
+    pdf.cell(0, 8, sanitize_text(f"Total Registros: {total_registros}"), 1, 1)
     pdf.ln(5)
 
-    # GRÁFICOS
+    # --- 2. ALERTAS CRÍTICOS (SE HOUVER) ---
+    critical_df = detect_critical_duplicates(df_filtered)
+    if not critical_df.empty:
+        pdf.set_text_color(255, 0, 0) # Vermelho
+        pdf.set_font("Arial", 'B', 12)
+        pdf.cell(0, 10, sanitize_text(f"⚠️ 2. ALERTA DE INCONSISTÊNCIAS ({len(critical_df)} Ocorrências)"), 0, 1)
+        pdf.set_text_color(0, 0, 0)
+        pdf.set_font("Arial", '', 10)
+        pdf.multi_cell(0, 6, sanitize_text("Registros com conflito de identidade (Mesmo CPF com Nomes/Cartões divergentes) ou indício de fraude (Mesmo Cartão com CPFs diferentes)."))
+        pdf.ln(2)
+        
+        pdf.set_font("Arial", 'B', 8)
+        pdf.set_fill_color(255, 230, 230)
+        # Larguras ajustadas para A4 Paisagem (~275mm uteis)
+        # Arq(35), Lin(12), CPF(25), Car(25), Nom(60), Err(110)
+        widths = [35, 12, 25, 25, 60, 110]
+        cols = ['ARQUIVO', 'LIN', 'CPF', 'CARTÃO', 'NOME', 'ERRO DETECTADO']
+        
+        # Cabeçalho da Tabela
+        for i, col in enumerate(cols):
+            pdf.cell(widths[i], 8, sanitize_text(col), 1, 0, 'C', True)
+        pdf.ln()
+        
+        # Dados da Tabela com MultiCell Personalizado
+        pdf.set_font("Arial", '', 8)
+        for _, row in critical_df.iterrows():
+            data_row = [
+                str(row['ARQUIVO']),
+                str(row['LINHA']),
+                str(row['CPF']),
+                str(row['CARTÃO']),
+                str(row['NOME']),
+                str(row['ERRO'])
+            ]
+            print_pdf_row(pdf, widths, data_row)
+        pdf.ln(10)
+    else:
+        pdf.set_text_color(0, 128, 0) # Verde
+        pdf.set_font("Arial", 'B', 11)
+        pdf.cell(0, 10, sanitize_text("✅ 2. Validação de Integridade: Nenhuma duplicidade crítica encontrada."), 0, 1)
+        pdf.set_text_color(0, 0, 0)
+        pdf.ln(5)
+
+    # --- 3. GRÁFICOS ---
     pdf.set_font("Arial", 'B', 12)
-    pdf.cell(0, 10, sanitize_text("2. Visualização Gráfica"), 0, 1)
+    pdf.cell(0, 10, sanitize_text("3. Visualização Gráfica"), 0, 1)
     if plt and 'programa' in df_filtered.columns:
         try:
             plt.figure(figsize=(10, 4))
             grp = df_filtered.groupby('programa')['valor_pagto'].sum().sort_values()
-            plt.barh(grp.index, grp.values, color='skyblue')
-            plt.title('Total por Projeto')
+            # Gráfico de barras horizontais simples e limpo
+            plt.barh(grp.index, grp.values, color='#4682B4') 
+            plt.title('Valor Total por Projeto')
+            plt.xlabel('Valor (R$)')
+            plt.grid(axis='x', linestyle='--', alpha=0.7)
             plt.tight_layout()
+            
             with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
-                plt.savefig(tmp.name, dpi=90)
+                plt.savefig(tmp.name, dpi=100)
                 img_path = tmp.name
-            pdf.image(img_path, x=10, w=180)
+            
+            # Centraliza a imagem
+            pdf.image(img_path, x=20, w=240) 
             plt.close()
             os.remove(img_path)
-        except: pass
+        except Exception as e:
+            pdf.set_font("Arial", 'I', 10)
+            pdf.cell(0, 10, sanitize_text(f"Não foi possível gerar o gráfico: {str(e)}"), 0, 1)
     else:
-        pdf.cell(0, 10, sanitize_text("Gráfico indisponível."), 0, 1)
+        pdf.cell(0, 10, sanitize_text("Dados insuficientes para gráficos."), 0, 1)
         
-    # Importante: usar 'replace' para evitar crash em caracteres estranhos
     return pdf.output(dest='S').encode('latin-1', 'replace')
 
 def generate_conference_pdf(df_div):
@@ -446,7 +541,6 @@ def generate_conference_pdf(df_div):
     pdf.cell(0, 12, sanitize_text("Conferência Bancária (Divergências)"), 1, 1, 'C')
     pdf.ln(5)
     
-    # Data
     data_br = get_brasilia_time().strftime('%d/%m/%Y às %H:%M')
     pdf.set_font("Arial", '', 10)
     pdf.cell(0, 6, sanitize_text(f"Gerado em: {data_br}"), 0, 1, 'R')
@@ -454,19 +548,23 @@ def generate_conference_pdf(df_div):
     
     pdf.set_font("Arial", 'B', 8)
     pdf.set_fill_color(240, 240, 240)
-    w = [30, 60, 60, 80, 40]
+    widths = [25, 60, 60, 85, 45]
     headers = ["CARTÃO", "NOME SIS", "NOME BB", "DIVERGÊNCIA", "ARQUIVO"]
+    
     for i, h in enumerate(headers):
-        pdf.cell(w[i], 8, sanitize_text(h), 1, 0, 'C', True)
+        pdf.cell(widths[i], 8, sanitize_text(h), 1, 0, 'C', True)
     pdf.ln()
     
     pdf.set_font("Arial", '', 8)
     for _, row in df_div.iterrows():
-        pdf.cell(w[0], 6, sanitize_text(str(row['cartao'])), 1, 0, 'C')
-        pdf.cell(w[1], 6, sanitize_text(str(row['nome_sis'])[:30]), 1, 0, 'L')
-        pdf.cell(w[2], 6, sanitize_text(str(row['nome_bb'])[:30]), 1, 0, 'L')
-        pdf.cell(w[3], 6, sanitize_text(str(row['divergencia'])[:50]), 1, 0, 'L')
-        pdf.cell(w[4], 6, sanitize_text(str(row['arquivo_origem'])[:20]), 1, 1, 'C')
+        data_row = [
+            str(row['cartao']),
+            str(row['nome_sis']),
+            str(row['nome_bb']),
+            str(row['divergencia']),
+            str(row['arquivo_origem'])
+        ]
+        print_pdf_row(pdf, widths, data_row)
         
     return pdf.output(dest='S').encode('latin-1', 'replace')
 
@@ -525,7 +623,7 @@ def main_app():
             if sel_ger:
                 df = df[df['gerenciadora'].isin(sel_ger)]
 
-            # 4 KPIs Restaurados
+            # 4 KPIs
             k1, k2, k3, k4 = st.columns(4)
             total = df['valor_pagto'].sum() if 'valor_pagto' in df.columns else 0
             benef = df['num_cartao'].nunique() if 'num_cartao' in df.columns else 0
@@ -533,8 +631,8 @@ def main_app():
             gers = df['gerenciadora'].nunique() if 'gerenciadora' in df.columns else 0
             
             k1.metric("Total Pago", f"R$ {total:,.2f}")
-            k2.metric("Beneficiários", benef)
-            k3.metric("Projetos", projs)
+            k2.metric("Beneficiários Únicos", benef)
+            k3.metric("Projetos Ativos", projs)
             k4.metric("Gerenciadoras", gers)
             
             st.markdown("---")
@@ -547,7 +645,7 @@ def main_app():
                     st.plotly_chart(px.bar(g1, x='valor_pagto', y='programa', orientation='h', title="Total por Projeto"), use_container_width=True)
             
             with c2:
-                st.subheader("Valor por Gerenciadora")
+                st.subheader("Distribuição por Gerenciadora")
                 if 'gerenciadora' in df.columns:
                     g2 = df.groupby('gerenciadora')['valor_pagto'].sum().reset_index()
                     st.plotly_chart(px.pie(g2, names='gerenciadora', values='valor_pagto', title="Distribuição por Gerenciadora"), use_container_width=True)
@@ -587,37 +685,45 @@ def main_app():
             if dfs:
                 final = pd.concat(dfs, ignore_index=True)
                 
-                # DETECÇÃO CRÍTICA NA TELA
-                st.subheader("Validação de Dados")
-                critical_errors = detect_critical_duplicates(final)
-                if not critical_errors.empty:
-                    st.error(f"🚨 ATENÇÃO: {len(critical_errors)} Registros com DUPLICIDADE DE CPF CONFLITANTE encontrados!")
-                    st.dataframe(critical_errors, use_container_width=True)
-                    st.warning("Estes registros foram salvos, mas exigem correção imediata.")
-                else:
-                    st.success("✅ Nenhuma duplicidade crítica encontrada.")
-
                 conn = get_db_connection()
+                # Salva primeiro para poder fazer a verificação na base completa (opcional, ou verifica só no upload)
                 final.to_sql('payments', conn, if_exists='append', index=False)
+                
+                # Ler tudo para verificação completa
+                df_all = pd.read_sql("SELECT * FROM payments", conn)
                 conn.close()
+                
                 st.success(f"{len(final)} registros salvos.")
+                
+                # Validação Crítica
+                st.subheader("Relatório de Validação")
+                critical_errors = detect_critical_duplicates(df_all)
+                if not critical_errors.empty:
+                    st.error(f"🚨 FORAM ENCONTRADOS {len(critical_errors)} CONFLITOS DE DADOS NA BASE!")
+                    st.markdown("**Os registros abaixo possuem o mesmo CPF mas nomes ou cartões diferentes em arquivos distintos (ou no mesmo).**")
+                    st.dataframe(critical_errors, use_container_width=True)
+                else:
+                    st.success("✅ A base de dados está consistente (sem conflitos de CPF/Cartão).")
+
             else: st.info("Nada a salvar.")
 
     elif choice == "Análise e Correção":
         render_header()
-        st.markdown("### 🛠️ Análise")
+        st.markdown("### 🛠️ Análise e Auditoria")
         conn = get_db_connection()
         df = pd.read_sql("SELECT * FROM payments", conn)
         conn.close()
         
         if not df.empty:
-            st.subheader("Auditoria de Base (Completa)")
+            st.subheader("Auditoria de Integridade da Base")
             crit_all = detect_critical_duplicates(df)
             if not crit_all.empty:
-                st.error("🚨 Inconsistências Críticas Encontradas na Base")
+                st.error(f"🚨 {len(crit_all)} Inconsistências Críticas Encontradas")
                 st.dataframe(crit_all)
             else:
-                st.success("Base íntegra.")
+                st.success("✅ Base de dados íntegra. Nenhum conflito de CPF identificado.")
+            
+            st.markdown("### Visualização dos Dados")
             st.dataframe(df.head())
 
     elif choice == "Relatórios e Exportação":
@@ -634,7 +740,6 @@ def main_app():
             
             c1, c2, c3, c4 = st.columns(4)
             
-            # Botões de Download Restaurados
             csv = df_exp.to_csv(index=False, sep=';').encode('utf-8-sig')
             c1.download_button("📄 Baixar CSV", csv, "dados_pot.csv", "text/csv")
             
@@ -649,7 +754,7 @@ def main_app():
             if c4.button("📑 Gerar Relatório PDF"):
                 pdf_data = generate_pdf_report(df_exp)
                 if isinstance(pdf_data, bytes):
-                    st.download_button("Baixar PDF Gerado", pdf_data, "relatorio_executivo.pdf", "application/pdf")
+                    st.download_button("Baixar PDF Completo", pdf_data, "relatorio_executivo_completo.pdf", "application/pdf")
                 else: st.error(pdf_data)
 
     elif choice == "Conferência Bancária (BB)":
@@ -671,7 +776,6 @@ def main_app():
                 conn.close()
                 st.rerun()
             
-            # Botão PDF Restaurado
             pdf_conf = generate_conference_pdf(hist)
             if isinstance(pdf_conf, bytes):
                 c_d2.download_button("📑 Baixar Relatório PDF (Divergências)", pdf_conf, "divergencias_bb.pdf", "application/pdf")
@@ -705,8 +809,7 @@ def main_app():
                             'nome_sis': nm_s,
                             'nome_bb': nm_b,
                             'divergencia': 'NOME DIFERENTE',
-                            'arquivo_origem': row['arquivo_bb'],
-                            'tipo_erro': 'DIVERGENCIA'
+                            'arquivo_origem': row['arquivo_bb']
                         })
                 
                 if divs:
