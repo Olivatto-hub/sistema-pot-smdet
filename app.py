@@ -146,11 +146,12 @@ def init_db():
             cpf_bb TEXT,
             divergencia TEXT,
             arquivo_origem TEXT,
+            tipo_erro TEXT, -- 'CRITICO' ou 'DIVERGENCIA'
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
     
-    # Verificação de Migração
+    # Verificação de Migração (coluna gerenciadora)
     try:
         c.execute("SELECT gerenciadora FROM payments LIMIT 1")
     except sqlite3.OperationalError:
@@ -159,6 +160,16 @@ def init_db():
             conn.commit()
         except Exception as e:
             pass 
+            
+    # Verificação de Migração (coluna tipo_erro na tabela bank_discrepancies)
+    try:
+        c.execute("SELECT tipo_erro FROM bank_discrepancies LIMIT 1")
+    except sqlite3.OperationalError:
+        try:
+            c.execute("ALTER TABLE bank_discrepancies ADD COLUMN tipo_erro TEXT")
+            conn.commit()
+        except Exception as e:
+            pass
 
     # Criar usuário Admin padrão se não existir
     c.execute("SELECT * FROM users WHERE email = 'admin@prefeitura.sp.gov.br'")
@@ -612,47 +623,52 @@ def generate_conference_pdf(df_div):
     pdf.cell(0, 6, f"Data de Geração: {data_br}", 0, 1, 'R')
     pdf.ln(5)
     
+    # KPIs de Erros
+    criticos = df_div[df_div['tipo_erro'] == 'CRITICO'].shape[0]
+    gerais = df_div[df_div['tipo_erro'] == 'DIVERGENCIA'].shape[0]
     total_erros = len(df_div)
     
     pdf.set_font("Arial", 'B', 12)
-    pdf.cell(0, 10, f"Total de Divergências Encontradas: {total_erros}", 0, 1)
+    pdf.cell(0, 10, f"Total de Inconsistências: {total_erros} (Críticas: {criticos} | Gerais: {gerais})", 0, 1)
     pdf.set_font("Arial", '', 10)
-    pdf.multi_cell(0, 6, "Abaixo estão listados os beneficiários cujos dados no sistema diferem dos dados retornados pelo Banco do Brasil. A correção é necessária para evitar rejeição de pagamentos.")
+    pdf.multi_cell(0, 6, "Abaixo estão listados os beneficiários com problemas cadastrais ou conflitos entre o sistema e o retorno bancário.")
     pdf.ln(5)
     
     # Tabela
     pdf.set_font("Arial", 'B', 9)
     pdf.set_fill_color(240, 240, 240)
     
-    # Ajuste de larguras para Paisagem (Total ~275mm útil)
-    w_cartao = 25
-    w_nome = 65
-    w_nome_bb = 65
-    w_div = 75
-    w_arq = 45
+    # Ajuste de larguras para Paisagem
+    w_cartao = 35
+    w_nome = 60
+    w_div = 100
+    w_tipo = 30
+    w_arq = 50
     
     pdf.cell(w_cartao, 8, "CARTÃO", 1, 0, 'C', True)
-    pdf.cell(w_nome, 8, "NOME (SISTEMA)", 1, 0, 'L', True)
-    pdf.cell(w_nome_bb, 8, "NOME (BANCO)", 1, 0, 'L', True)
-    pdf.cell(w_div, 8, "DIVERGÊNCIA", 1, 0, 'C', True)
+    pdf.cell(w_nome, 8, "NOME", 1, 0, 'L', True)
+    pdf.cell(w_div, 8, "DESCRIÇÃO DO ERRO", 1, 0, 'L', True)
+    pdf.cell(w_tipo, 8, "TIPO", 1, 0, 'C', True)
     pdf.cell(w_arq, 8, "ARQUIVO", 1, 1, 'C', True)
     
     pdf.set_font("Arial", '', 8)
     for _, row in df_div.iterrows():
-        # Calcular altura da linha com base no conteúdo mais longo (MultiCell simulado)
-        # Simplificação: Truncar strings longas para caber na linha única ou usar MultiCell complexo
-        # Abordagem de truncamento ajustado para não quebrar layout
-        
         cartao = str(row['cartao'])
-        nome_sis = str(row['nome_sis'])[:35]
-        nome_bb = str(row['nome_bb'])[:35]
-        div = str(row['divergencia'])[:40] # Mais espaço para descrição
+        nome = str(row['nome_bb'])[:30] # Nome do banco é a referência da falha
+        div = str(row['divergencia'])[:60]
+        tipo = str(row['tipo_erro'])
         arq = str(row['arquivo_origem'])[:25]
         
+        # Highlight Crítico em Vermelho
+        if tipo == 'CRITICO':
+            pdf.set_text_color(200, 0, 0)
+        else:
+            pdf.set_text_color(0, 0, 0)
+            
         pdf.cell(w_cartao, 6, cartao, 1, 0, 'C')
-        pdf.cell(w_nome, 6, nome_sis, 1, 0, 'L')
-        pdf.cell(w_nome_bb, 6, nome_bb, 1, 0, 'L')
-        pdf.cell(w_div, 6, div, 1, 0, 'L') # Alinhado a esquerda para leitura
+        pdf.cell(w_nome, 6, nome, 1, 0, 'L')
+        pdf.cell(w_div, 6, div, 1, 0, 'L')
+        pdf.cell(w_tipo, 6, tipo, 1, 0, 'C')
         pdf.cell(w_arq, 6, arq, 1, 1, 'C')
         
     return pdf.output(dest='S').encode('latin-1')
@@ -865,7 +881,7 @@ def main_app():
 
     elif choice == "Conferência Bancária (BB)":
         render_header()
-        st.markdown("<h3 class='main-header'>🏦 Cruzamento de Dados (Banco do Brasil)</h3>", unsafe_allow_html=True)
+        st.markdown("<h3 class='main-header'>🏦 Cruzamento de Dados e Malha Fina (BB)</h3>", unsafe_allow_html=True)
         
         # Recuperar dados persistidos
         conn = get_db_connection()
@@ -877,7 +893,16 @@ def main_app():
         
         # Mostrar Histórico se existir
         if not stored_discrepancies.empty:
-            st.warning(f"⚠️ Há {len(stored_discrepancies)} divergências salvas no banco de dados.")
+            
+            # Filtra Críticos
+            criticos = stored_discrepancies[stored_discrepancies['tipo_erro'] == 'CRITICO']
+            
+            if not criticos.empty:
+                st.error(f"🚨 ALERTA CRÍTICO: {len(criticos)} Inconsistências Graves de CPF/Cartão Encontradas!")
+                st.dataframe(criticos)
+                st.markdown("---")
+            
+            st.warning(f"⚠️ Histórico Geral: {len(stored_discrepancies)} divergências salvas.")
             st.dataframe(stored_discrepancies)
             
             col_d1, col_d2 = st.columns(2)
@@ -904,7 +929,7 @@ def main_app():
         bb_files = st.file_uploader("Arquivos de Retorno BB (.TXT)", accept_multiple_files=True, type=['txt'])
         
         if bb_files:
-            if st.button("Processar e Salvar no Banco"):
+            if st.button("Processar, Cruzar Dados e Salvar"):
                 all_bb_data = []
                 for file in bb_files:
                     try:
@@ -918,33 +943,60 @@ def main_app():
                     final_bb = pd.concat(all_bb_data, ignore_index=True)
                     st.success(f"{len(final_bb)} registros lidos dos arquivos do Banco.")
                     
+                    divergencias_to_save = []
+                    
+                    # 1. VERIFICAÇÃO DE DUPLICIDADE INTERNA (CPF Repetido no Arquivo)
+                    # Verifica se o mesmo CPF aparece mais de uma vez com nomes ou cartões diferentes
+                    if 'cpf_bb' in final_bb.columns:
+                        dup_cpf_group = final_bb.groupby('cpf_bb')
+                        for cpf, group in dup_cpf_group:
+                            if len(group) > 1:
+                                unique_cards = group['num_cartao'].unique()
+                                unique_names = group['nome_bb'].unique()
+                                
+                                # Se houver variação de cartão ou nome para o mesmo CPF
+                                if len(unique_cards) > 1 or len(unique_names) > 1:
+                                    for _, row in group.iterrows():
+                                         divergencias_to_save.append({
+                                            'cartao': row['num_cartao'],
+                                            'nome_sis': 'DUPLICIDADE INTERNA',
+                                            'nome_bb': row['nome_bb'],
+                                            'cpf_sis': row['cpf_bb'],
+                                            'cpf_bb': row['cpf_bb'],
+                                            'divergencia': f"CPF DUPLICADO NO ARQUIVO BB ({len(unique_cards)} cartões distintos)",
+                                            'arquivo_origem': row['arquivo_bb'],
+                                            'tipo_erro': 'CRITICO'
+                                         })
+
+                    # 2. CRUZAMENTO COM O SISTEMA (Baseado em Cartão E CPF)
                     conn = get_db_connection()
                     df_db = pd.read_sql("SELECT num_cartao, nome, cpf, programa FROM payments", conn)
+                    conn.close()
                     
                     if df_db.empty:
-                        st.error("Base de dados do sistema vazia. Não é possível comparar.")
-                        conn.close()
+                        st.error("Base de dados do sistema vazia. Não é possível comparar com DB.")
                     else:
+                        # Padronização
                         final_bb['match_cartao'] = final_bb['num_cartao'].astype(str).str.strip().str.replace(r'^0+', '', regex=True)
+                        final_bb['match_cpf'] = final_bb['cpf_bb'].astype(str).str.strip().str.replace(r'\D', '', regex=True).str.zfill(11) # Padroniza CPF 11 digitos
+                        
                         df_db['match_cartao'] = df_db['num_cartao'].astype(str).str.strip().str.replace(r'^0+', '', regex=True).str.replace(r'\.0$', '', regex=True)
+                        df_db['match_cpf'] = df_db['cpf'].astype(str).str.strip().str.replace(r'\D', '', regex=True).str.zfill(11)
+
+                        # A) Merge por Cartão (Checa divergência de Nome/CPF para o mesmo cartão)
+                        merged_card = pd.merge(df_db, final_bb, on='match_cartao', how='inner', suffixes=('_sis', '_bb'))
                         
-                        merged = pd.merge(df_db, final_bb, on='match_cartao', how='inner', suffixes=('_sis', '_bb'))
-                        
-                        divergencias_to_save = []
-                        
-                        for _, row in merged.iterrows():
-                            # Proteção contra NaN
-                            nome_sis = str(row['nome_sis']).strip().upper() if 'nome_sis' in row else str(row.get('nome', '')).strip().upper()
+                        for _, row in merged_card.iterrows():
+                            nome_sis = str(row['nome_sis']).strip().upper() if 'nome_sis' in row else ''
                             nome_bb = str(row['nome_bb']).strip().upper()
-                            
-                            cpf_sis = str(row['cpf_sis']).strip() if 'cpf_sis' in row else str(row.get('cpf', '')).strip()
-                            cpf_bb = str(row['cpf_bb']).strip()
+                            cpf_sis = str(row.get('match_cpf_sis', '')).strip()
+                            cpf_bb = str(row.get('match_cpf_bb', '')).strip()
                             
                             motivos = []
-                            if nome_sis != nome_bb:
-                                motivos.append(f"Nome Diferente ({nome_bb})")
-                            if cpf_sis != cpf_bb and cpf_sis != '' and cpf_bb != '':
-                                motivos.append(f"CPF Diferente ({cpf_bb})")
+                            if nome_sis and nome_sis != nome_bb:
+                                motivos.append(f"Nome Diferente")
+                            if cpf_sis and cpf_bb and cpf_sis != cpf_bb:
+                                motivos.append(f"CPF Diferente (SIS:{cpf_sis} != BB:{cpf_bb})")
                                 
                             if motivos:
                                 divergencias_to_save.append({
@@ -954,20 +1006,49 @@ def main_app():
                                     'cpf_sis': cpf_sis,
                                     'cpf_bb': cpf_bb,
                                     'divergencia': ", ".join(motivos),
-                                    'arquivo_origem': row['arquivo_bb']
+                                    'arquivo_origem': row['arquivo_bb'],
+                                    'tipo_erro': 'DIVERGENCIA'
                                 })
+
+                        # B) Merge por CPF (Checa se a mesma pessoa tem Cartão diferente no Banco vs Sistema)
+                        # Isso pega o caso: "Subi um documento onde CPFs duplicados... contas diferentes"
+                        merged_cpf = pd.merge(df_db, final_bb, on='match_cpf', how='inner', suffixes=('_sis', '_bb'))
                         
-                        # SALVAR NO BANCO PARA PERSISTÊNCIA
+                        for _, row in merged_cpf.iterrows():
+                            cartao_sis = str(row['match_cartao_sis'])
+                            cartao_bb = str(row['match_cartao_bb'])
+                            
+                            # Se o CPF é o mesmo, mas o cartão no banco é diferente do sistema
+                            if cartao_sis != cartao_bb:
+                                divergencias_to_save.append({
+                                    'cartao': f"SIS:{cartao_sis} / BB:{cartao_bb}",
+                                    'nome_sis': row['nome_sis'],
+                                    'nome_bb': row['nome_bb'],
+                                    'cpf_sis': row['match_cpf'],
+                                    'cpf_bb': row['match_cpf'],
+                                    'divergencia': "MESMO CPF COM CARTÃO DIFERENTE NO BANCO",
+                                    'arquivo_origem': row['arquivo_bb'],
+                                    'tipo_erro': 'CRITICO' # Erro grave
+                                })
+
+                        # SALVAR TUDO
                         if divergencias_to_save:
-                            df_div_save = pd.DataFrame(divergencias_to_save)
+                            # Remove duplicatas exatas na lista antes de salvar
+                            unique_divs = {f"{d['cartao']}-{d['divergencia']}": d for d in divergencias_to_save}.values()
+                            
+                            df_div_save = pd.DataFrame(unique_divs)
                             df_div_save.to_sql('bank_discrepancies', conn, if_exists='append', index=False)
                             conn.commit()
                             conn.close()
                             
-                            st.success(f"✅ {len(df_div_save)} divergências encontradas e salvas no banco de dados com sucesso!")
+                            criticos_count = len(df_div_save[df_div_save['tipo_erro'] == 'CRITICO'])
+                            if criticos_count > 0:
+                                st.error(f"🚨 FORAM ENCONTRADOS {criticos_count} ERROS CRÍTICOS (DUPLICIDADE/CONFLITO CPF)!")
+                            
+                            st.success(f"✅ Processamento concluído. {len(df_div_save)} divergências registradas.")
                             st.rerun()
                         else:
-                            st.success("✅ Nenhuma divergência cadastral encontrada.")
+                            st.success("✅ Nenhuma divergência encontrada nos cruzamentos.")
                             conn.close()
 
     elif choice == "Dashboard":
