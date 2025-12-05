@@ -599,7 +599,8 @@ def login_screen():
             st.markdown("<h3 style='text-align: center;'>Acesso Restrito</h3>", unsafe_allow_html=True)
             email = st.text_input("E-mail (@prefeitura.sp.gov.br)")
             password = st.text_input("Senha", type="password")
-            submitted = st.form_submit_button("Entrar", use_container_width=True)
+            # REMOVIDO use_container_width=True para evitar warning
+            submitted = st.form_submit_button("Entrar")
             
             if submitted:
                 if not email.endswith("@prefeitura.sp.gov.br"):
@@ -698,17 +699,18 @@ def main_app():
                         continue
                         
                     try:
+                        # LEITURA COM DTYPE=STR PARA EVITAR ERROS DE TIPAGEM E MEMÓRIA
                         if file.name.endswith('.csv'):
                             try:
-                                df = pd.read_csv(file, sep=';', encoding='latin1')
+                                df = pd.read_csv(file, sep=';', encoding='latin1', dtype=str)
                             except:
                                 file.seek(0)
-                                df = pd.read_csv(file, sep=',', encoding='utf-8')
+                                df = pd.read_csv(file, sep=',', encoding='utf-8', dtype=str)
                         elif file.name.endswith('.xlsx'):
-                            df = pd.read_excel(file)
+                            df = pd.read_excel(file, dtype=str)
                         elif file.name.endswith('.txt'):
                             # Tentar ler TXT tabulares, mas evitar o layout posicional do BB
-                            df = pd.read_csv(file, sep=r'\s+', encoding='latin1', on_bad_lines='skip')
+                            df = pd.read_csv(file, sep=r'\s+', encoding='latin1', on_bad_lines='skip', dtype=str)
                             
                         # Padronizar e Aplicar Regra de Exclusão da Última Linha
                         df_std = standardize_dataframe(df, file.name)
