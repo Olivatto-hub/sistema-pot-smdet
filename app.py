@@ -270,6 +270,25 @@ def remove_accents(input_str):
     nfkd_form = unicodedata.normalize('NFKD', input_str)
     return "".join([c for c in nfkd_form if not unicodedata.combining(c)]).upper().strip()
 
+def normalize_name(name):
+    """
+    Normaliza nomes para comparação estrita:
+    1. Remove acentos
+    2. Converte para maiúsculas
+    3. Remove espaços extras (inicio, fim e duplos no meio)
+    4. Trata Nulos
+    """
+    if not name or str(name).lower() in ['nan', 'none', '']:
+        return ""
+    
+    # Converter para string e normalizar unicode (remove acentos)
+    s = str(name)
+    nfkd_form = unicodedata.normalize('NFKD', s)
+    only_ascii = "".join([c for c in nfkd_form if not unicodedata.combining(c)])
+    
+    # Maiúsculas e remover espaços extras (split sem args remove todo whitespace duplicado)
+    return " ".join(only_ascii.upper().split())
+
 def get_brasilia_time():
     return datetime.now(timezone(timedelta(hours=-3)))
 
@@ -357,8 +376,6 @@ def standardize_dataframe(df, filename):
     df = remove_total_row(df)
 
     # Limpeza básica e Garantia de que Nulos sejam strings vazias para validação posterior
-    # CORREÇÃO: Utilizando regex com flag (?i) para case-insensitive em vez do argumento 'case=False'
-    
     if 'num_cartao' in df.columns:
         # Primeiro converte nan para string vazia
         df['num_cartao'] = df['num_cartao'].fillna('').astype(str).str.strip()
@@ -1074,13 +1091,16 @@ def main_app():
                 merged = pd.merge(df_sys, final_bb, on='key', suffixes=('_sis', '_bb'))
                 divs = []
                 for _, row in merged.iterrows():
-                    nm_s = str(row.get('nome_sis','')).strip().upper()
-                    nm_b = str(row.get('nome_bb','')).strip().upper()
+                    # AQUI FOI APLICADA A CORREÇÃO DE NORMALIZAÇÃO
+                    nm_s = normalize_name(row.get('nome_sis', ''))
+                    nm_b = normalize_name(row.get('nome_bb', ''))
+                    
+                    # Só aponta erro se realmente forem diferentes após normalização rigorosa
                     if nm_s != nm_b:
                         divs.append({
                             'cartao': row['key'],
-                            'nome_sis': nm_s,
-                            'nome_bb': nm_b,
+                            'nome_sis': row.get('nome_sis', ''), # Mantém o original para exibição
+                            'nome_bb': row.get('nome_bb', ''),   # Mantém o original para exibição
                             'divergencia': 'NOME DIFERENTE',
                             'arquivo_origem': row['arquivo_bb']
                         })
