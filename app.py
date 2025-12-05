@@ -74,6 +74,11 @@ st.markdown("""
         border-bottom: 1px solid #ccc;
         padding-bottom: 5px;
     }
+    /* Estilo para a tabela de usuários */
+    .user-row {
+        padding: 10px 0;
+        border-bottom: 1px solid #eee;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -239,6 +244,7 @@ def get_manual_content(tipo):
         - Na aba **Gestão de Equipe**, você pode cadastrar novos analistas.
         - Preencha E-mail e Nome.
         - A senha inicial padrão é `mudar123`. Oriente o usuário a trocá-la imediatamente.
+        - **Novidade:** Agora é possível resetar senhas de usuários esquecidos e excluir cadastros antigos.
         
         ## 4. Limpeza de Histórico de Conferência
         - Na aba de Conferência Bancária, você tem permissão para limpar o histórico de divergências antigas para iniciar um novo ciclo de verificação.
@@ -300,7 +306,6 @@ def create_manual_pdf(title, content):
             pdf.multi_cell(0, 10, sanitize_text(clean_line.replace('## ', '')))
             pdf.set_font("Arial", '', 12)
         elif clean_line.startswith('- '):
-             # AQUI ESTÁ A CORREÇÃO: USAR HÍFEN AO INVÉS DE BULLET
              pdf.multi_cell(0, 8, sanitize_text("  - " + clean_line.replace('- ', '')))
         else:
             pdf.multi_cell(0, 8, sanitize_text(clean_line))
@@ -658,6 +663,49 @@ def generate_audit_log_pdf(logs_df):
         print_pdf_row_multiline(pdf, w, data)
     return pdf.output(dest='S').encode('latin-1', 'replace')
 
+def generate_conference_pdf(hist_df):
+    """Gera PDF das divergências bancárias."""
+    if FPDF is None: return b"Erro: FPDF ausente."
+    pdf = FPDF()
+    pdf.add_page(orientation='L')
+    
+    # --- CABEÇALHO ---
+    pdf.set_font("Arial", 'B', 14)
+    pdf.cell(0, 8, sanitize_text("Prefeitura de São Paulo"), 0, 1, 'C')
+    pdf.set_font("Arial", 'B', 12)
+    pdf.cell(0, 8, sanitize_text("Relatório de Divergências Bancárias"), 0, 1, 'C')
+    pdf.ln(5)
+    
+    data_br = get_brasilia_time().strftime('%d/%m/%Y às %H:%M')
+    pdf.set_font("Arial", '', 10)
+    pdf.cell(0, 6, sanitize_text(f"Gerado em: {data_br}"), 0, 1, 'R')
+    pdf.ln(5)
+
+    if hist_df.empty:
+        pdf.cell(0, 10, sanitize_text("Nenhuma divergência registrada."), 0, 1)
+        return pdf.output(dest='S').encode('latin-1', 'replace')
+
+    pdf.set_font("Arial", 'B', 8)
+    pdf.set_fill_color(255, 240, 240)
+    # Colunas: Cartão, Nome Sistema, Nome Banco, Divergência
+    widths = [30, 80, 80, 50]
+    headers = ["CARTÃO", "NOME NO SISTEMA", "NOME NO BANCO", "DIVERGÊNCIA"]
+    
+    for i, h in enumerate(headers): pdf.cell(widths[i], 8, sanitize_text(h), 1, 0, 'C', True)
+    pdf.ln()
+    
+    pdf.set_font("Arial", '', 7)
+    for _, row in hist_df.iterrows():
+        row_data = [
+            str(row.get('cartao','')),
+            str(row.get('nome_sis','')),
+            str(row.get('nome_bb','')),
+            str(row.get('divergencia',''))
+        ]
+        print_pdf_row_multiline(pdf, widths, row_data)
+
+    return pdf.output(dest='S').encode('latin-1', 'replace')
+
 # ===========================================
 # INTERFACE
 # ===========================================
@@ -682,6 +730,34 @@ def login_screen():
                         st.rerun()
                     else: st.error("Inválido.")
                 else: st.error("Domínio inválido.")
+
+def change_password_screen():
+    render_header()
+    col1, col2, col3 = st.columns([1,2,1])
+    with col2:
+        st.markdown("### 🔐 Troca de Senha Obrigatória")
+        st.warning("É necessário redefinir sua senha para continuar.")
+        
+        with st.form("change_pass"):
+            p1 = st.text_input("Nova Senha", type="password")
+            p2 = st.text_input("Confirmar Senha", type="password")
+            if st.form_submit_button("Atualizar Senha"):
+                if len(p1) < 6:
+                    st.error("A senha deve ter pelo menos 6 caracteres.")
+                elif p1 != p2:
+                    st.error("As senhas não conferem.")
+                else:
+                    new_hash = hashlib.sha256(p1.encode()).hexdigest()
+                    conn = get_db_connection()
+                    email = st.session_state['user_info']['email']
+                    conn.execute("UPDATE users SET password = ?, first_login = 0 WHERE email = ?", (new_hash, email))
+                    conn.commit()
+                    conn.close()
+                    
+                    st.session_state['user_info']['first_login'] = 0
+                    log_action(email, "TROCA_SENHA", "Usuário alterou a senha inicial")
+                    st.success("Senha alterada com sucesso! Redirecionando...")
+                    st.rerun()
 
 def main_app():
     user = st.session_state['user_info']
@@ -939,23 +1015,89 @@ def main_app():
 
     elif choice == "Gestão de Equipe":
         render_header()
-        st.markdown("### Adicionar Usuário")
-        with st.form("add_user"):
-            new_email = st.text_input("E-mail")
-            new_name = st.text_input("Nome")
-            new_role = st.selectbox("Perfil", ["user", "admin_equipe"])
-            if st.form_submit_button("Criar Usuário"):
-                if new_email.endswith("@prefeitura.sp.gov.br"):
+        
+        # --- SEÇÃO DE CADASTRO ---
+        st.markdown("### Adicionar Novo Usuário")
+        with st.expander("📝 Formulário de Cadastro", expanded=False):
+            with st.form("add_user"):
+                new_email = st.text_input("E-mail (Institucional)")
+                new_name = st.text_input("Nome Completo")
+                new_role = st.selectbox("Perfil de Acesso", ["user", "admin_equipe"])
+                if st.form_submit_button("Criar Usuário"):
+                    if new_email.endswith("@prefeitura.sp.gov.br"):
+                        conn = get_db_connection()
+                        try:
+                            # Senha padrão 'mudar123'
+                            ptemp = hashlib.sha256('mudar123'.encode()).hexdigest()
+                            conn.execute("INSERT INTO users VALUES (?, ?, ?, ?, 1)", (new_email, ptemp, new_role, new_name))
+                            conn.commit()
+                            st.success(f"Usuário {new_name} criado com sucesso!")
+                            log_action(user['email'], "CRIAR_USUARIO", f"Criou usuário {new_email}")
+                        except sqlite3.IntegrityError:
+                            st.error("Erro: E-mail já cadastrado.")
+                        except Exception as e: st.error(f"Erro: {e}")
+                        conn.close()
+                    else: st.error("Email deve ser @prefeitura.sp.gov.br")
+
+        st.markdown("---")
+        
+        # --- SEÇÃO DE LISTAGEM E GERENCIAMENTO ---
+        st.markdown("### 👥 Usuários Cadastrados")
+        st.info("Utilize os botões à direita para resetar a senha (volta para 'mudar123') ou excluir o usuário.")
+
+        # Buscar usuários do banco
+        conn = get_db_connection()
+        users_db = pd.read_sql("SELECT email, name, role FROM users", conn)
+        conn.close()
+        
+        # Cabeçalho da Tabela Visual
+        c1, c2, c3, c4, c5 = st.columns([3, 3, 2, 1.5, 1.5])
+        c1.markdown("**Nome**")
+        c2.markdown("**E-mail**")
+        c3.markdown("**Perfil**")
+        c4.markdown("**Resetar**")
+        c5.markdown("**Excluir**")
+        
+        st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
+
+        for index, row in users_db.iterrows():
+            # Container para cada linha para manter o visual limpo
+            with st.container():
+                c1, c2, c3, c4, c5 = st.columns([3, 3, 2, 1.5, 1.5])
+                
+                c1.write(row['name'])
+                c2.write(row['email'])
+                
+                # Formatar o papel para ficar mais legível
+                role_display = "Admin TI" if row['role'] == 'admin_ti' else ("Líder/Admin" if row['role'] == 'admin_equipe' else "Analista")
+                c3.write(role_display)
+                
+                # Lógica dos Botões
+                # Não permitir ações sobre si mesmo para evitar trancar-se fora
+                is_self = (row['email'] == user['email'])
+                
+                # Botão Resetar Senha
+                if c4.button("🔄", key=f"btn_rst_{row['email']}", help="Reseta a senha para 'mudar123' e força troca no login", disabled=is_self):
                     conn = get_db_connection()
-                    try:
-                        ptemp = hashlib.sha256('mudar123'.encode()).hexdigest()
-                        conn.execute("INSERT INTO users VALUES (?, ?, ?, ?, 1)", (new_email, ptemp, new_role, new_name))
-                        conn.commit()
-                        st.success("Criado.")
-                        log_action(user['email'], "CRIAR_USUARIO", f"Criou usuário {new_email}")
-                    except Exception as e: st.error(f"Erro: {e}")
+                    pass_reset = hashlib.sha256('mudar123'.encode()).hexdigest()
+                    conn.execute("UPDATE users SET password = ?, first_login = 1 WHERE email = ?", (pass_reset, row['email']))
+                    conn.commit()
                     conn.close()
-                else: st.error("Email inválido.")
+                    log_action(user['email'], "RESET_SENHA", f"Resetou senha de {row['email']}")
+                    st.toast(f"Senha de {row['name']} resetada para 'mudar123'!")
+                    
+                # Botão Excluir
+                if c5.button("🗑️", key=f"btn_del_{row['email']}", help="Exclui o usuário permanentemente", disabled=is_self):
+                    conn = get_db_connection()
+                    conn.execute("DELETE FROM users WHERE email = ?", (row['email'],))
+                    conn.commit()
+                    conn.close()
+                    log_action(user['email'], "EXCLUIR_USUARIO", f"Excluiu usuário {row['email']}")
+                    st.success(f"Usuário {row['name']} removido.")
+                    st.rerun()
+                
+                st.markdown("<div class='user-row'></div>", unsafe_allow_html=True)
+
 
     elif choice == "Administração TI" and user['role'] == 'admin_ti':
         render_header()
