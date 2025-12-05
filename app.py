@@ -88,7 +88,7 @@ def render_header():
 DB_FILE = 'pot_system.db'
 
 def init_db():
-    """Inicializa o banco de dados e cria tabelas se não existirem."""
+    """Inicializa o banco de dados e atualiza esquema se necessário."""
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     
@@ -108,6 +108,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS payments (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             programa TEXT,
+            gerenciadora TEXT,
             num_cartao TEXT,
             nome TEXT,
             cpf TEXT,
@@ -119,11 +120,21 @@ def init_db():
             ano_ref TEXT,
             tipo_arquivo TEXT,
             arquivo_origem TEXT,
-            status TEXT, -- 'VALIDO', 'CORRECAO', 'PAGO'
+            status TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
     
+    # Verificação de Migração: Adicionar coluna 'gerenciadora' se não existir em bancos antigos
+    try:
+        c.execute("SELECT gerenciadora FROM payments LIMIT 1")
+    except sqlite3.OperationalError:
+        try:
+            c.execute("ALTER TABLE payments ADD COLUMN gerenciadora TEXT")
+            conn.commit()
+        except Exception as e:
+            pass # Coluna já existe ou erro ignorável no contexto
+
     # Criar usuário Admin padrão se não existir
     c.execute("SELECT * FROM users WHERE email = 'admin@prefeitura.sp.gov.br'")
     if not c.fetchone():
@@ -148,15 +159,16 @@ COLUMN_MAP = {
     'num cartao': 'num_cartao', 'numcartao': 'num_cartao', 'numcartão': 'num_cartao', 
     'código': 'num_cartao', 'codigo': 'num_cartao', 'c?igo': 'num_cartao',
     # Dados Pessoais
-    'nome': 'nome', 'nome do beneficiário': 'nome', 'participante': 'nome', 'nome do benefici?io': 'nome',
+    'nome': 'nome', 'nome do beneficiário': 'nome', 'participante': 'nome',
     'cpf': 'cpf',
     'rg': 'rg',
-    # Financeiro
+    # Financeiro e Estrutural
     'valor pagto': 'valor_pagto', 'valorpagto': 'valor_pagto', 'valor total': 'valor_pagto',
-    'dias a apagar': 'qtd_dias', 'dias': 'qtd_dias', 'dias validos': 'qtd_dias',
+    'dias a apagar': 'qtd_dias', 'dias': 'qtd_dias',
     'data pagto': 'data_pagto', 'datapagto': 'data_pagto',
     'projeto': 'programa',
-    'mês': 'mes_ref', 'mes': 'mes_ref'
+    'mês': 'mes_ref', 'mes': 'mes_ref',
+    'gerenciadora': 'gerenciadora', 'entidade': 'gerenciadora', 'parceiro': 'gerenciadora', 'os': 'gerenciadora'
 }
 
 def normalize_text(text):
@@ -165,42 +177,28 @@ def normalize_text(text):
     return text
 
 def remove_total_row(df):
-    """
-    Verifica se a última linha é uma linha de totalização e a remove.
-    Critério: Valor Pagto existe, mas Num Cartao, CPF, Nome e RG estão vazios/nulos.
-    """
+    """Verifica e remove linha de totalização."""
     if df.empty:
         return df
 
     last_idx = df.index[-1]
-    
-    # Colunas de identificação para verificar vacuidade
     id_cols = ['num_cartao', 'cpf', 'nome', 'rg']
     
     is_id_empty = True
     for col in id_cols:
         if col in df.columns:
             val = df.at[last_idx, col]
-            # Verifica se não é nulo e se, convertido para string, tem conteúdo
             if pd.notna(val) and str(val).strip() != '' and str(val).strip().lower() != 'nan':
                 is_id_empty = False
                 break
     
-    # Verifica se há valor de pagamento (indicando que é uma linha de soma)
-    has_value = False
-    if 'valor_pagto' in df.columns:
-        val_pagto = df.at[last_idx, 'valor_pagto']
-        if pd.notna(val_pagto):
-            has_value = True
-            
-    # Se não tem identificação mas tem valor (ou apenas não tem identificação), remove
     if is_id_empty:
         df = df.drop(last_idx)
         
     return df
 
 def standardize_dataframe(df, filename):
-    """Padroniza colunas e extrai metadados do arquivo."""
+    """Padroniza colunas, extrai metadados e trata Gerenciadoras."""
     
     # 1. Limpeza de Nomes de Colunas
     df.columns = [str(c).strip() for c in df.columns]
@@ -212,12 +210,11 @@ def standardize_dataframe(df, filename):
         if col_lower in COLUMN_MAP:
             rename_dict[col] = COLUMN_MAP[col_lower]
         else:
-            # Tentar match parcial seguro
+            # Match exato primeiro, depois parcial
             for key, val in COLUMN_MAP.items():
-                if key == col_lower: # Match exato primeiro
+                if key == col_lower:
                     rename_dict[col] = val
                     break
-            # Match parcial se não achou exato
             if col not in rename_dict:
                  for key, val in COLUMN_MAP.items():
                     if key in col_lower:
@@ -226,10 +223,10 @@ def standardize_dataframe(df, filename):
     
     df = df.rename(columns=rename_dict)
     
-    # CORREÇÃO: Remover colunas duplicadas
+    # Remover colunas duplicadas
     df = df.loc[:, ~df.columns.duplicated()]
     
-    # 3. Extrair Projeto e Data do Nome do Arquivo se não existir nas colunas
+    # 3. Extrair/Definir Programa e Gerenciadora
     filename_upper = filename.upper()
     
     programa = 'DESCONHECIDO'
@@ -244,8 +241,14 @@ def standardize_dataframe(df, filename):
     
     if 'programa' not in df.columns or df['programa'].isnull().all():
         df['programa'] = programa
+
+    # Tratamento de Gerenciadora (Se não existir, define como N/A)
+    if 'gerenciadora' not in df.columns:
+        df['gerenciadora'] = 'NÃO IDENTIFICADA'
+    else:
+        df['gerenciadora'] = df['gerenciadora'].fillna('NÃO IDENTIFICADA')
         
-    # Identificar Mês (Simplificado)
+    # Identificar Mês
     meses = ['JANEIRO', 'FEVEREIRO', 'MARÇO', 'ABRIL', 'MAIO', 'JUNHO', 'JULHO', 'AGOSTO', 'SETEMBRO', 'OUTUBRO', 'NOVEMBRO', 'DEZEMBRO']
     mes_ref = 'N/A'
     for mes in meses:
@@ -267,7 +270,6 @@ def standardize_dataframe(df, filename):
     # ==============================
 
     # 5. Limpeza de Dados
-    
     if 'num_cartao' in df.columns:
         df['num_cartao'] = df['num_cartao'].astype(str).str.replace(r'\.0$', '', regex=True).replace('nan', '')
     
@@ -291,7 +293,7 @@ def standardize_dataframe(df, filename):
         
     df['arquivo_origem'] = filename
     
-    cols_to_keep = ['programa', 'num_cartao', 'nome', 'cpf', 'rg', 'valor_pagto', 'data_pagto', 'qtd_dias', 'mes_ref', 'ano_ref', 'arquivo_origem']
+    cols_to_keep = ['programa', 'gerenciadora', 'num_cartao', 'nome', 'cpf', 'rg', 'valor_pagto', 'data_pagto', 'qtd_dias', 'mes_ref', 'ano_ref', 'arquivo_origem']
     final_cols = [c for c in cols_to_keep if c in df.columns]
     
     return df[final_cols]
@@ -315,7 +317,7 @@ def generate_bb_txt(df):
     return buffer.getvalue()
 
 def generate_pdf_report(df_filtered):
-    """Gera Relatório Executivo em PDF com cabeçalho oficial, gráficos e tabelas de inconsistências."""
+    """Gera Relatório Executivo em PDF com cabeçalho oficial, gráficos, gerenciadoras e inconsistências detalhadas."""
     pdf = FPDF()
     pdf.add_page()
     
@@ -335,6 +337,7 @@ def generate_pdf_report(df_filtered):
     total_valor = df_filtered['valor_pagto'].sum() if 'valor_pagto' in df_filtered.columns else 0.0
     total_benef = df_filtered['num_cartao'].nunique() if 'num_cartao' in df_filtered.columns else 0
     total_projetos = df_filtered['programa'].nunique() if 'programa' in df_filtered.columns else 0
+    total_gerenciadoras = df_filtered['gerenciadora'].nunique() if 'gerenciadora' in df_filtered.columns else 0
     total_registros = len(df_filtered)
     
     pdf.set_font("Arial", '', 10)
@@ -353,59 +356,68 @@ def generate_pdf_report(df_filtered):
     pdf.cell(100, 8, "Total de Beneficiários Únicos:", 1)
     pdf.cell(0, 8, str(total_benef), 1, 1)
     
-    pdf.cell(100, 8, "Total de Projetos Contemplados:", 1)
+    pdf.cell(100, 8, "Total de Projetos Ativos:", 1)
     pdf.cell(0, 8, str(total_projetos), 1, 1)
+
+    pdf.cell(100, 8, "Total de Gerenciadoras:", 1)
+    pdf.cell(0, 8, str(total_gerenciadoras), 1, 1)
     
     pdf.cell(100, 8, "Total de Registros Processados:", 1)
     pdf.cell(0, 8, str(total_registros), 1, 1)
     
     pdf.ln(5)
 
-    # --- GRÁFICOS (Matplotlib inserido no PDF) ---
+    # --- GRÁFICOS ---
     pdf.set_font("Arial", 'B', 12)
-    pdf.cell(0, 10, "2. Visualização Gráfica", 0, 1)
+    pdf.cell(0, 10, "2. Visualização Gráfica (Por Projeto e Gerenciadora)", 0, 1)
     
     if 'programa' in df_filtered.columns and 'valor_pagto' in df_filtered.columns:
         try:
-            # Importação Local para evitar erro se não estiver instalado no ambiente
             import matplotlib.pyplot as plt
             
-            # Gerar gráfico de barras
-            group_proj = df_filtered.groupby('programa')['valor_pagto'].sum().sort_values(ascending=True)
+            # Gráfico 1: Valor por Projeto
+            plt.figure(figsize=(10, 8))
             
-            plt.figure(figsize=(10, 5))
-            # Ajuste de cores e estilo
-            colors = plt.cm.Paired(range(len(group_proj)))
-            bars = plt.barh(group_proj.index, group_proj.values, color=colors)
+            plt.subplot(2, 1, 1)
+            group_proj = df_filtered.groupby('programa')['valor_pagto'].sum().sort_values(ascending=True)
+            colors_p = plt.cm.Paired(range(len(group_proj)))
+            plt.barh(group_proj.index, group_proj.values, color=colors_p)
             plt.xlabel('Valor Pago (R$)')
             plt.title('Total Pago por Projeto')
             plt.grid(axis='x', linestyle='--', alpha=0.7)
+            
+            # Gráfico 2: Valor por Gerenciadora
+            if 'gerenciadora' in df_filtered.columns:
+                plt.subplot(2, 1, 2)
+                group_ger = df_filtered.groupby('gerenciadora')['valor_pagto'].sum().sort_values(ascending=True)
+                colors_g = plt.cm.Pastel1(range(len(group_ger)))
+                plt.barh(group_ger.index, group_ger.values, color=colors_g)
+                plt.xlabel('Valor Pago (R$)')
+                plt.title('Total Pago por Gerenciadora')
+                plt.grid(axis='x', linestyle='--', alpha=0.7)
+
             plt.tight_layout()
             
-            # Salvar em arquivo temporário
             with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmpfile:
                 plt.savefig(tmpfile.name, dpi=100)
                 tmp_filename = tmpfile.name
             
-            # Inserir no PDF
             pdf.image(tmp_filename, x=10, w=190)
             pdf.ln(5)
-            
-            # Limpar
             plt.close()
             os.remove(tmp_filename)
         except ImportError:
             pdf.set_font("Arial", 'I', 10)
-            pdf.cell(0, 10, "Biblioteca gráfica (matplotlib) não encontrada. Gráfico não gerado.", 0, 1)
+            pdf.cell(0, 10, "Biblioteca gráfica não encontrada.", 0, 1)
         except Exception as e:
             pdf.set_font("Arial", 'I', 10)
             pdf.cell(0, 10, f"Erro ao gerar gráfico: {str(e)}", 0, 1)
     else:
         pdf.set_font("Arial", 'I', 12)
-        pdf.cell(0, 10, "Dados insuficientes para geração de gráficos.", 0, 1)
+        pdf.cell(0, 10, "Dados insuficientes para gráficos.", 0, 1)
 
-    # --- DETALHAMENTO POR PROJETO ---
-    pdf.add_page() # Quebra de página para tabelas
+    # --- DETALHAMENTO FINANCEIRO ---
+    pdf.add_page()
     pdf.set_font("Arial", 'B', 12)
     pdf.cell(0, 10, "3. Detalhamento Financeiro por Projeto", 0, 1)
     
@@ -423,55 +435,91 @@ def generate_pdf_report(df_filtered):
         
         pdf.set_font("Arial", '', 10)
         for _, row in group_proj_det.iterrows():
-            nome_proj = str(row['programa'])[:40]
-            qtd = str(row['num_cartao'])
-            val = f"{row['valor_pagto']:,.2f}"
-            
-            pdf.cell(90, 8, nome_proj, 1)
-            pdf.cell(40, 8, qtd, 1, 0, 'C')
-            pdf.cell(60, 8, val, 1, 1, 'R')
-            
+            pdf.cell(90, 8, str(row['programa'])[:40], 1)
+            pdf.cell(40, 8, str(row['num_cartao']), 1, 0, 'C')
+            pdf.cell(60, 8, f"{row['valor_pagto']:,.2f}", 1, 1, 'R')
     else:
-        pdf.set_font("Arial", 'I', 12)
-        pdf.cell(0, 10, "Dados insuficientes para detalhamento por projeto.", 0, 1)
+        pdf.cell(0, 10, "Dados insuficientes.", 0, 1)
         
+    pdf.ln(5)
+    
+    # --- DETALHAMENTO GERENCIADORA ---
+    pdf.set_font("Arial", 'B', 12)
+    pdf.cell(0, 10, "4. Detalhamento por Gerenciadora", 0, 1)
+    
+    if 'gerenciadora' in df_filtered.columns:
+        group_ger_det = df_filtered.groupby('gerenciadora').agg({
+            'valor_pagto': 'sum',
+            'num_cartao': 'count'
+        }).reset_index().sort_values('valor_pagto', ascending=False)
+        
+        pdf.set_font("Arial", 'B', 10)
+        pdf.set_fill_color(230, 240, 255)
+        pdf.cell(90, 8, "GERENCIADORA", 1, 0, 'L', True)
+        pdf.cell(40, 8, "QTD REGISTROS", 1, 0, 'C', True)
+        pdf.cell(60, 8, "VALOR TOTAL (R$)", 1, 1, 'R', True)
+        
+        pdf.set_font("Arial", '', 10)
+        for _, row in group_ger_det.iterrows():
+            pdf.cell(90, 8, str(row['gerenciadora'])[:40], 1)
+            pdf.cell(40, 8, str(row['num_cartao']), 1, 0, 'C')
+            pdf.cell(60, 8, f"{row['valor_pagto']:,.2f}", 1, 1, 'R')
+    else:
+        pdf.cell(0, 10, "Coluna de gerenciadora não encontrada.", 0, 1)
+
     pdf.ln(10)
     
     # --- RELATÓRIO DE INCONSISTÊNCIAS ---
     pdf.set_font("Arial", 'B', 12)
-    pdf.cell(0, 10, "4. Relatório de Inconsistências (Ação Necessária)", 0, 1)
+    pdf.cell(0, 10, "5. Relatório de Inconsistências (Ação Necessária)", 0, 1)
     
-    # Identificar inconsistências: CPF vazio, Nome vazio ou Cartão vazio
     cols_check = [c for c in ['cpf', 'nome', 'num_cartao'] if c in df_filtered.columns]
     
     if cols_check:
-        mask = pd.Series(False, index=df_filtered.index)
-        for col in cols_check:
-            mask |= (df_filtered[col].isnull()) | (df_filtered[col].astype(str).str.strip() == '') | (df_filtered[col].astype(str).str.lower() == 'nan')
+        # Cálculos de Erros
+        sem_cpf = df_filtered[ (df_filtered['cpf'].isnull()) | (df_filtered['cpf'].astype(str).str.strip() == '') | (df_filtered['cpf'].astype(str).str.lower() == 'nan') ].shape[0]
+        sem_nome = df_filtered[ (df_filtered['nome'].isnull()) | (df_filtered['nome'].astype(str).str.strip() == '') | (df_filtered['nome'].astype(str).str.lower() == 'nan') ].shape[0]
+        sem_cartao = df_filtered[ (df_filtered['num_cartao'].isnull()) | (df_filtered['num_cartao'].astype(str).str.strip() == '') | (df_filtered['num_cartao'].astype(str).str.lower() == 'nan') ].shape[0]
         
-        inconsistent_df = df_filtered[mask]
+        total_inconsistentes = sem_cpf + sem_nome + sem_cartao
         
-        if not inconsistent_df.empty:
-            pdf.set_font("Arial", '', 10)
-            pdf.multi_cell(0, 6, f"Foram encontrados {len(inconsistent_df)} registros com dados cadastrais incompletos (CPF, Nome ou Cartão ausentes). Estes registros devem ser corrigidos antes do envio bancário.")
-            pdf.ln(5)
+        pdf.set_font("Arial", '', 10)
+        
+        # Texto descritivo solicitado
+        if sem_cpf > 0:
+            pdf.set_text_color(200, 0, 0)
+            pdf.multi_cell(0, 6, f"Foram encontrados {sem_cpf} registros com dados cadastrais incompletos, CPFs ausentes. Estes registros devem ser corrigidos.")
+            pdf.set_text_color(0, 0, 0)
+        
+        if sem_nome > 0:
+            pdf.multi_cell(0, 6, f"Foram encontrados {sem_nome} registros sem NOME do beneficiário.")
             
-            # Agrupar por projeto
+        if sem_cartao > 0:
+            pdf.multi_cell(0, 6, f"Foram encontrados {sem_cartao} registros sem NÚMERO DO CARTÃO.")
+            
+        if total_inconsistentes == 0:
+             pdf.cell(0, 10, "Nenhuma inconsistência de cadastro (CPF/Nome/Cartão) identificada.", 0, 1)
+        else:
+            pdf.ln(5)
+            # Tabela detalhada de erros
+            mask = pd.Series(False, index=df_filtered.index)
+            for col in cols_check:
+                mask |= (df_filtered[col].isnull()) | (df_filtered[col].astype(str).str.strip() == '') | (df_filtered[col].astype(str).str.lower() == 'nan')
+            
+            inconsistent_df = df_filtered[mask]
             projetos_errados = inconsistent_df['programa'].unique()
             
             for proj in projetos_errados:
                 pdf.set_font("Arial", 'B', 10)
                 pdf.cell(0, 8, f"Projeto: {proj}", 0, 1)
                 
-                # Cabeçalho Tabela de Erros
                 pdf.set_font("Arial", 'B', 8)
-                pdf.set_fill_color(255, 230, 230) # Fundo avermelhado
+                pdf.set_fill_color(255, 230, 230)
                 pdf.cell(70, 6, "NOME", 1, 0, 'L', True)
                 pdf.cell(40, 6, "CPF", 1, 0, 'C', True)
                 pdf.cell(40, 6, "CARTÃO", 1, 0, 'C', True)
                 pdf.cell(40, 6, "OBSERVAÇÃO", 1, 1, 'L', True)
                 
-                # Linhas
                 pdf.set_font("Arial", '', 8)
                 subset = inconsistent_df[inconsistent_df['programa'] == proj]
                 
@@ -490,18 +538,15 @@ def generate_pdf_report(df_filtered):
                     pdf.cell(40, 6, cpf, 1, 0, 'C')
                     pdf.cell(40, 6, cartao, 1, 0, 'C')
                     pdf.cell(40, 6, obs_str, 1, 1)
-                
                 pdf.ln(5)
-        else:
-            pdf.set_font("Arial", '', 10)
-            pdf.cell(0, 10, "Nenhuma inconsistência de cadastro (CPF/Nome/Cartão) identificada.", 0, 1)
+
     else:
         pdf.cell(0, 10, "Colunas de verificação não encontradas.", 0, 1)
     
     # --- NOTAS FINAIS ---
     pdf.ln(5)
     pdf.set_font("Arial", 'B', 12)
-    pdf.cell(0, 10, "5. Observações de Processamento", 0, 1)
+    pdf.cell(0, 10, "6. Observações de Processamento", 0, 1)
     pdf.set_font("Arial", '', 10)
     
     pdf.multi_cell(0, 6, 
@@ -636,7 +681,7 @@ def main_app():
                     # Salvar no Banco de Dados
                     conn = get_db_connection()
                     
-                    db_cols = ['programa', 'num_cartao', 'nome', 'cpf', 'rg', 'valor_pagto', 'mes_ref', 'arquivo_origem']
+                    db_cols = ['programa', 'gerenciadora', 'num_cartao', 'nome', 'cpf', 'rg', 'valor_pagto', 'mes_ref', 'arquivo_origem']
                     cols_to_save = [c for c in db_cols if c in final_df.columns]
                     
                     df_to_save = final_df[cols_to_save].copy()
@@ -721,11 +766,16 @@ def main_app():
         conn.close()
         
         if not df.empty and 'valor_pagto' in df.columns:
+            # Filtro Global do Dashboard
+            filtro_ger = st.multiselect("Filtrar por Gerenciadora", df['gerenciadora'].unique())
+            if filtro_ger:
+                df = df[df['gerenciadora'].isin(filtro_ger)]
+
             kpi1, kpi2, kpi3, kpi4 = st.columns(4)
             kpi1.metric("Total Pagamentos", f"R$ {df['valor_pagto'].sum():,.2f}")
             kpi2.metric("Beneficiários Únicos", df['num_cartao'].nunique() if 'num_cartao' in df.columns else 0)
             kpi3.metric("Projetos Ativos", df['programa'].nunique() if 'programa' in df.columns else 0)
-            kpi4.metric("Registros Totais", len(df))
+            kpi4.metric("Gerenciadoras", df['gerenciadora'].nunique() if 'gerenciadora' in df.columns else 0)
             
             st.markdown("---")
             
@@ -738,9 +788,11 @@ def main_app():
                     st.plotly_chart(fig_bar, use_container_width=True)
                 
             with c2:
-                st.subheader("Distribuição de Valores")
-                fig_hist = px.histogram(df, x='valor_pagto', nbins=20, title="Histograma de Valores")
-                st.plotly_chart(fig_hist, use_container_width=True)
+                st.subheader("Valor por Gerenciadora")
+                if 'gerenciadora' in df.columns:
+                    ger_group = df.groupby('gerenciadora')['valor_pagto'].sum().reset_index()
+                    fig_pie = px.pie(ger_group, names='gerenciadora', values='valor_pagto', title="Distribuição por Gerenciadora")
+                    st.plotly_chart(fig_pie, use_container_width=True)
         else:
             st.info("Sem dados suficientes para exibir dashboard.")
 
