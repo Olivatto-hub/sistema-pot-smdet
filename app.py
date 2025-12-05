@@ -817,8 +817,14 @@ def main_app():
     
     menu = ["Dashboard", "Upload e Processamento", "Análise e Correção", "Conferência Bancária (BB)", "Relatórios e Exportação"]
     menu.insert(1, "Manuais e Treinamento")
-    if user['role'] in ['admin_ti', 'admin_equipe']: menu.append("Gestão de Equipe")
-    if user['role'] == 'admin_ti': menu.append("Administração TI")
+    
+    # NOVAS OPÇÕES DE MENU
+    if user['role'] in ['admin_ti', 'admin_equipe']:
+        menu.append("Gestão de Dados") # Disponível para TI e Líderes
+        menu.append("Gestão de Equipe")
+        
+    if user['role'] == 'admin_ti': 
+        menu.append("Administração TI")
     
     choice = st.sidebar.radio("Menu", menu)
     
@@ -1112,6 +1118,97 @@ def main_app():
                     st.rerun()
                 else: st.success("✅ Processamento concluído: Nenhuma divergência encontrada.")
                 conn.close()
+    
+    # --- GESTÃO DE DADOS (NOVA SEÇÃO) ---
+    elif choice == "Gestão de Dados":
+        render_header()
+        st.markdown("### 🗄️ Gerenciamento de Registros e Arquivos")
+        st.info("Utilize esta área para excluir arquivos incorretos ou limpar registros específicos.")
+        
+        tab_files, tab_records = st.tabs(["📂 Excluir Arquivos Inteiros", "🔍 Buscar e Excluir Registros"])
+        
+        # TAB 1: GERENCIAR ARQUIVOS
+        with tab_files:
+            conn = get_db_connection()
+            try:
+                # Busca resumo dos arquivos
+                file_stats = pd.read_sql("""
+                    SELECT arquivo_origem, COUNT(*) as qtd_registros, MAX(created_at) as data_importacao 
+                    FROM payments 
+                    GROUP BY arquivo_origem 
+                    ORDER BY created_at DESC
+                """, conn)
+            except:
+                file_stats = pd.DataFrame()
+            conn.close()
+            
+            if not file_stats.empty:
+                st.dataframe(file_stats, use_container_width=True)
+                
+                st.markdown("#### Excluir Arquivo")
+                file_to_del = st.selectbox("Selecione o arquivo para excluir TODOS os seus registros:", 
+                                         file_stats['arquivo_origem'].unique())
+                
+                if st.button(f"🗑️ Excluir registros de: {file_to_del}"):
+                    conn = get_db_connection()
+                    conn.execute("DELETE FROM payments WHERE arquivo_origem = ?", (file_to_del,))
+                    conn.commit()
+                    conn.close()
+                    log_action(user['email'], "EXCLUIR_ARQUIVO", f"Excluiu arquivo: {file_to_del}")
+                    st.success(f"Todos os registros do arquivo '{file_to_del}' foram removidos.")
+                    st.rerun()
+            else:
+                st.info("Nenhum arquivo importado no momento.")
+
+        # TAB 2: GERENCIAR REGISTROS
+        with tab_records:
+            st.markdown("Busque por registros específicos para remoção cirúrgica.")
+            search_term = st.text_input("Buscar por Nome, CPF ou Cartão (mínimo 3 caracteres)", "")
+            
+            if len(search_term) >= 3:
+                conn = get_db_connection()
+                query = f"""
+                    SELECT id, nome, cpf, num_cartao, programa, arquivo_origem 
+                    FROM payments 
+                    WHERE nome LIKE ? OR cpf LIKE ? OR num_cartao LIKE ?
+                    LIMIT 50
+                """
+                like_term = f"%{search_term}%"
+                results = pd.read_sql(query, conn, params=(like_term, like_term, like_term))
+                conn.close()
+                
+                if not results.empty:
+                    st.write(f"Encontrados {len(results)} registros (limitado a 50):")
+                    
+                    # Usa selection_mode para permitir selecionar múltiplos
+                    event = st.dataframe(
+                        results,
+                        use_container_width=True,
+                        hide_index=True,
+                        selection_mode="multi-row",
+                        on_select="rerun",
+                        key="search_results"
+                    )
+                    
+                    selected_rows = event.selection.rows
+                    
+                    if selected_rows:
+                        ids_to_delete = results.iloc[selected_rows]['id'].tolist()
+                        st.error(f"⚠️ Você selecionou {len(ids_to_delete)} registro(s) para exclusão permanente.")
+                        
+                        if st.button("Confirmar Exclusão dos Selecionados"):
+                            conn = get_db_connection()
+                            # SQLite não suporta lista direta no execute, precisamos fazer um loop ou string format
+                            id_list = ','.join(map(str, ids_to_delete))
+                            conn.execute(f"DELETE FROM payments WHERE id IN ({id_list})")
+                            conn.commit()
+                            conn.close()
+                            
+                            log_action(user['email'], "EXCLUIR_REGISTROS", f"Excluiu IDs: {id_list}")
+                            st.success("Registros excluídos com sucesso!")
+                            st.rerun()
+                else:
+                    st.warning("Nenhum registro encontrado com este termo.")
 
     # --- GESTÃO DE EQUIPE ---
     elif choice == "Gestão de Equipe":
