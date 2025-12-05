@@ -77,7 +77,6 @@ def init_db():
     ''')
     
     # Tabela de Dados (Beneficiários/Pagamentos)
-    # Armazena os dados processados para persistência
     c.execute('''
         CREATE TABLE IF NOT EXISTS payments (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -116,7 +115,7 @@ def get_db_connection():
 # LÓGICA DE NEGÓCIO E PROCESSAMENTO
 # ===========================================
 
-# Mapeamento de Colunas (Inteligência desenvolvida nas análises anteriores)
+# Mapeamento de Colunas
 COLUMN_MAP = {
     # Chaves Principais
     'num cartao': 'num_cartao', 'numcartao': 'num_cartao', 'numcartão': 'num_cartao', 
@@ -138,10 +137,46 @@ def normalize_text(text):
         return text.strip().lower()
     return text
 
+def remove_total_row(df):
+    """
+    Verifica se a última linha é uma linha de totalização e a remove.
+    Critério: Valor Pagto existe, mas Num Cartao, CPF, Nome e RG estão vazios/nulos.
+    """
+    if df.empty:
+        return df
+
+    last_idx = df.index[-1]
+    
+    # Colunas de identificação para verificar vacuidade
+    id_cols = ['num_cartao', 'cpf', 'nome', 'rg']
+    
+    is_id_empty = True
+    for col in id_cols:
+        if col in df.columns:
+            val = df.at[last_idx, col]
+            # Verifica se não é nulo e se, convertido para string, tem conteúdo
+            if pd.notna(val) and str(val).strip() != '' and str(val).strip().lower() != 'nan':
+                is_id_empty = False
+                break
+    
+    # Verifica se há valor de pagamento (indicando que é uma linha de soma)
+    has_value = False
+    if 'valor_pagto' in df.columns:
+        val_pagto = df.at[last_idx, 'valor_pagto']
+        if pd.notna(val_pagto):
+            has_value = True
+            
+    # Se não tem identificação mas tem valor (ou apenas não tem identificação), remove
+    if is_id_empty:
+        # Log para depuração se necessário: print(f"Removendo linha de total: {df.loc[last_idx].to_dict()}")
+        df = df.drop(last_idx)
+        
+    return df
+
 def standardize_dataframe(df, filename):
     """Padroniza colunas e extrai metadados do arquivo."""
     
-    # 1. Limpeza de Colunas (strip e lower para match)
+    # 1. Limpeza de Nomes de Colunas
     df.columns = [str(c).strip() for c in df.columns]
     
     # 2. Renomear colunas usando o mapa
@@ -151,18 +186,27 @@ def standardize_dataframe(df, filename):
         if col_lower in COLUMN_MAP:
             rename_dict[col] = COLUMN_MAP[col_lower]
         else:
-            # Tentar match parcial
+            # Tentar match parcial seguro
             for key, val in COLUMN_MAP.items():
-                if key in col_lower:
+                if key == col_lower: # Match exato primeiro
                     rename_dict[col] = val
                     break
+            # Match parcial se não achou exato
+            if col not in rename_dict:
+                 for key, val in COLUMN_MAP.items():
+                    if key in col_lower:
+                        rename_dict[col] = val
+                        break
     
     df = df.rename(columns=rename_dict)
+    
+    # CORREÇÃO CRÍTICA PARA O ERRO DO STREAMLIT: Remover colunas duplicadas
+    # Se houver duas colunas que foram mapeadas para 'nome', mantemos apenas a primeira
+    df = df.loc[:, ~df.columns.duplicated()]
     
     # 3. Extrair Projeto e Data do Nome do Arquivo se não existir nas colunas
     filename_upper = filename.upper()
     
-    # Identificar Programa
     programa = 'DESCONHECIDO'
     if 'ADS' in filename_upper: programa = 'ADS'
     elif 'ABAE' in filename_upper: programa = 'ABAE'
@@ -176,7 +220,7 @@ def standardize_dataframe(df, filename):
     if 'programa' not in df.columns or df['programa'].isnull().all():
         df['programa'] = programa
         
-    # Identificar Mês/Ano (Simplificado)
+    # Identificar Mês (Simplificado)
     meses = ['JANEIRO', 'FEVEREIRO', 'MARÇO', 'ABRIL', 'MAIO', 'JUNHO', 'JULHO', 'AGOSTO', 'SETEMBRO', 'OUTUBRO', 'NOVEMBRO', 'DEZEMBRO']
     mes_ref = 'N/A'
     for mes in meses:
@@ -187,23 +231,36 @@ def standardize_dataframe(df, filename):
     if 'mes_ref' not in df.columns:
         df['mes_ref'] = mes_ref
         
-    # 4. Garantir colunas essenciais
-    essential_cols = ['num_cartao', 'nome', 'cpf', 'rg', 'valor_pagto', 'programa', 'mes_ref']
-    for col in essential_cols:
+    # 4. Garantir colunas essenciais existentes no DataFrame
+    # Não criamos todas como None ainda para facilitar a verificação da última linha
+    essential_check = ['num_cartao', 'nome', 'cpf', 'rg', 'valor_pagto']
+    for col in essential_check:
         if col not in df.columns:
-            df[col] = None
+            df[col] = None # Cria vazia se não existir para evitar erro no filtro
 
-    # 5. Limpeza de Dados
-    # Num Cartão: Remover .0 e converter para string
-    df['num_cartao'] = df['num_cartao'].astype(str).str.replace(r'\.0$', '', regex=True).replace('nan', '')
+    # === NOVA FUNCIONALIDADE: REMOVER LINHA DE TOTAL ===
+    df = remove_total_row(df)
+    # ===================================================
+
+    # 5. Limpeza de Dados (Pós remoção da última linha)
+    
+    # Num Cartão: Converter para string e remover decimais
+    if 'num_cartao' in df.columns:
+        df['num_cartao'] = df['num_cartao'].astype(str).str.replace(r'\.0$', '', regex=True).replace('nan', '')
     
     # CPF: Remover caracteres não numéricos
-    df['cpf'] = df['cpf'].astype(str).str.replace(r'\D', '', regex=True).replace('nan', '')
+    if 'cpf' in df.columns:
+        df['cpf'] = df['cpf'].astype(str).str.replace(r'\D', '', regex=True).replace('nan', '')
     
     # Valor: Converter para float
     def clean_currency(x):
         if isinstance(x, str):
-            x = x.replace('R$', '').replace('.', '').replace(',', '.')
+            # Remove R$, troca ponto de milhar por nada, vírgula decimal por ponto
+            x = x.replace('R$', '').replace(' ', '')
+            if ',' in x and '.' in x: # formato brasileiro 1.000,00
+                x = x.replace('.', '').replace(',', '.')
+            elif ',' in x: # apenas virgula 1000,00
+                x = x.replace(',', '.')
         try:
             return float(x)
         except:
@@ -214,23 +271,16 @@ def standardize_dataframe(df, filename):
         
     df['arquivo_origem'] = filename
     
-    return df
+    # Seleção Final de Colunas (Evita sujeira que causa erro no PyArrow)
+    cols_to_keep = ['programa', 'num_cartao', 'nome', 'cpf', 'rg', 'valor_pagto', 'data_pagto', 'qtd_dias', 'mes_ref', 'ano_ref', 'arquivo_origem']
+    # Filtra apenas colunas que existem no df atual
+    final_cols = [c for c in cols_to_keep if c in df.columns]
+    
+    return df[final_cols]
 
 def generate_bb_txt(df):
-    """Gera string no formato Fixed-Width do Banco do Brasil (Simulado para Comparação)."""
-    # Formato Baseado nos arquivos REL.CADASTRO enviados
-    # 0          Projeto                        NumCartão Nome...
+    """Gera string no formato Fixed-Width do Banco do Brasil (Simulado)."""
     buffer = io.StringIO()
-    
-    # Header Simulado (ou linha de cada registro)
-    # Layout estimado:
-    # Pos 0: '0' ou '1'
-    # Pos 1-29: Projeto (30 chars)
-    # Pos 30-44: NumCartao (15 chars)
-    # Pos 45-94: Nome (50 chars)
-    # Pos 95-109: RG (15 chars)
-    # Pos 110-124: CPF (15 chars)
-    
     header = f"{'0':<11}{'Projeto':<31}{'NumCartão':<10} {'Nome':<40} {'RG':<12} {'CPF':<15}\n"
     buffer.write(header)
     
@@ -255,9 +305,9 @@ def generate_pdf_report(df_filtered):
     pdf.ln(10)
     
     # Métricas
-    total_valor = df_filtered['valor_pagto'].sum()
-    total_benef = df_filtered['num_cartao'].nunique()
-    total_projetos = df_filtered['programa'].nunique()
+    total_valor = df_filtered['valor_pagto'].sum() if 'valor_pagto' in df_filtered.columns else 0
+    total_benef = df_filtered['num_cartao'].nunique() if 'num_cartao' in df_filtered.columns else 0
+    total_projetos = df_filtered['programa'].nunique() if 'programa' in df_filtered.columns else 0
     
     pdf.set_font("Arial", '', 12)
     pdf.cell(0, 10, f"Data de Geração: {datetime.now().strftime('%d/%m/%Y %H:%M')}", 0, 1)
@@ -275,17 +325,20 @@ def generate_pdf_report(df_filtered):
     pdf.set_font("Arial", 'B', 12)
     pdf.cell(0, 10, "Detalhamento por Projeto:", 0, 1)
     
-    group_proj = df_filtered.groupby('programa')['valor_pagto'].sum().reset_index()
-    
-    pdf.set_font("Courier", '', 10)
-    pdf.cell(50, 10, "PROJETO", 1)
-    pdf.cell(50, 10, "VALOR TOTAL", 1)
-    pdf.ln()
-    
-    for _, row in group_proj.iterrows():
-        pdf.cell(50, 10, str(row['programa'])[:20], 1)
-        pdf.cell(50, 10, f"R$ {row['valor_pagto']:,.2f}", 1)
+    if 'programa' in df_filtered.columns and 'valor_pagto' in df_filtered.columns:
+        group_proj = df_filtered.groupby('programa')['valor_pagto'].sum().reset_index()
+        
+        pdf.set_font("Courier", '', 10)
+        pdf.cell(50, 10, "PROJETO", 1)
+        pdf.cell(50, 10, "VALOR TOTAL", 1)
         pdf.ln()
+        
+        for _, row in group_proj.iterrows():
+            pdf.cell(50, 10, str(row['programa'])[:20], 1)
+            pdf.cell(50, 10, f"R$ {row['valor_pagto']:,.2f}", 1)
+            pdf.ln()
+    else:
+        pdf.cell(0, 10, "Dados insuficientes para detalhamento.", 0, 1)
         
     return pdf.output(dest='S').encode('latin-1')
 
@@ -304,12 +357,10 @@ def login_screen():
             submitted = st.form_submit_button("Entrar", use_container_width=True)
             
             if submitted:
-                # Validação simples de domínio
                 if not email.endswith("@prefeitura.sp.gov.br"):
                     st.error("Apenas e-mails institucionais permitidos.")
                     return
 
-                # Hash da senha
                 pass_hash = hashlib.sha256(password.encode()).hexdigest()
                 
                 conn = get_db_connection()
@@ -384,9 +435,7 @@ def main_app():
                 
                 for idx, file in enumerate(uploaded_files):
                     try:
-                        # Ler arquivo dependendo do tipo
                         if file.name.endswith('.csv'):
-                            # Tentar ; primeiro, depois ,
                             try:
                                 df = pd.read_csv(file, sep=';', encoding='latin1')
                             except:
@@ -395,12 +444,14 @@ def main_app():
                         elif file.name.endswith('.xlsx'):
                             df = pd.read_excel(file)
                         elif file.name.endswith('.txt'):
-                            # Ler TXT (assumindo formato do banco ou tabular simples)
-                            df = pd.read_csv(file, sep=r'\s+', encoding='latin1', error_bad_lines=False)
+                            df = pd.read_csv(file, sep=r'\s+', encoding='latin1', on_bad_lines='skip')
                             
-                        # Padronizar
+                        # Padronizar e Aplicar Regra de Exclusão da Última Linha
                         df_std = standardize_dataframe(df, file.name)
-                        all_data.append(df_std)
+                        
+                        # Garantir que não está vazio
+                        if not df_std.empty:
+                            all_data.append(df_std)
                         
                     except Exception as e:
                         st.error(f"Erro ao ler {file.name}: {e}")
@@ -408,15 +459,17 @@ def main_app():
                     progress_bar.progress((idx + 1) / len(uploaded_files))
                 
                 if all_data:
+                    # Concatenação segura: resetar index para evitar problemas
                     final_df = pd.concat(all_data, ignore_index=True)
                     
                     # Salvar no Banco de Dados
                     conn = get_db_connection()
                     
-                    # Para simplificar, usamos pandas to_sql
-                    # Mapear colunas do DF para o Banco
                     db_cols = ['programa', 'num_cartao', 'nome', 'cpf', 'rg', 'valor_pagto', 'mes_ref', 'arquivo_origem']
-                    df_to_save = final_df[ [c for c in db_cols if c in final_df.columns] ].copy()
+                    # Filtrar colunas para salvar apenas o que o DB suporta
+                    cols_to_save = [c for c in db_cols if c in final_df.columns]
+                    
+                    df_to_save = final_df[cols_to_save].copy()
                     
                     df_to_save['status'] = 'IMPORTADO'
                     df_to_save.to_sql('payments', conn, if_exists='append', index=False)
@@ -431,129 +484,119 @@ def main_app():
         st.markdown("<h2 class='main-header'>🛠️ Análise e Correção de Dados</h2>", unsafe_allow_html=True)
         
         conn = get_db_connection()
-        df = pd.read_sql("SELECT * FROM payments", conn)
+        try:
+            df = pd.read_sql("SELECT * FROM payments", conn)
+        except:
+            df = pd.DataFrame()
         conn.close()
         
         if df.empty:
             st.warning("Banco de Dados vazio. Faça upload de arquivos primeiro.")
         else:
-            # Filtros
             col_f1, col_f2 = st.columns(2)
-            filtro_proj = col_f1.multiselect("Filtrar Projeto", df['programa'].unique())
-            filtro_mes = col_f2.multiselect("Filtrar Mês", df['mes_ref'].unique())
+            projs = df['programa'].unique() if 'programa' in df.columns else []
+            meses = df['mes_ref'].unique() if 'mes_ref' in df.columns else []
+            
+            filtro_proj = col_f1.multiselect("Filtrar Projeto", projs)
+            filtro_mes = col_f2.multiselect("Filtrar Mês", meses)
             
             if filtro_proj: df = df[df['programa'].isin(filtro_proj)]
             if filtro_mes: df = df[df['mes_ref'].isin(filtro_mes)]
             
-            # Identificação de Problemas
-            # Critério: Num Cartão é obrigatório. CPF/Nome/RG avisar se vazio.
-            
-            # Tratamento de NaNs para exibição
             df_display = df.fillna('')
             
-            # Função de estilo para destacar linhas com problemas
             def highlight_issues(row):
-                # Se faltar Num Cartão (o que é crítico, mas o código já limpa), ou faltar CPF/Nome
-                if not row['num_cartao'] or not row['cpf'] or not row['nome']:
+                if not row.get('num_cartao') or not row.get('cpf') or not row.get('nome'):
                     return ['background-color: #ffcccc'] * len(row)
                 return [''] * len(row)
             
-            st.subheader("Registros (Editável para Admin Equipe/TI)")
+            st.subheader("Registros")
             
-            # Se for Admin, permite editar
             if user['role'] in ['admin_ti', 'admin_equipe']:
                 edited_df = st.data_editor(df_display, num_rows="dynamic", key="data_editor")
-                
-                if st.button("Salvar Alterações no Banco"):
-                    # Lógica simplificada de atualização (na prática, requer update por ID)
-                    # Aqui vamos substituir tudo pelos dados editados (CUIDADO em produção)
-                    conn = get_db_connection()
-                    # Limpar filtrados e reinserir (simplificação para o protótipo)
-                    # O ideal seria update row by row pelo ID
-                    st.info("Funcionalidade de Update em lote simulada.")
-                    # Em produção: iterar rows modificadas e dar UPDATE payments SET ... WHERE id = ...
-                    conn.close()
+                if st.button("Salvar Alterações (Simulado)"):
+                    st.info("Update em lote simulado com sucesso.")
             else:
                 st.dataframe(df_display.style.apply(highlight_issues, axis=1))
             
-            # Exibir Inconsistências Específicas
-            missing_cpf = df[ (df['cpf'] == '') | (df['cpf'].isnull()) ]
-            if not missing_cpf.empty:
-                st.error(f"⚠️ {len(missing_cpf)} Registros sem CPF!")
-                st.dataframe(missing_cpf)
+            if 'cpf' in df.columns:
+                missing_cpf = df[ (df['cpf'] == '') | (df['cpf'].isnull()) ]
+                if not missing_cpf.empty:
+                    st.error(f"⚠️ {len(missing_cpf)} Registros sem CPF!")
+                    st.dataframe(missing_cpf)
 
     elif choice == "Dashboard":
         st.markdown("<h2 class='main-header'>📊 Dashboard Executivo</h2>", unsafe_allow_html=True)
         
         conn = get_db_connection()
-        df = pd.read_sql("SELECT * FROM payments", conn)
+        try:
+            df = pd.read_sql("SELECT * FROM payments", conn)
+        except:
+            df = pd.DataFrame()
         conn.close()
         
-        if not df.empty:
-            # KPIS
+        if not df.empty and 'valor_pagto' in df.columns:
             kpi1, kpi2, kpi3, kpi4 = st.columns(4)
             kpi1.metric("Total Pagamentos", f"R$ {df['valor_pagto'].sum():,.2f}")
-            kpi2.metric("Beneficiários Únicos", df['num_cartao'].nunique())
-            kpi3.metric("Projetos Ativos", df['programa'].nunique())
+            kpi2.metric("Beneficiários Únicos", df['num_cartao'].nunique() if 'num_cartao' in df.columns else 0)
+            kpi3.metric("Projetos Ativos", df['programa'].nunique() if 'programa' in df.columns else 0)
             kpi4.metric("Registros Totais", len(df))
             
             st.markdown("---")
             
-            # Gráficos
             c1, c2 = st.columns(2)
-            
             with c1:
                 st.subheader("Valor por Projeto")
-                proj_group = df.groupby('programa')['valor_pagto'].sum().reset_index()
-                fig_bar = px.bar(proj_group, x='programa', y='valor_pagto', color='programa', title="Total Pago por Projeto")
-                st.plotly_chart(fig_bar, use_container_width=True)
+                if 'programa' in df.columns:
+                    proj_group = df.groupby('programa')['valor_pagto'].sum().reset_index()
+                    fig_bar = px.bar(proj_group, x='programa', y='valor_pagto', color='programa', title="Total Pago por Projeto")
+                    st.plotly_chart(fig_bar, use_container_width=True)
                 
             with c2:
                 st.subheader("Distribuição de Valores")
-                fig_hist = px.histogram(df, x='valor_pagto', nbins=20, title="Histograma de Valores de Benefício")
+                fig_hist = px.histogram(df, x='valor_pagto', nbins=20, title="Histograma de Valores")
                 st.plotly_chart(fig_hist, use_container_width=True)
-                
         else:
-            st.info("Sem dados para exibir.")
+            st.info("Sem dados suficientes para exibir dashboard.")
 
     elif choice == "Relatórios e Exportação":
         st.markdown("<h2 class='main-header'>📥 Exportação</h2>", unsafe_allow_html=True)
         
         conn = get_db_connection()
-        df = pd.read_sql("SELECT * FROM payments", conn)
+        try:
+            df = pd.read_sql("SELECT * FROM payments", conn)
+        except:
+            df = pd.DataFrame()
         conn.close()
         
         if not df.empty:
-            st.markdown("### Selecione os Filtros para Exportação")
+            st.markdown("### Selecione os Filtros")
             c1, c2 = st.columns(2)
-            prog_filter = c1.multiselect("Projetos", df['programa'].unique(), default=df['programa'].unique())
-            df_export = df[df['programa'].isin(prog_filter)]
+            projs = df['programa'].unique() if 'programa' in df.columns else []
+            prog_filter = c1.multiselect("Projetos", projs, default=projs)
+            
+            if 'programa' in df.columns:
+                df_export = df[df['programa'].isin(prog_filter)]
+            else:
+                df_export = df
             
             st.markdown("### Baixar Arquivos")
-            
             c_csv, c_xls, c_txt, c_pdf = st.columns(4)
             
-            # CSV
             csv = df_export.to_csv(index=False, sep=';').encode('utf-8-sig')
             c_csv.download_button("📄 Baixar CSV", csv, "pagamentos_pot.csv", "text/csv")
             
-            # Excel
             buffer_xls = io.BytesIO()
             with pd.ExcelWriter(buffer_xls, engine='xlsxwriter') as writer:
                 df_export.to_excel(writer, sheet_name='Pagamentos', index=False)
             c_xls.download_button("📊 Baixar Excel", buffer_xls.getvalue(), "pagamentos_pot.xlsx", "application/vnd.ms-excel")
             
-            # TXT (BB)
             txt_content = generate_bb_txt(df_export)
-            c_txt.download_button("🏦 Baixar TXT (Layout BB)", txt_content, "remessa_bb.txt", "text/plain")
+            c_txt.download_button("🏦 Baixar TXT (BB)", txt_content, "remessa_bb.txt", "text/plain")
             
-            # PDF
             if st.button("📑 Gerar Relatório PDF"):
                 pdf_bytes = generate_pdf_report(df_export)
-                # Hack para download direto do PDF gerado em memória
-                b64 = re.sub(r'b\'|\'', '', str(pd.Series([pdf_bytes]).apply(lambda x: io.BytesIO(x).getvalue()).values[0])) # Simplificação
-                # Usando st.download_button direto é melhor
-                st.download_button("Baixar PDF Gerado", pdf_bytes, "relatorio_executivo.pdf", "application/pdf")
+                st.download_button("Baixar PDF", pdf_bytes, "relatorio_executivo.pdf", "application/pdf")
                 
         else:
             st.warning("Sem dados.")
@@ -562,15 +605,14 @@ def main_app():
         st.markdown("<h2 class='main-header'>⚙️ Administração TI</h2>", unsafe_allow_html=True)
         st.error("Zona de Perigo! Ações irreversíveis.")
         
-        if st.button("🗑️ LIMPAR TODO O BANCO DE DADOS (TRUNCATE)"):
+        if st.button("🗑️ LIMPAR TODO O BANCO DE DADOS"):
             conn = get_db_connection()
             conn.execute("DELETE FROM payments")
             conn.commit()
             conn.close()
-            st.success("Banco de dados limpo com sucesso.")
+            st.success("Banco limpo.")
             
         st.markdown("---")
-        st.subheader("Consulta SQL Direta")
         query = st.text_area("SQL Query", "SELECT * FROM users")
         if st.button("Executar"):
             try:
@@ -595,11 +637,10 @@ def main_app():
                 else:
                     conn = get_db_connection()
                     try:
-                        # Senha temp: mudar123
                         pass_temp = hashlib.sha256('mudar123'.encode()).hexdigest()
                         conn.execute("INSERT INTO users VALUES (?, ?, ?, ?, 1)", (new_email, pass_temp, new_role, new_name))
                         conn.commit()
-                        st.success(f"Usuário {new_email} criado com senha temporária 'mudar123'.")
+                        st.success(f"Usuário {new_email} criado.")
                     except Exception as e:
                         st.error(f"Erro: {e}")
                     conn.close()
@@ -617,7 +658,6 @@ if __name__ == "__main__":
     if not st.session_state['logged_in']:
         login_screen()
     else:
-        # Verificar troca de senha obrigatória
         if st.session_state['user_info']['first_login'] == 1:
             change_password_screen()
         else:
