@@ -291,7 +291,8 @@ def create_manual_pdf(title, content):
             pdf.multi_cell(0, 10, sanitize_text(clean_line.replace('## ', '')))
             pdf.set_font("Arial", '', 12)
         elif clean_line.startswith('- '):
-             pdf.multi_cell(0, 8, sanitize_text("  • " + clean_line.replace('- ', '')))
+             # AQUI ESTÁ A CORREÇÃO: USAR HÍFEN AO INVÉS DE BULLET
+             pdf.multi_cell(0, 8, sanitize_text("  - " + clean_line.replace('- ', '')))
         else:
             pdf.multi_cell(0, 8, sanitize_text(clean_line))
             
@@ -529,6 +530,7 @@ def generate_pdf_report(df_filtered):
     pdf = FPDF()
     pdf.add_page(orientation='L')
     
+    # --- CABEÇALHO ---
     pdf.set_font("Arial", 'B', 14)
     pdf.cell(0, 8, sanitize_text("Prefeitura de São Paulo"), 0, 1, 'C')
     pdf.set_font("Arial", 'B', 12)
