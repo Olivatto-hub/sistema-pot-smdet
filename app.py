@@ -100,7 +100,6 @@ def render_header():
 DB_FILE = 'pot_system.db'
 
 def init_db():
-    # check_same_thread=False é crucial para Streamlit em ambiente local/cloud simples
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     c = conn.cursor()
     
@@ -172,11 +171,9 @@ def init_db():
     conn.close()
 
 def get_db_connection():
-    # Retorna conexão configurada para evitar erros de thread no Streamlit
     return sqlite3.connect(DB_FILE, check_same_thread=False)
 
 def log_action(user_email, action, details):
-    """Registra uma ação no log de auditoria."""
     try:
         conn = get_db_connection()
         conn.execute("INSERT INTO audit_logs (user_email, action, details) VALUES (?, ?, ?)", 
@@ -191,8 +188,6 @@ def log_action(user_email, action, details):
 # ===========================================
 
 def get_manual_content(tipo):
-    # (Mantido igual, apenas resumido aqui para economizar espaço se necessário, 
-    # mas o código completo incluirá todo o texto conforme solicitado)
     if tipo == "usuario":
         return """
         # Manual Operacional Básico - Sistema POT
@@ -200,14 +195,14 @@ def get_manual_content(tipo):
         ## 1. Visão Geral
         Bem-vindo ao Sistema de Gestão e Monitoramento de Pagamentos do POT.
         
-        ## 2. Persistência de Dados
-        - Todos os dados enviados são salvos automaticamente no Banco de Dados Seguro.
-        - Ao recarregar a página (F5), os arquivos no campo de upload somem, mas os dados PROCESSADOS continuam salvos nas abas de Dashboard e Análise.
-
-        ## 3. Upload e Validação
+        ## 2. Validação de Dados Críticos
+        - **CPFs Ausentes:** O sistema alerta imediatamente se um registro não tiver CPF.
+        - **Cartão Ausente:** Registros sem número de cartão são considerados críticos.
+        - **Duplicidades:** O sistema cruza CPFs e Nomes para evitar pagamentos duplos indevidos.
+        
+        ## 3. Upload e Processamento
         - Navegue até a aba **Upload e Processamento**.
-        - O sistema valida automaticamente CPFs duplicados e conflitos de cartão.
-        - Erros críticos aparecerão em vermelho na aba **Análise e Correção**.
+        - Ao carregar arquivos, uma tabela vermelha aparecerá se houver erros críticos.
         """
     elif tipo == "admin_equipe":
         return """
@@ -215,24 +210,19 @@ def get_manual_content(tipo):
         
         ## 1. Gestão de Usuários
         - Cadastre novos analistas com e-mail institucional.
-        - Utilize o botão **🗑️** para excluir usuários desligados.
-        - Utilize o botão **🔄** para resetar a senha de quem esqueceu (volta para `mudar123`).
-
+        
         ## 2. Correção de Dados (Malha Fina)
-        - Na aba **Análise e Correção**, você pode editar diretamente os dados errados.
-        - Ao clicar em "Salvar", o sistema atualiza o banco oficial.
-        - **Atenção:** A detecção de erros roda automaticamente após cada salvamento.
+        - Na aba **Análise e Correção**, registros com "CPF AUSENTE" ou "CARTÃO AUSENTE" aparecerão com destaque.
+        - Edite os campos vazios e clique em "Salvar" para regularizar.
         """
     elif tipo == "admin_ti":
         return """
         # Manual Técnico (TI)
         
         ## 1. Auditoria e Logs
-        - Todas as ações (Login, Upload, Edição, Exclusão de Usuário) são logadas.
-        - Acesse a aba **Administração TI** para ver e baixar os logs.
-        
+        - Todas as ações são logadas.
         ## 2. Reset do Sistema
-        - O botão "Limpar Dados" apaga todas as tabelas de pagamentos, mas mantém os usuários e logs.
+        - O botão "Limpar Dados" apaga tabela de pagamentos.
         """
     return ""
 
@@ -284,12 +274,12 @@ def get_brasilia_time():
     return datetime.now(timezone(timedelta(hours=-3)))
 
 # ===========================================
-# LÓGICA DE NEGÓCIO
+# LÓGICA DE NEGÓCIO E VALIDAÇÃO
 # ===========================================
 
 COLUMN_MAP = {
     'num cartao': 'num_cartao', 'numcartao': 'num_cartao', 'numcartão': 'num_cartao', 
-    'código': 'num_cartao', 'codigo': 'num_cartao', 'c?igo': 'num_cartao',
+    'código': 'num_cartao', 'codigo': 'num_cartao', 'cartao': 'num_cartao', 'cartão': 'num_cartao',
     'nome': 'nome', 'nome do beneficiário': 'nome', 'participante': 'nome',
     'cpf': 'cpf', 'rg': 'rg',
     'valor pagto': 'valor_pagto', 'valorpagto': 'valor_pagto', 'valor total': 'valor_pagto',
@@ -311,18 +301,6 @@ def remove_total_row(df):
                 is_id_empty = False
                 break
     if is_id_empty: df = df.drop(last_idx)
-    return df
-
-def parse_bb_txt_cadastro(file):
-    colspecs = [(0, 11), (11, 42), (42, 52), (52, 92), (92, 104), (104, 119)]
-    names = ['tipo', 'projeto_bb', 'num_cartao', 'nome_bb', 'rg_bb', 'cpf_bb']
-    file.seek(0)
-    df = pd.read_fwf(file, colspecs=colspecs, names=names, dtype=str, encoding='latin1')
-    if 'tipo' in df.columns:
-        df = df[df['tipo'].astype(str).str.strip() == '1'].copy()
-    df['num_cartao'] = df['num_cartao'].str.strip()
-    df['nome_bb'] = df['nome_bb'].str.strip()
-    df['cpf_bb'] = df['cpf_bb'].str.replace(r'\D', '', regex=True)
     return df
 
 def standardize_dataframe(df, filename):
@@ -378,11 +356,17 @@ def standardize_dataframe(df, filename):
 
     df = remove_total_row(df)
 
-    # Limpeza básica
+    # Limpeza básica e Garantia de que Nulos sejam strings vazias para validação posterior
     if 'num_cartao' in df.columns:
-        df['num_cartao'] = df['num_cartao'].astype(str).str.replace(r'\.0$', '', regex=True).replace('nan', '')
+        # Primeiro converte nan para string vazia
+        df['num_cartao'] = df['num_cartao'].fillna('').astype(str).str.strip()
+        # Remove sufixo .0 de floats convertidos
+        df['num_cartao'] = df['num_cartao'].str.replace(r'\.0$', '', regex=True).replace('nan', '', case=False)
+        
     if 'cpf' in df.columns:
-        df['cpf'] = df['cpf'].astype(str).str.replace(r'\D', '', regex=True).replace('nan', '')
+        df['cpf'] = df['cpf'].fillna('').astype(str).str.strip()
+        # Remove formatação apenas se houver conteudo, se for 'nan' vira vazio
+        df['cpf'] = df['cpf'].str.replace(r'\D', '', regex=True).replace('nan', '', case=False)
     
     def clean_currency(x):
         if isinstance(x, str):
@@ -400,87 +384,131 @@ def standardize_dataframe(df, filename):
     final_cols = [c for c in cols_to_keep if c in df.columns]
     return df[final_cols]
 
-def detect_critical_duplicates(df):
+def detect_inconsistencies(df):
     """
-    Detecta duplicidades críticas (mesmo CPF, dados diferentes) e fraudes potenciais.
-    Retorna um DataFrame vazio se não houver erros.
+    Detecta inconsistências críticas:
+    1. Ausência de CPF (Inconsistência)
+    2. Ausência de Num Cartão (Dado Crítico)
+    3. Duplicidades de CPF/Cartão (Fraudes Potenciais)
     """
     if df is None or df.empty:
         return pd.DataFrame()
     
+    # Garantir colunas
     needed = ['cpf', 'num_cartao', 'nome']
-    if not all(col in df.columns for col in needed):
-        return pd.DataFrame()
+    for col in needed:
+        if col not in df.columns:
+            df[col] = ''
     
     df_check = df.copy()
-    # Normalização robusta
-    df_check['cpf_clean'] = df_check['cpf'].astype(str).str.strip().str.replace(r'\D', '', regex=True)
-    df_check['card_clean'] = df_check['num_cartao'].astype(str).str.strip().str.replace(r'^0+', '', regex=True).str.replace(r'\.0$', '', regex=True)
+    
+    # Normalização local para análise
+    df_check['cpf_raw'] = df_check['cpf'].fillna('').astype(str).str.strip()
+    df_check['card_raw'] = df_check['num_cartao'].fillna('').astype(str).str.strip()
+    
+    # Limpeza profunda para detecção de duplicatas
+    df_check['cpf_clean'] = df_check['cpf_raw'].str.replace(r'\D', '', regex=True)
+    df_check['card_clean'] = df_check['card_raw'].str.replace(r'^0+', '', regex=True).str.replace(r'\.0$', '', regex=True)
     df_check['nome_clean'] = df_check['nome'].apply(remove_accents)
     
-    # Remover inválidos
-    df_check = df_check[ 
-        (df_check['cpf_clean'] != '') & 
-        (df_check['cpf_clean'].str.lower() != 'nan') &
-        (df_check['cpf_clean'].str.len() > 5) # CPFs muito curtos geralmente são lixo
-    ]
-    
-    critical_errors = []
+    errors = []
 
-    # 1. Verifica conflitos de CPF (Um CPF -> Múltiplos Cartões ou Nomes)
-    cpf_groups = df_check.groupby('cpf_clean')
-    for cpf, group in cpf_groups:
-        unique_cards = group['card_clean'].unique()
-        unique_names = group['nome_clean'].unique()
+    # ==========================================
+    # 1. VERIFICAÇÃO DE DADOS AUSENTES (PRIORIDADE)
+    # ==========================================
+    for idx, row in df_check.iterrows():
+        motivos = []
+        is_error = False
         
-        # Filtra 'nan' e vazios dos unicos
-        unique_cards = [c for c in unique_cards if c and str(c).lower() != 'nan']
-        unique_names = [n for n in unique_names if n and str(n).lower() != 'nan']
+        # Validação CPF Ausente
+        cpf_val = row['cpf_raw']
+        if not cpf_val or cpf_val.lower() == 'nan' or cpf_val.lower() == 'none':
+            motivos.append("CPF NÃO INFORMADO")
+            is_error = True
+            
+        # Validação Cartão Ausente
+        card_val = row['card_raw']
+        if not card_val or card_val.lower() == 'nan' or card_val.lower() == 'none':
+            motivos.append("CARTÃO NÃO INFORMADO")
+            is_error = True
+            
+        if is_error:
+            errors.append({
+                'ARQUIVO': row.get('arquivo_origem', '-'),
+                'LINHA': row.get('linha_arquivo', '-'),
+                'CPF': cpf_val if cpf_val else "VAZIO",
+                'CARTÃO': card_val if card_val else "VAZIO",
+                'NOME': row.get('nome', '-'),
+                'ERRO': " | ".join(motivos),
+                'TIPO_ERRO': 'AUSENCIA'
+            })
+
+    # ==========================================
+    # 2. VERIFICAÇÃO DE DUPLICIDADES / CONFLITOS
+    # ==========================================
+    
+    # Filtra apenas quem tem dados para checar duplicidade
+    df_valid = df_check[ 
+        (df_check['cpf_clean'] != '') & 
+        (df_check['cpf_clean'].str.len() > 5)
+    ]
+
+    # A. Conflitos de CPF (Um CPF -> Múltiplos Cartões ou Nomes)
+    cpf_groups = df_valid.groupby('cpf_clean')
+    for cpf, group in cpf_groups:
+        unique_cards = [c for c in group['card_clean'].unique() if c]
+        unique_names = [n for n in group['nome_clean'].unique() if n]
 
         has_card_conflict = len(unique_cards) > 1
         has_name_conflict = len(unique_names) > 1
         
         if has_card_conflict or has_name_conflict:
-            motivo = []
+            motivo_dup = []
             if has_card_conflict: 
                 cards_orig = group['num_cartao'].unique()
-                motivo.append(f"CONFLITO CARTÃO ({', '.join(map(str, cards_orig))})")
+                motivo_dup.append(f"CONFLITO CARTÃO ({', '.join(map(str, cards_orig))})")
             if has_name_conflict: 
-                motivo.append(f"CONFLITO NOME")
+                motivo_dup.append(f"CONFLITO NOME")
             
-            err_msg = " | ".join(motivo)
+            err_msg = " | ".join(motivo_dup)
             for _, row in group.iterrows():
-                critical_errors.append({
-                    'ARQUIVO': row.get('arquivo_origem', '-'),
-                    'LINHA': row.get('linha_arquivo', '-'),
-                    'CPF': cpf,
-                    'CARTÃO': row.get('num_cartao', '-'),
-                    'NOME': row.get('nome', '-'),
-                    'ERRO': err_msg
-                })
-
-    # 2. Verifica Cartão Duplicado em Pessoas Diferentes (Um Cartão -> Múltiplos CPFs)
-    card_groups = df_check.groupby('card_clean')
-    for card, group in card_groups:
-        if not card or str(card).lower() == 'nan': continue
-        unique_cpfs = group['cpf_clean'].unique()
-        unique_cpfs = [c for c in unique_cpfs if c]
-        
-        if len(unique_cpfs) > 1:
-            for _, row in group.iterrows():
-                critical_errors.append({
+                # Só adiciona se não for erro de ausência já detectado (opcional, mas bom pra limpar visualização)
+                errors.append({
                     'ARQUIVO': row.get('arquivo_origem', '-'),
                     'LINHA': row.get('linha_arquivo', '-'),
                     'CPF': row.get('cpf', '-'),
                     'CARTÃO': row.get('num_cartao', '-'),
                     'NOME': row.get('nome', '-'),
-                    'ERRO': f"FRAUDE: CARTÃO USADO EM {len(unique_cpfs)} CPFs"
+                    'ERRO': err_msg,
+                    'TIPO_ERRO': 'DUPLICIDADE'
                 })
 
-    if not critical_errors: return pd.DataFrame()
-    res_df = pd.DataFrame(critical_errors)
-    # Remover duplicatas exatas de reporte
-    return res_df.drop_duplicates(subset=['ARQUIVO', 'LINHA', 'CPF', 'CARTÃO', 'ERRO'])
+    # B. Cartão Duplicado em Pessoas Diferentes
+    card_groups = df_valid.groupby('card_clean')
+    for card, group in card_groups:
+        if not card: continue
+        unique_cpfs = [c for c in group['cpf_clean'].unique() if c]
+        
+        if len(unique_cpfs) > 1:
+            for _, row in group.iterrows():
+                errors.append({
+                    'ARQUIVO': row.get('arquivo_origem', '-'),
+                    'LINHA': row.get('linha_arquivo', '-'),
+                    'CPF': row.get('cpf', '-'),
+                    'CARTÃO': row.get('num_cartao', '-'),
+                    'NOME': row.get('nome', '-'),
+                    'ERRO': f"FRAUDE: CARTÃO USADO EM {len(unique_cpfs)} CPFs",
+                    'TIPO_ERRO': 'FRAUDE'
+                })
+
+    if not errors: return pd.DataFrame()
+    
+    res_df = pd.DataFrame(errors)
+    # Priorizar visualização: Ausências primeiro, depois fraudes
+    res_df['PRIORIDADE'] = res_df['TIPO_ERRO'].map({'AUSENCIA': 1, 'FRAUDE': 2, 'DUPLICIDADE': 3})
+    res_df = res_df.sort_values('PRIORIDADE')
+    
+    return res_df.drop_duplicates(subset=['ARQUIVO', 'LINHA', 'CPF', 'CARTÃO', 'ERRO']).drop(columns=['PRIORIDADE', 'TIPO_ERRO'])
 
 def generate_bb_txt(df):
     buffer = io.StringIO()
@@ -513,7 +541,6 @@ def print_pdf_row_multiline(pdf, widths, data, align='L', fill=False):
     # Quebra de página se necessário
     if pdf.get_y() + row_height > 190: 
         pdf.add_page(orientation='L')
-        # Redesenhar cabeçalho da tabela se quiser (opcional, simplificado aqui)
     
     x_start = pdf.get_x()
     y_start = pdf.get_y()
@@ -523,7 +550,7 @@ def print_pdf_row_multiline(pdf, widths, data, align='L', fill=False):
         pdf.multi_cell(width, line_height, content, 1, align, fill)
     pdf.set_xy(x_start, y_start + row_height)
 
-def generate_pdf_report(df_filtered, critical_errors_df=None):
+def generate_pdf_report(df_filtered, inconsistency_df=None):
     if FPDF is None: return b"Erro: FPDF ausente."
     pdf = FPDF()
     pdf.add_page(orientation='L')
@@ -599,42 +626,51 @@ def generate_pdf_report(df_filtered, critical_errors_df=None):
             pdf.cell(widths_det[2], 7, f"R$ {row['valor_pagto']:,.2f}", 1, 1, 'R')
     pdf.ln(10)
 
-    # 4. ALERTAS CRÍTICOS
-    # Se não foi passado externamente, calcula agora
-    if critical_errors_df is None:
-        critical_errors_df = detect_critical_duplicates(df_filtered)
+    # 4. ALERTAS DE INCONSISTÊNCIAS E DADOS AUSENTES
+    if inconsistency_df is None:
+        inconsistency_df = detect_inconsistencies(df_filtered)
         
-    if not critical_errors_df.empty:
+    if not inconsistency_df.empty:
         pdf.set_text_color(255, 0, 0)
         pdf.set_font("Arial", 'B', 12)
-        pdf.cell(0, 10, sanitize_text(f"⚠️ 4. ALERTA DE INCONSISTÊNCIAS ({len(critical_errors_df)} Ocorrências)"), 0, 1)
+        pdf.cell(0, 10, sanitize_text(f"⚠️ 4. ALERTA DE INCONSISTÊNCIAS E DADOS AUSENTES ({len(inconsistency_df)} Ocorrências)"), 0, 1)
         pdf.set_text_color(0, 0, 0)
         pdf.set_font("Arial", '', 10)
-        pdf.multi_cell(0, 6, sanitize_text("Registros com conflitos cadastrais graves (Mesmo CPF com Nomes/Cartões diferentes) ou indícios de fraude."))
+        pdf.multi_cell(0, 6, sanitize_text("Abaixo estão listados os registros contendo inconsistências críticas (Ausência de CPF/Cartão) e conflitos cadastrais (Duplicidades)."))
         pdf.ln(2)
         
-        pdf.set_font("Arial", 'B', 9)
+        pdf.set_font("Arial", 'B', 8)
         pdf.set_fill_color(255, 230, 230)
-        widths = [45, 15, 30, 25, 70, 90]
-        cols = ['ARQUIVO', 'LIN', 'CPF', 'CARTÃO', 'NOME', 'ERRO DETECTADO']
+        # Ajuste de larguras: Arquivo, Linha, CPF, Cartão, Nome, Erro
+        widths = [45, 12, 28, 28, 60, 95]
+        cols = ['ARQUIVO', 'LIN', 'CPF', 'CARTÃO', 'NOME', 'DESCRIÇÃO DO ERRO']
         for i, col in enumerate(cols): pdf.cell(widths[i], 8, sanitize_text(col), 1, 0, 'C', True)
         pdf.ln()
         pdf.set_font("Arial", '', 8)
         
-        # Limitar a exibição no PDF se for muito grande para não travar
-        max_rows = 200
+        # Limitar a exibição no PDF se for muito grande
+        max_rows = 300
         count = 0
-        for _, row in critical_errors_df.iterrows():
+        for _, row in inconsistency_df.iterrows():
             if count >= max_rows:
-                pdf.cell(0, 8, sanitize_text(f"... e mais {len(critical_errors_df)-max_rows} erros (veja no sistema)."), 1, 1, 'C')
+                pdf.cell(0, 8, sanitize_text(f"... e mais {len(inconsistency_df)-max_rows} inconsistências (veja no sistema)."), 1, 1, 'C')
                 break
-            data_row = [str(row['ARQUIVO']), str(row['LINHA']), str(row['CPF']), str(row['CARTÃO']), str(row['NOME']), str(row['ERRO'])]
+            
+            # Formatar para o PDF
+            data_row = [
+                str(row['ARQUIVO']), 
+                str(row['LINHA']), 
+                str(row['CPF']), 
+                str(row['CARTÃO']), 
+                str(row['NOME']), 
+                str(row['ERRO'])
+            ]
             print_pdf_row_multiline(pdf, widths, data_row)
             count += 1
     else:
         pdf.set_text_color(0, 128, 0)
         pdf.set_font("Arial", 'B', 11)
-        pdf.cell(0, 10, sanitize_text("✅ 4. Validação de Integridade: Nenhuma duplicidade crítica detectada nesta seleção."), 0, 1)
+        pdf.cell(0, 10, sanitize_text("✅ 4. Validação de Integridade: Nenhuma pendência (CPFs/Cartões ausentes ou duplicidades) detectada."), 0, 1)
         pdf.set_text_color(0, 0, 0)
 
     return pdf.output(dest='S').encode('latin-1', 'replace')
@@ -692,6 +728,18 @@ def generate_conference_pdf(hist_df):
         ]
         print_pdf_row_multiline(pdf, widths, row_data)
     return pdf.output(dest='S').encode('latin-1', 'replace')
+
+def parse_bb_txt_cadastro(file):
+    colspecs = [(0, 11), (11, 42), (42, 52), (52, 92), (92, 104), (104, 119)]
+    names = ['tipo', 'projeto_bb', 'num_cartao', 'nome_bb', 'rg_bb', 'cpf_bb']
+    file.seek(0)
+    df = pd.read_fwf(file, colspecs=colspecs, names=names, dtype=str, encoding='latin1')
+    if 'tipo' in df.columns:
+        df = df[df['tipo'].astype(str).str.strip() == '1'].copy()
+    df['num_cartao'] = df['num_cartao'].str.strip()
+    df['nome_bb'] = df['nome_bb'].str.strip()
+    df['cpf_bb'] = df['cpf_bb'].str.replace(r'\D', '', regex=True)
+    return df
 
 # ===========================================
 # INTERFACE
@@ -761,7 +809,6 @@ def main_app():
         st.rerun()
 
     # --- CARREGAR DADOS GLOBAIS DO BANCO ---
-    # Evitar st.cache_data para garantir que a persistência seja visível imediatamente
     conn = get_db_connection()
     try:
         df_payments = pd.read_sql("SELECT * FROM payments", conn)
@@ -809,28 +856,20 @@ def main_app():
             if pdf_user: st.download_button("Baixar PDF (Básico)", pdf_user, "manual_usuario.pdf", "application/pdf")
 
         if role in ['admin_equipe', 'admin_ti']:
-            with st.expander("📗 Manual de Gestão e Correção (Líderes)"):
+            with st.expander("📕 Manual de Gestão (Admin)"):
                 content_team = get_manual_content("admin_equipe")
                 st.markdown(content_team)
-                pdf_team = create_manual_pdf("Manual de Gestão e Correção", content_team)
+                pdf_team = create_manual_pdf("Manual de Gestão", content_team)
                 if pdf_team: st.download_button("Baixar PDF (Gestão)", pdf_team, "manual_gestao.pdf", "application/pdf")
-
-        if role == 'admin_ti':
-            with st.expander("📕 Manual Técnico e Auditoria (TI)"):
-                content_ti = get_manual_content("admin_ti")
-                st.markdown(content_ti)
-                pdf_ti = create_manual_pdf("Manual Técnico", content_ti)
-                if pdf_ti: st.download_button("Baixar PDF (Técnico)", pdf_ti, "manual_tecnico.pdf", "application/pdf")
 
     # --- UPLOAD ---
     elif choice == "Upload e Processamento":
         render_header()
         st.markdown("### 📂 Upload de Pagamentos")
         
-        # Feedback de persistência
         reg_count = len(df_payments)
         if reg_count > 0:
-            st.info(f"💾 **Banco de Dados Ativo:** {reg_count} registros já carregados e seguros. Novos uploads serão adicionados.")
+            st.info(f"💾 **Banco de Dados Ativo:** {reg_count} registros já carregados.")
         else:
             st.warning("O banco de dados está vazio.")
 
@@ -865,21 +904,33 @@ def main_app():
             if dfs:
                 final = pd.concat(dfs, ignore_index=True)
                 conn = get_db_connection()
-                # Append seguro
                 final.to_sql('payments', conn, if_exists='append', index=False)
                 conn.close()
                 log_action(user['email'], "UPLOAD", f"Upload de {len(files)} arquivos, {len(final)} registros")
-                st.success(f"✅ {len(final)} registros salvos com sucesso no banco de dados!")
+                st.success(f"✅ {len(final)} registros salvos com sucesso!")
                 
-                # Feedback imediato de erros no upload
-                crit = detect_critical_duplicates(final)
-                if not crit.empty:
-                    st.error("🚨 ERROS CRÍTICOS IDENTIFICADOS NESTE UPLOAD!")
-                    st.dataframe(crit, use_container_width=True)
+                # FEEDBACK IMEDIATO DE ERROS CRÍTICOS (AUSÊNCIA DE DADOS)
+                inconsistencies = detect_inconsistencies(final)
+                if not inconsistencies.empty:
+                    st.markdown("---")
+                    st.error("🚨 ATENÇÃO: ERROS DE DADOS AUSENTES OU INCONSISTÊNCIAS IDENTIFICADOS NO UPLOAD!")
+                    st.markdown("**Os seguintes registros possuem CPF ou Número de Cartão Ausentes, ou duplicidades críticas:**")
+                    
+                    # Estilização para destacar as linhas
+                    def highlight_rows(s):
+                        return ['background-color: #fee2e2; color: #991b1b'] * len(s)
+
+                    st.dataframe(
+                        inconsistencies.style.apply(highlight_rows, axis=1), 
+                        use_container_width=True
+                    )
                 
                 # Rerun para atualizar contadores e tabelas globais
-                st.rerun()
-
+                # Usar um pequeno sleep ou container para garantir que o usuário veja a tabela antes do refresh seria ideal,
+                # mas em Streamlit o refresh é necessário para atualizar o sidebar e dashboard principal.
+                # Se o usuário quiser ver, ele pode ir na aba "Análise e Correção".
+                st.warning("A tela será atualizada em instantes para consolidar os dados...")
+                
     # --- ANÁLISE E CORREÇÃO ---
     elif choice == "Análise e Correção":
         render_header()
@@ -888,37 +939,33 @@ def main_app():
         if df_payments.empty:
             st.info("Sem dados para analisar.")
         else:
-            # 1. Detectar erros na base COMPLETA
-            crit_all = detect_critical_duplicates(df_payments)
+            # Detectar erros na base COMPLETA
+            crit_all = detect_inconsistencies(df_payments)
             
             if not crit_all.empty:
-                st.error(f"🚨 {len(crit_all)} Inconsistências Críticas Encontradas na Base")
-                st.markdown("Estes registros possuem o **mesmo CPF** mas **Nomes** ou **Cartões** diferentes.")
-                st.dataframe(crit_all, use_container_width=True)
+                st.error(f"🚨 {len(crit_all)} Registros com Inconsistências Críticas")
+                st.markdown("Estes registros precisam de correção (CPF/Cartão Ausente ou Duplicidade).")
+                
+                def highlight_critical(s):
+                    return ['background-color: #ffebee'] * len(s) # Vermelho bem claro
+                
+                st.dataframe(crit_all.style.apply(highlight_critical, axis=1), use_container_width=True)
             else:
-                st.success("✅ Base íntegra. Nenhuma duplicidade crítica de CPF encontrada.")
+                st.success("✅ Base íntegra. Nenhuma ausência de CPF/Cartão ou duplicidade detectada.")
             
             st.markdown("---")
             st.markdown("### 📝 Editor de Dados (Malha Fina)")
             
             if user['role'] in ['admin_ti', 'admin_equipe']:
                 st.warning("⚠️ Atenção: As alterações feitas aqui são aplicadas diretamente ao Banco de Dados.")
-                # Editor
                 edited_df = st.data_editor(df_payments, num_rows="dynamic", key="editor_analise", use_container_width=True)
                 
                 if st.button("💾 Salvar Correções no Banco de Dados"):
                     try:
                         conn = get_db_connection()
-                        # Transação segura: Só deleta se o insert funcionar
-                        # Em SQLite, to_sql com replace recria a tabela, o que é seguro se edited_df tem tudo
-                        # Mas como data_editor pode ser pesado, é melhor substituir tudo SE não estiver filtrado.
-                        # Assumindo que edited_df é a base completa carregada acima.
-                        
-                        # Limpar tabela e reinserir (método Replace do Pandas é atômico em alguns drivers, mas vamos forçar transação)
                         with conn:
-                            conn.execute("DELETE FROM payments") # Limpa tabela antiga
-                            edited_df.to_sql('payments', conn, if_exists='append', index=False) # Insere nova
-                        
+                            conn.execute("DELETE FROM payments")
+                            edited_df.to_sql('payments', conn, if_exists='append', index=False)
                         conn.close()
                         log_action(user['email'], "CORRECAO_DADOS", "Usuário aplicou correções via Malha Fina")
                         st.success("✅ Dados atualizados com sucesso!")
@@ -942,10 +989,8 @@ def main_app():
             else:
                 df_exp = df_payments
             
-            # Recalcular erros para o PDF baseados no filtro (ou na base toda se preferir)
-            # Geralmente erros de CPF duplicado devem olhar a base toda, mas reportar apenas os do filtro
-            # Aqui vamos passar os erros detectados no subset para o PDF
-            crit_subset = detect_critical_duplicates(df_exp)
+            # Recalcular erros para o PDF baseados no filtro
+            crit_subset = detect_inconsistencies(df_exp)
             
             st.markdown("---")
             c1, c2, c3, c4 = st.columns(4)
@@ -954,6 +999,7 @@ def main_app():
                 st.markdown("###### 📑 Relatório Executivo")
                 if st.button("Gerar Relatório PDF"):
                     with st.spinner("Gerando PDF..."):
+                        # Passa os erros detectados para incluir no PDF
                         pdf_data = generate_pdf_report(df_exp, crit_subset)
                         if isinstance(pdf_data, bytes):
                             st.download_button("⬇️ Baixar PDF", pdf_data, "relatorio_executivo.pdf", "application/pdf")
@@ -992,7 +1038,6 @@ def main_app():
             st.dataframe(hist)
             
             c_pdf, c_limp = st.columns(2)
-            
             pdf_conf = generate_conference_pdf(hist)
             if isinstance(pdf_conf, bytes):
                 c_pdf.download_button("📑 Baixar Relatório PDF (Divergências)", pdf_conf, "divergencias_bb.pdf", "application/pdf")
@@ -1019,10 +1064,8 @@ def main_app():
             if dfs:
                 final_bb = pd.concat(dfs)
                 conn = get_db_connection()
-                # Pega apenas colunas necessárias para comparar
                 df_sys = pd.read_sql("SELECT num_cartao, nome, cpf FROM payments", conn)
                 
-                # Criar chaves normalizadas
                 final_bb['key'] = final_bb['num_cartao'].astype(str).str.replace(r'^0+','', regex=True)
                 df_sys['key'] = df_sys['num_cartao'].astype(str).str.replace(r'^0+','', regex=True).str.replace(r'\.0$','', regex=True)
                 
@@ -1031,7 +1074,6 @@ def main_app():
                 for _, row in merged.iterrows():
                     nm_s = str(row.get('nome_sis','')).strip().upper()
                     nm_b = str(row.get('nome_bb','')).strip().upper()
-                    # Comparação simples de string, pode ser melhorada com fuzzy matching no futuro
                     if nm_s != nm_b:
                         divs.append({
                             'cartao': row['key'],
@@ -1054,7 +1096,6 @@ def main_app():
         render_header()
         st.markdown("### 👥 Gestão de Acessos")
         
-        # Formulário de Cadastro
         with st.expander("➕ Adicionar Novo Usuário", expanded=False):
             with st.form("add_user"):
                 c1, c2, c3 = st.columns([2, 2, 1])
@@ -1084,7 +1125,6 @@ def main_app():
         users_db = pd.read_sql("SELECT email, name, role FROM users", conn)
         conn.close()
         
-        # Cabeçalho
         cols = st.columns([3, 3, 2, 1, 1])
         cols[0].markdown("**Nome**")
         cols[1].markdown("**E-mail**")
@@ -1098,14 +1138,11 @@ def main_app():
                 c = st.columns([3, 3, 2, 1, 1])
                 c[0].write(row['name'])
                 c[1].write(row['email'])
-                
                 r_map = {'admin_ti': 'Admin TI', 'admin_equipe': 'Líder/Admin', 'user': 'Analista'}
                 c[2].write(r_map.get(row['role'], row['role']))
-                
                 is_self = (row['email'] == user['email'])
                 
-                # Reset
-                if c[3].button("🔄", key=f"rst_{row['email']}", disabled=is_self, help="Reseta senha para 'mudar123'"):
+                if c[3].button("🔄", key=f"rst_{row['email']}", disabled=is_self):
                     conn = get_db_connection()
                     pass_reset = hashlib.sha256('mudar123'.encode()).hexdigest()
                     conn.execute("UPDATE users SET password = ?, first_login = 1 WHERE email = ?", (pass_reset, row['email']))
@@ -1114,7 +1151,6 @@ def main_app():
                     st.toast(f"Senha de {row['name']} resetada!")
                     log_action(user['email'], "RESET_SENHA", f"Resetou {row['email']}")
                 
-                # Excluir
                 if c[4].button("🗑️", key=f"del_{row['email']}", disabled=is_self):
                     conn = get_db_connection()
                     conn.execute("DELETE FROM users WHERE email = ?", (row['email'],))
@@ -1123,25 +1159,20 @@ def main_app():
                     st.success(f"Removido: {row['name']}")
                     log_action(user['email'], "EXCLUIR_USUARIO", f"Excluiu {row['email']}")
                     st.rerun()
-                
                 st.markdown("<div class='user-row'></div>", unsafe_allow_html=True)
 
     # --- ADMIN TI ---
     elif choice == "Administração TI" and user['role'] == 'admin_ti':
         render_header()
         st.markdown("### 🛡️ Painel de Auditoria e Controle")
-        
         conn = get_db_connection()
         logs = pd.read_sql("SELECT * FROM audit_logs ORDER BY timestamp DESC", conn)
         conn.close()
-        
         st.dataframe(logs, use_container_width=True)
-        
         c1, c2 = st.columns(2)
         pdf_logs = generate_audit_log_pdf(logs)
         if isinstance(pdf_logs, bytes):
             c1.download_button("📄 Baixar Logs (PDF)", pdf_logs, "auditoria_sistema.pdf", "application/pdf")
-            
         if c2.button("⚠️ LIMPAR LOGS"):
             conn = get_db_connection()
             conn.execute("DELETE FROM audit_logs")
@@ -1149,7 +1180,6 @@ def main_app():
             conn.close()
             st.warning("Logs limpos.")
             st.rerun()
-
         st.markdown("---")
         if st.button("🗑️ LIMPAR DADOS PAGAMENTOS (RESET TOTAL)"):
             conn = get_db_connection()
