@@ -8,7 +8,7 @@ import io
 import re
 import os
 import tempfile
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 # Tenta importar bibliotecas externas opcionais
 try:
@@ -135,7 +135,7 @@ def init_db():
         )
     ''')
 
-    # Tabela de Divergências Bancárias (NOVA)
+    # Tabela de Divergências Bancárias
     c.execute('''
         CREATE TABLE IF NOT EXISTS bank_discrepancies (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -150,7 +150,7 @@ def init_db():
         )
     ''')
     
-    # Verificação de Migração: Adicionar coluna 'gerenciadora' se não existir em bancos antigos
+    # Verificação de Migração
     try:
         c.execute("SELECT gerenciadora FROM payments LIMIT 1")
     except sqlite3.OperationalError:
@@ -158,7 +158,7 @@ def init_db():
             c.execute("ALTER TABLE payments ADD COLUMN gerenciadora TEXT")
             conn.commit()
         except Exception as e:
-            pass # Coluna já existe ou erro ignorável no contexto
+            pass 
 
     # Criar usuário Admin padrão se não existir
     c.execute("SELECT * FROM users WHERE email = 'admin@prefeitura.sp.gov.br'")
@@ -334,6 +334,10 @@ def standardize_dataframe(df, filename):
     
     return df[final_cols]
 
+def get_brasilia_time():
+    """Retorna a data e hora atual no fuso horário de Brasília (UTC-3)."""
+    return datetime.now(timezone(timedelta(hours=-3)))
+
 def generate_bb_txt(df):
     """Gera string no formato Fixed-Width do Banco do Brasil."""
     buffer = io.StringIO()
@@ -353,7 +357,7 @@ def generate_bb_txt(df):
     return buffer.getvalue()
 
 def generate_pdf_report(df_filtered):
-    """Gera Relatório Executivo de Pagamentos em PDF."""
+    """Gera Relatório Executivo em PDF."""
     if FPDF is None:
         return b"Erro: Biblioteca FPDF nao instalada."
         
@@ -377,8 +381,11 @@ def generate_pdf_report(df_filtered):
     total_gerenciadoras = df_filtered['gerenciadora'].nunique() if 'gerenciadora' in df_filtered.columns else 0
     total_registros = len(df_filtered)
     
+    # Data com Fuso Horário de Brasília
+    data_br = get_brasilia_time().strftime('%d/%m/%Y às %H:%M')
+    
     pdf.set_font("Arial", '', 10)
-    pdf.cell(0, 6, f"Data de Geração: {datetime.now().strftime('%d/%m/%Y às %H:%M')}", 0, 1, 'R')
+    pdf.cell(0, 6, f"Data de Geração: {data_br}", 0, 1, 'R')
     pdf.ln(5)
     
     pdf.set_font("Arial", 'B', 12)
@@ -584,7 +591,7 @@ def generate_conference_pdf(df_div):
         return b"Erro: Biblioteca FPDF nao instalada."
         
     pdf = FPDF()
-    pdf.add_page()
+    pdf.add_page(orientation='L') # Paisagem para caber mais colunas
     
     # Cabeçalho
     pdf.set_font("Arial", 'B', 14)
@@ -598,8 +605,11 @@ def generate_conference_pdf(df_div):
     pdf.cell(0, 12, "Relatório de Conferência Bancária (Divergências)", 1, 1, 'C', fill=True)
     pdf.ln(10)
     
+    # Data Brasilia
+    data_br = get_brasilia_time().strftime('%d/%m/%Y às %H:%M')
+    
     pdf.set_font("Arial", '', 10)
-    pdf.cell(0, 6, f"Data de Geração: {datetime.now().strftime('%d/%m/%Y às %H:%M')}", 0, 1, 'R')
+    pdf.cell(0, 6, f"Data de Geração: {data_br}", 0, 1, 'R')
     pdf.ln(5)
     
     total_erros = len(df_div)
@@ -613,26 +623,37 @@ def generate_conference_pdf(df_div):
     # Tabela
     pdf.set_font("Arial", 'B', 9)
     pdf.set_fill_color(240, 240, 240)
-    # Larguras: Cartão(25), NomeSis(45), NomeBB(45), CPFs(40), Obs(35)
-    pdf.cell(25, 8, "CARTÃO", 1, 0, 'C', True)
-    pdf.cell(45, 8, "NOME (SISTEMA)", 1, 0, 'L', True)
-    pdf.cell(45, 8, "NOME (BANCO)", 1, 0, 'L', True)
-    pdf.cell(40, 8, "DIVERGÊNCIA", 1, 0, 'C', True)
-    pdf.cell(35, 8, "ARQUIVO", 1, 1, 'C', True)
+    
+    # Ajuste de larguras para Paisagem (Total ~275mm útil)
+    w_cartao = 25
+    w_nome = 65
+    w_nome_bb = 65
+    w_div = 75
+    w_arq = 45
+    
+    pdf.cell(w_cartao, 8, "CARTÃO", 1, 0, 'C', True)
+    pdf.cell(w_nome, 8, "NOME (SISTEMA)", 1, 0, 'L', True)
+    pdf.cell(w_nome_bb, 8, "NOME (BANCO)", 1, 0, 'L', True)
+    pdf.cell(w_div, 8, "DIVERGÊNCIA", 1, 0, 'C', True)
+    pdf.cell(w_arq, 8, "ARQUIVO", 1, 1, 'C', True)
     
     pdf.set_font("Arial", '', 8)
     for _, row in df_div.iterrows():
-        cartao = str(row['cartao'])
-        nome_sis = str(row['nome_sis'])[:22]
-        nome_bb = str(row['nome_bb'])[:22]
-        div = str(row['divergencia'])[:20]
-        arq = str(row['arquivo_origem'])[:15]
+        # Calcular altura da linha com base no conteúdo mais longo (MultiCell simulado)
+        # Simplificação: Truncar strings longas para caber na linha única ou usar MultiCell complexo
+        # Abordagem de truncamento ajustado para não quebrar layout
         
-        pdf.cell(25, 6, cartao, 1, 0, 'C')
-        pdf.cell(45, 6, nome_sis, 1, 0, 'L')
-        pdf.cell(45, 6, nome_bb, 1, 0, 'L')
-        pdf.cell(40, 6, div, 1, 0, 'C')
-        pdf.cell(35, 6, arq, 1, 1, 'C')
+        cartao = str(row['cartao'])
+        nome_sis = str(row['nome_sis'])[:35]
+        nome_bb = str(row['nome_bb'])[:35]
+        div = str(row['divergencia'])[:40] # Mais espaço para descrição
+        arq = str(row['arquivo_origem'])[:25]
+        
+        pdf.cell(w_cartao, 6, cartao, 1, 0, 'C')
+        pdf.cell(w_nome, 6, nome_sis, 1, 0, 'L')
+        pdf.cell(w_nome_bb, 6, nome_bb, 1, 0, 'L')
+        pdf.cell(w_div, 6, div, 1, 0, 'L') # Alinhado a esquerda para leitura
+        pdf.cell(w_arq, 6, arq, 1, 1, 'C')
         
     return pdf.output(dest='S').encode('latin-1')
 
@@ -1044,7 +1065,6 @@ def main_app():
         if st.button("🗑️ LIMPAR TODO O BANCO DE DADOS"):
             conn = get_db_connection()
             conn.execute("DELETE FROM payments")
-            conn.execute("DELETE FROM bank_discrepancies") # Limpar também divergências
             conn.commit()
             conn.close()
             st.success("Banco limpo.")
