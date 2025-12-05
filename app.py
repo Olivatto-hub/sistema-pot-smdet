@@ -69,6 +69,11 @@ st.markdown("""
         padding: 10px;
         border-radius: 5px;
     }
+    .manual-header {
+        color: #1E3A8A;
+        border-bottom: 1px solid #ccc;
+        padding-bottom: 5px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -92,7 +97,6 @@ def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     
-    # Usuários
     c.execute('''
         CREATE TABLE IF NOT EXISTS users (
             email TEXT PRIMARY KEY,
@@ -103,7 +107,6 @@ def init_db():
         )
     ''')
     
-    # Pagamentos (Dados Principais)
     c.execute('''
         CREATE TABLE IF NOT EXISTS payments (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -126,7 +129,6 @@ def init_db():
         )
     ''')
 
-    # Divergências Bancárias
     c.execute('''
         CREATE TABLE IF NOT EXISTS bank_discrepancies (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -142,7 +144,6 @@ def init_db():
         )
     ''')
 
-    # Logs de Auditoria
     c.execute('''
         CREATE TABLE IF NOT EXISTS audit_logs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -153,7 +154,7 @@ def init_db():
         )
     ''')
     
-    # Migrações seguras (Adicionar colunas se faltarem)
+    # Migrações seguras
     for col, tbl in [('linha_arquivo', 'payments'), ('gerenciadora', 'payments'), ('tipo_erro', 'bank_discrepancies')]:
         try:
             c.execute(f"SELECT {col} FROM {tbl} LIMIT 1")
@@ -186,20 +187,127 @@ def log_action(user_email, action, details):
     conn.close()
 
 # ===========================================
+# CONTEÚDO DOS MANUAIS
+# ===========================================
+
+def get_manual_content(tipo):
+    """Retorna o texto do manual baseado no tipo."""
+    if tipo == "usuario":
+        return """
+        # Manual Operacional Básico - Sistema POT
+        
+        ## 1. Visão Geral
+        Bem-vindo ao Sistema de Gestão e Monitoramento de Pagamentos do POT. Este sistema permite o upload, validação e análise dos pagamentos realizados aos beneficiários.
+
+        ## 2. Acesso ao Sistema
+        - Utilize seu e-mail institucional (@prefeitura.sp.gov.br) e senha.
+        - No primeiro acesso, será solicitada a troca da senha provisória.
+
+        ## 3. Upload de Arquivos
+        - Navegue até a aba **Upload e Processamento**.
+        - Arraste arquivos Excel (.xlsx) ou CSV para a área indicada.
+        - O sistema validará automaticamente:
+            - Formato das colunas.
+            - **Duplicidades Críticas:** Se o mesmo CPF aparecer com nomes ou cartões diferentes, um alerta vermelho será exibido.
+        - Clique em "Processar Arquivos" para salvar no banco de dados.
+
+        ## 4. Conferência Bancária
+        - Utilize a aba **Conferência Bancária (BB)**.
+        - Suba os arquivos de retorno do banco (formato TXT REL.CADASTRO).
+        - O sistema cruzará os dados do banco com o sistema e apontará divergências de Nome ou CPF.
+
+        ## 5. Relatórios
+        - Na aba **Relatórios e Exportação**, você pode baixar:
+            - Planilha completa (Excel/CSV).
+            - Arquivo de Remessa (TXT Layout BB).
+            - **Relatório Executivo (PDF):** Contém resumo financeiro e alertas de integridade.
+        """
+    elif tipo == "admin_equipe":
+        return """
+        # Manual de Gestão e Correção - Perfil Líder/Admin Equipe
+        
+        ## 1. Responsabilidades
+        Além das funções básicas, o Admin Equipe é responsável pela integridade dos dados e gestão dos usuários operacionais.
+
+        ## 2. Correção de Dados (Malha Fina)
+        - Ao identificar erros críticos (CPF duplicado com dados divergentes) no Upload ou no Relatório PDF:
+        - Vá para a aba **Análise e Correção**.
+        - Utilize a tabela editável para corrigir Nomes errados, CPFs digitados incorretamente ou números de cartão.
+        - Clique em **"Salvar Correções"** para atualizar o banco de dados oficial.
+        
+        ## 3. Gestão de Usuários
+        - Na aba **Gestão de Equipe**, você pode cadastrar novos analistas.
+        - Preencha E-mail e Nome.
+        - A senha inicial padrão é `mudar123`. Oriente o usuário a trocá-la imediatamente.
+        
+        ## 4. Limpeza de Histórico de Conferência
+        - Na aba de Conferência Bancária, você tem permissão para limpar o histórico de divergências antigas para iniciar um novo ciclo de verificação.
+        """
+    elif tipo == "admin_ti":
+        return """
+        # Manual Técnico e Auditoria - Perfil TI (Super Admin)
+        
+        ## 1. Controle Total
+        O perfil Admin TI tem acesso irrestrito a todas as funcionalidades, incluindo ações destrutivas e logs de segurança.
+
+        ## 2. Painel de Auditoria (Logs)
+        - Acesse a aba **Administração TI**.
+        - Visualize a tabela de logs que registra QUEM fez O QUE e QUANDO (Uploads, Logins, Criação de usuários, etc.).
+        - Você pode baixar o **Relatório de Auditoria em PDF** para fins de compliance.
+        - Use o botão "Limpar Logs" apenas em ambiente de testes ou quando autorizado.
+
+        ## 3. Reset do Sistema
+        - O botão **"LIMPAR DADOS PAGAMENTOS"** apaga TODA a base de pagamentos e divergências bancárias.
+        - **CUIDADO:** Esta ação é irreversível. Use apenas para limpar dados de teste antes de entrar em produção ou iniciar um novo ano fiscal.
+        
+        ## 4. Manutenção
+        - O sistema utiliza banco de dados SQLite (`pot_system.db`).
+        - As bibliotecas necessárias estão listadas no `requirements.txt`.
+        """
+    return ""
+
+def create_manual_pdf(title, content):
+    """Gera um PDF simples com o conteúdo do manual."""
+    if FPDF is None: return None
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", 'B', 16)
+    pdf.cell(0, 10, sanitize_text(title), 0, 1, 'C')
+    pdf.ln(10)
+    
+    pdf.set_font("Arial", '', 12)
+    # Divide o conteúdo por linhas para processar
+    lines = content.split('\n')
+    for line in lines:
+        clean_line = line.strip()
+        if clean_line.startswith('# '):
+            pdf.set_font("Arial", 'B', 14)
+            pdf.ln(5)
+            pdf.multi_cell(0, 10, sanitize_text(clean_line.replace('# ', '')))
+            pdf.set_font("Arial", '', 12)
+        elif clean_line.startswith('## '):
+            pdf.set_font("Arial", 'B', 12)
+            pdf.ln(3)
+            pdf.multi_cell(0, 10, sanitize_text(clean_line.replace('## ', '')))
+            pdf.set_font("Arial", '', 12)
+        elif clean_line.startswith('- '):
+             pdf.multi_cell(0, 8, sanitize_text("  • " + clean_line.replace('- ', '')))
+        else:
+            pdf.multi_cell(0, 8, sanitize_text(clean_line))
+            
+    return pdf.output(dest='S').encode('latin-1', 'replace')
+
+# ===========================================
 # FUNÇÕES UTILITÁRIAS
 # ===========================================
 
 def sanitize_text(text):
-    """Remove caracteres não-Latin-1 para evitar erro no FPDF."""
-    if not isinstance(text, str):
-        return str(text)
+    if not isinstance(text, str): return str(text)
     text = text.replace('–', '-').replace('—', '-').replace('“', '"').replace('”', '"')
     return text.encode('latin-1', 'replace').decode('latin-1')
 
 def remove_accents(input_str):
-    """Remove acentos e normaliza string para comparação robusta."""
-    if not isinstance(input_str, str):
-        return str(input_str)
+    if not isinstance(input_str, str): return str(input_str)
     nfkd_form = unicodedata.normalize('NFKD', input_str)
     return "".join([c for c in nfkd_form if not unicodedata.combining(c)]).upper().strip()
 
@@ -207,7 +315,7 @@ def get_brasilia_time():
     return datetime.now(timezone(timedelta(hours=-3)))
 
 # ===========================================
-# LÓGICA DE NEGÓCIO E PROCESSAMENTO
+# LÓGICA DE NEGÓCIO
 # ===========================================
 
 COLUMN_MAP = {
@@ -421,7 +529,6 @@ def generate_pdf_report(df_filtered):
     pdf = FPDF()
     pdf.add_page(orientation='L')
     
-    # Cabeçalho
     pdf.set_font("Arial", 'B', 14)
     pdf.cell(0, 8, sanitize_text("Prefeitura de São Paulo"), 0, 1, 'C')
     pdf.set_font("Arial", 'B', 12)
@@ -437,7 +544,7 @@ def generate_pdf_report(df_filtered):
     pdf.cell(0, 6, sanitize_text(f"Gerado em: {data_br}"), 0, 1, 'R')
     pdf.ln(5)
 
-    # 1. RESUMO ANALÍTICO
+    # 1. RESUMO
     total_valor = df_filtered['valor_pagto'].sum() if 'valor_pagto' in df_filtered.columns else 0.0
     total_benef = df_filtered['num_cartao'].nunique() if 'num_cartao' in df_filtered.columns else 0
     total_projetos = df_filtered['programa'].nunique() if 'programa' in df_filtered.columns else 0
@@ -472,7 +579,7 @@ def generate_pdf_report(df_filtered):
     else: pdf.cell(0, 10, sanitize_text("Gráfico indisponível."), 0, 1)
     pdf.ln(10)
 
-    # 3. DETALHAMENTO FINANCEIRO
+    # 3. DETALHAMENTO
     pdf.set_font("Arial", 'B', 12)
     pdf.cell(0, 10, sanitize_text("3. Detalhamento Financeiro"), 0, 1)
     if 'programa' in df_filtered.columns:
@@ -490,7 +597,7 @@ def generate_pdf_report(df_filtered):
             pdf.cell(widths_det[2], 7, f"R$ {row['valor_pagto']:,.2f}", 1, 1, 'R')
     pdf.ln(10)
 
-    # 4. ALERTAS CRÍTICOS (Última Seção)
+    # 4. ALERTAS CRÍTICOS
     critical_df = detect_critical_duplicates(df_filtered)
     if not critical_df.empty:
         pdf.set_text_color(255, 0, 0)
@@ -568,6 +675,10 @@ def main_app():
     st.sidebar.markdown(f"### Olá, {user['name']}")
     
     menu = ["Dashboard", "Upload e Processamento", "Análise e Correção", "Conferência Bancária (BB)", "Relatórios e Exportação"]
+    
+    # Adicionar menu de Manuais
+    menu.insert(1, "Manuais e Treinamento")
+    
     if user['role'] in ['admin_ti', 'admin_equipe']: menu.append("Gestão de Equipe")
     if user['role'] == 'admin_ti': menu.append("Administração TI")
     
@@ -607,6 +718,38 @@ def main_app():
                 st.plotly_chart(px.pie(g2, names='gerenciadora', values='valor_pagto'), use_container_width=True)
         else: st.info("Sem dados.")
 
+    elif choice == "Manuais e Treinamento":
+        render_header()
+        st.markdown("### 📚 Manuais e Treinamento")
+        
+        role = user['role']
+        
+        # Exibir manual básico para todos
+        with st.expander("📘 Manual Operacional Básico (Usuário)", expanded=True):
+            content_user = get_manual_content("usuario")
+            st.markdown(content_user)
+            pdf_user = create_manual_pdf("Manual Operacional Básico", content_user)
+            if pdf_user:
+                st.download_button("Baixar PDF (Básico)", pdf_user, "manual_usuario.pdf", "application/pdf")
+
+        # Exibir manual de equipe se for admin
+        if role in ['admin_equipe', 'admin_ti']:
+            with st.expander("📗 Manual de Gestão e Correção (Líderes)"):
+                content_team = get_manual_content("admin_equipe")
+                st.markdown(content_team)
+                pdf_team = create_manual_pdf("Manual de Gestão e Correção", content_team)
+                if pdf_team:
+                    st.download_button("Baixar PDF (Gestão)", pdf_team, "manual_gestao.pdf", "application/pdf")
+
+        # Exibir manual técnico se for TI
+        if role == 'admin_ti':
+            with st.expander("📕 Manual Técnico e Auditoria (TI)"):
+                content_ti = get_manual_content("admin_ti")
+                st.markdown(content_ti)
+                pdf_ti = create_manual_pdf("Manual Técnico", content_ti)
+                if pdf_ti:
+                    st.download_button("Baixar PDF (Técnico)", pdf_ti, "manual_tecnico.pdf", "application/pdf")
+
     elif choice == "Upload e Processamento":
         render_header()
         st.markdown("### 📂 Upload de Pagamentos")
@@ -638,11 +781,10 @@ def main_app():
                 conn = get_db_connection()
                 final.to_sql('payments', conn, if_exists='append', index=False)
                 conn.close()
-                log_action(user['email'], "UPLOAD", f"Upload de {len(files)} arquivos: {', '.join([f.name for f in files])}")
+                log_action(user['email'], "UPLOAD", f"Upload de {len(files)} arquivos")
                 st.success(f"{len(final)} registros salvos.")
                 
-                # Validação imediata na tela
-                crit = detect_critical_duplicates(final) # Verifica só o lote novo primeiro
+                crit = detect_critical_duplicates(final)
                 if not crit.empty:
                     st.error("🚨 ERROS CRÍTICOS ENCONTRADOS NO UPLOAD!")
                     st.dataframe(crit, use_container_width=True)
@@ -661,17 +803,16 @@ def main_app():
                 st.dataframe(crit_all, use_container_width=True)
             else: st.success("✅ Base íntegra.")
             
-            st.markdown("### Edição de Dados (Correção)")
+            st.markdown("### Edição de Dados")
             if user['role'] in ['admin_ti', 'admin_equipe']:
                 edited_df = st.data_editor(df, num_rows="dynamic", key="editor_analise")
                 if st.button("Salvar Correções"):
-                    # Em produção idealmente faria UPDATE por ID. Aqui substituímos para simplificar protótipo
                     conn = get_db_connection()
                     conn.execute("DELETE FROM payments")
                     edited_df.to_sql('payments', conn, if_exists='append', index=False)
                     conn.commit()
                     conn.close()
-                    log_action(user['email'], "CORRECAO_DADOS", "Usuário aplicou correções manuais na base")
+                    log_action(user['email'], "CORRECAO_DADOS", "Usuário aplicou correções")
                     st.success("Dados atualizados!")
                     st.rerun()
             else: st.dataframe(df)
@@ -701,6 +842,67 @@ def main_app():
                 if isinstance(pdf_data, bytes):
                     st.download_button("Baixar PDF Completo", pdf_data, "relatorio_executivo.pdf", "application/pdf")
                     log_action(user['email'], "RELATORIO_PDF", "Gerou relatório executivo")
+
+    elif choice == "Conferência Bancária (BB)":
+        render_header()
+        st.markdown("### 🏦 Conferência BB")
+        conn = get_db_connection()
+        hist = pd.read_sql("SELECT * FROM bank_discrepancies", conn)
+        conn.close()
+        
+        if not hist.empty:
+            st.warning(f"{len(hist)} divergências no histórico.")
+            st.dataframe(hist)
+            if st.button("Limpar Histórico"):
+                conn = get_db_connection()
+                conn.execute("DELETE FROM bank_discrepancies")
+                conn.commit()
+                conn.close()
+                st.rerun()
+            
+            pdf_conf = generate_conference_pdf(hist)
+            if isinstance(pdf_conf, bytes):
+                st.download_button("📑 Baixar Relatório PDF (Divergências)", pdf_conf, "divergencias_bb.pdf", "application/pdf")
+                
+        files = st.file_uploader("TXT Banco", accept_multiple_files=True)
+        if files and st.button("Processar"):
+            dfs = []
+            for f in files:
+                try:
+                    d = parse_bb_txt_cadastro(f)
+                    d['arquivo_bb'] = f.name
+                    dfs.append(d)
+                except: st.error(f"Erro {f.name}")
+            
+            if dfs:
+                final_bb = pd.concat(dfs)
+                conn = get_db_connection()
+                df_sys = pd.read_sql("SELECT num_cartao, nome, cpf FROM payments", conn)
+                
+                final_bb['key'] = final_bb['num_cartao'].astype(str).str.replace(r'^0+','', regex=True)
+                df_sys['key'] = df_sys['num_cartao'].astype(str).str.replace(r'^0+','', regex=True).str.replace(r'\.0$','', regex=True)
+                
+                merged = pd.merge(df_sys, final_bb, on='key', suffixes=('_sis', '_bb'))
+                divs = []
+                for _, row in merged.iterrows():
+                    nm_s = str(row.get('nome_sis','')).strip().upper()
+                    nm_b = str(row.get('nome_bb','')).strip().upper()
+                    if nm_s != nm_b:
+                        divs.append({
+                            'cartao': row['key'],
+                            'nome_sis': nm_s,
+                            'nome_bb': nm_b,
+                            'divergencia': 'NOME DIFERENTE',
+                            'arquivo_origem': row['arquivo_bb']
+                        })
+                
+                if divs:
+                    dd = pd.DataFrame(divs)
+                    dd.to_sql('bank_discrepancies', conn, if_exists='append', index=False)
+                    st.error(f"{len(dd)} divergências encontradas!")
+                    st.rerun()
+                else: st.success("Sucesso! Sem divergências.")
+                conn.close()
 
     elif choice == "Gestão de Equipe":
         render_header()
