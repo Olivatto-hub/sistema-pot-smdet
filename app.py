@@ -134,8 +134,23 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+
+    # Tabela de Divergências Bancárias (NOVA)
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS bank_discrepancies (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cartao TEXT,
+            nome_sis TEXT,
+            nome_bb TEXT,
+            cpf_sis TEXT,
+            cpf_bb TEXT,
+            divergencia TEXT,
+            arquivo_origem TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
     
-    # Verificação de Migração: Adicionar coluna 'gerenciadora' se não existir
+    # Verificação de Migração: Adicionar coluna 'gerenciadora' se não existir em bancos antigos
     try:
         c.execute("SELECT gerenciadora FROM payments LIMIT 1")
     except sqlite3.OperationalError:
@@ -143,7 +158,7 @@ def init_db():
             c.execute("ALTER TABLE payments ADD COLUMN gerenciadora TEXT")
             conn.commit()
         except Exception as e:
-            pass 
+            pass # Coluna já existe ou erro ignorável no contexto
 
     # Criar usuário Admin padrão se não existir
     c.execute("SELECT * FROM users WHERE email = 'admin@prefeitura.sp.gov.br'")
@@ -338,7 +353,7 @@ def generate_bb_txt(df):
     return buffer.getvalue()
 
 def generate_pdf_report(df_filtered):
-    """Gera Relatório Executivo em PDF."""
+    """Gera Relatório Executivo de Pagamentos em PDF."""
     if FPDF is None:
         return b"Erro: Biblioteca FPDF nao instalada."
         
@@ -563,6 +578,64 @@ def generate_pdf_report(df_filtered):
     
     return pdf.output(dest='S').encode('latin-1')
 
+def generate_conference_pdf(df_div):
+    """Gera Relatório PDF específico para Divergências Bancárias."""
+    if FPDF is None:
+        return b"Erro: Biblioteca FPDF nao instalada."
+        
+    pdf = FPDF()
+    pdf.add_page()
+    
+    # Cabeçalho
+    pdf.set_font("Arial", 'B', 14)
+    pdf.cell(0, 8, "Prefeitura de São Paulo", 0, 1, 'C')
+    pdf.set_font("Arial", 'B', 12)
+    pdf.cell(0, 8, "Secretaria Municipal do Desenvolvimento Econômico e Trabalho", 0, 1, 'C')
+    pdf.ln(5)
+    
+    pdf.set_fill_color(255, 200, 200) # Fundo avermelhado
+    pdf.set_font("Arial", 'B', 16)
+    pdf.cell(0, 12, "Relatório de Conferência Bancária (Divergências)", 1, 1, 'C', fill=True)
+    pdf.ln(10)
+    
+    pdf.set_font("Arial", '', 10)
+    pdf.cell(0, 6, f"Data de Geração: {datetime.now().strftime('%d/%m/%Y às %H:%M')}", 0, 1, 'R')
+    pdf.ln(5)
+    
+    total_erros = len(df_div)
+    
+    pdf.set_font("Arial", 'B', 12)
+    pdf.cell(0, 10, f"Total de Divergências Encontradas: {total_erros}", 0, 1)
+    pdf.set_font("Arial", '', 10)
+    pdf.multi_cell(0, 6, "Abaixo estão listados os beneficiários cujos dados no sistema diferem dos dados retornados pelo Banco do Brasil. A correção é necessária para evitar rejeição de pagamentos.")
+    pdf.ln(5)
+    
+    # Tabela
+    pdf.set_font("Arial", 'B', 9)
+    pdf.set_fill_color(240, 240, 240)
+    # Larguras: Cartão(25), NomeSis(45), NomeBB(45), CPFs(40), Obs(35)
+    pdf.cell(25, 8, "CARTÃO", 1, 0, 'C', True)
+    pdf.cell(45, 8, "NOME (SISTEMA)", 1, 0, 'L', True)
+    pdf.cell(45, 8, "NOME (BANCO)", 1, 0, 'L', True)
+    pdf.cell(40, 8, "DIVERGÊNCIA", 1, 0, 'C', True)
+    pdf.cell(35, 8, "ARQUIVO", 1, 1, 'C', True)
+    
+    pdf.set_font("Arial", '', 8)
+    for _, row in df_div.iterrows():
+        cartao = str(row['cartao'])
+        nome_sis = str(row['nome_sis'])[:22]
+        nome_bb = str(row['nome_bb'])[:22]
+        div = str(row['divergencia'])[:20]
+        arq = str(row['arquivo_origem'])[:15]
+        
+        pdf.cell(25, 6, cartao, 1, 0, 'C')
+        pdf.cell(45, 6, nome_sis, 1, 0, 'L')
+        pdf.cell(45, 6, nome_bb, 1, 0, 'L')
+        pdf.cell(40, 6, div, 1, 0, 'C')
+        pdf.cell(35, 6, arq, 1, 1, 'C')
+        
+    return pdf.output(dest='S').encode('latin-1')
+
 # ===========================================
 # INTERFACE E FLUXO DO USUÁRIO
 # ===========================================
@@ -772,12 +845,45 @@ def main_app():
     elif choice == "Conferência Bancária (BB)":
         render_header()
         st.markdown("<h3 class='main-header'>🏦 Cruzamento de Dados (Banco do Brasil)</h3>", unsafe_allow_html=True)
-        st.info("Faça upload dos arquivos 'REL.CADASTRO.OT' para comparar com a base de dados do sistema.")
+        
+        # Recuperar dados persistidos
+        conn = get_db_connection()
+        try:
+            stored_discrepancies = pd.read_sql("SELECT * FROM bank_discrepancies ORDER BY created_at DESC", conn)
+        except:
+            stored_discrepancies = pd.DataFrame()
+        conn.close()
+        
+        # Mostrar Histórico se existir
+        if not stored_discrepancies.empty:
+            st.warning(f"⚠️ Há {len(stored_discrepancies)} divergências salvas no banco de dados.")
+            st.dataframe(stored_discrepancies)
+            
+            col_d1, col_d2 = st.columns(2)
+            
+            if col_d1.button("🗑️ Limpar Histórico de Conferência"):
+                conn = get_db_connection()
+                conn.execute("DELETE FROM bank_discrepancies")
+                conn.commit()
+                conn.close()
+                st.success("Histórico limpo!")
+                st.rerun()
+                
+            # Gerar PDF das divergências salvas
+            pdf_bytes_conf = generate_conference_pdf(stored_discrepancies)
+            if isinstance(pdf_bytes_conf, bytes):
+                col_d2.download_button("📑 Baixar Relatório PDF (Divergências)", pdf_bytes_conf, "relatorio_divergencias_bb.pdf", "application/pdf")
+            else:
+                col_d2.error(pdf_bytes_conf)
+                
+            st.markdown("---")
+
+        st.info("Faça upload de novos arquivos 'REL.CADASTRO.OT' para comparar e atualizar a base.")
         
         bb_files = st.file_uploader("Arquivos de Retorno BB (.TXT)", accept_multiple_files=True, type=['txt'])
         
         if bb_files:
-            if st.button("Processar e Comparar"):
+            if st.button("Processar e Salvar no Banco"):
                 all_bb_data = []
                 for file in bb_files:
                     try:
@@ -793,20 +899,20 @@ def main_app():
                     
                     conn = get_db_connection()
                     df_db = pd.read_sql("SELECT num_cartao, nome, cpf, programa FROM payments", conn)
-                    conn.close()
                     
                     if df_db.empty:
                         st.error("Base de dados do sistema vazia. Não é possível comparar.")
+                        conn.close()
                     else:
                         final_bb['match_cartao'] = final_bb['num_cartao'].astype(str).str.strip().str.replace(r'^0+', '', regex=True)
                         df_db['match_cartao'] = df_db['num_cartao'].astype(str).str.strip().str.replace(r'^0+', '', regex=True).str.replace(r'\.0$', '', regex=True)
                         
                         merged = pd.merge(df_db, final_bb, on='match_cartao', how='inner', suffixes=('_sis', '_bb'))
                         
-                        divergencias = []
+                        divergencias_to_save = []
                         
                         for _, row in merged.iterrows():
-                            # CORREÇÃO KEYERROR: Usar os sufixos corretos definidos no merge (_sis e _bb)
+                            # Proteção contra NaN
                             nome_sis = str(row['nome_sis']).strip().upper() if 'nome_sis' in row else str(row.get('nome', '')).strip().upper()
                             nome_bb = str(row['nome_bb']).strip().upper()
                             
@@ -820,25 +926,28 @@ def main_app():
                                 motivos.append(f"CPF Diferente ({cpf_bb})")
                                 
                             if motivos:
-                                divergencias.append({
-                                    'Cartão': row['num_cartao_sis'] if 'num_cartao_sis' in row else row.get('num_cartao', 'N/A'),
-                                    'Nome Sistema': nome_sis,
-                                    'Nome Banco': nome_bb,
-                                    'CPF Sistema': cpf_sis,
-                                    'CPF Banco': cpf_bb,
-                                    'Divergência': ", ".join(motivos),
-                                    'Arquivo BB': row['arquivo_bb']
+                                divergencias_to_save.append({
+                                    'cartao': row['num_cartao_sis'] if 'num_cartao_sis' in row else row.get('num_cartao', 'N/A'),
+                                    'nome_sis': nome_sis,
+                                    'nome_bb': nome_bb,
+                                    'cpf_sis': cpf_sis,
+                                    'cpf_bb': cpf_bb,
+                                    'divergencia': ", ".join(motivos),
+                                    'arquivo_origem': row['arquivo_bb']
                                 })
                         
-                        if divergencias:
-                            df_div = pd.DataFrame(divergencias)
-                            st.error(f"⚠️ Foram encontradas {len(df_div)} inconsistências entre o Sistema e o Banco!")
-                            st.dataframe(df_div)
+                        # SALVAR NO BANCO PARA PERSISTÊNCIA
+                        if divergencias_to_save:
+                            df_div_save = pd.DataFrame(divergencias_to_save)
+                            df_div_save.to_sql('bank_discrepancies', conn, if_exists='append', index=False)
+                            conn.commit()
+                            conn.close()
                             
-                            csv_div = df_div.to_csv(index=False, sep=';').encode('utf-8-sig')
-                            st.download_button("Baixar Relatório de Divergências", csv_div, "divergencias_bb.csv", "text/csv")
+                            st.success(f"✅ {len(df_div_save)} divergências encontradas e salvas no banco de dados com sucesso!")
+                            st.rerun()
                         else:
-                            st.success("✅ Nenhuma divergência cadastral encontrada nos registros cruzados.")
+                            st.success("✅ Nenhuma divergência cadastral encontrada.")
+                            conn.close()
 
     elif choice == "Dashboard":
         render_header()
@@ -935,6 +1044,7 @@ def main_app():
         if st.button("🗑️ LIMPAR TODO O BANCO DE DADOS"):
             conn = get_db_connection()
             conn.execute("DELETE FROM payments")
+            conn.execute("DELETE FROM bank_discrepancies") # Limpar também divergências
             conn.commit()
             conn.close()
             st.success("Banco limpo.")
