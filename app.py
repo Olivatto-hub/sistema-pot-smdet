@@ -8,8 +8,7 @@ import re
 import traceback
 import chardet
 import base64
-import matplotlib.pyplot as plt
-import seaborn as sns
+import math
 warnings.filterwarnings('ignore')
 
 # ============================================
@@ -86,6 +85,90 @@ st.markdown("""
         border-radius: 10px;
         overflow: hidden;
     }
+    
+    .bar-chart {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        margin: 20px 0;
+    }
+    
+    .bar-item {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+    
+    .bar-label {
+        min-width: 120px;
+        font-weight: 500;
+    }
+    
+    .bar-container {
+        flex: 1;
+        height: 30px;
+        background-color: #e9ecef;
+        border-radius: 4px;
+        overflow: hidden;
+    }
+    
+    .bar-fill {
+        height: 100%;
+        background: linear-gradient(90deg, #1E3A8A, #3B82F6);
+        border-radius: 4px;
+        transition: width 0.5s ease;
+    }
+    
+    .bar-value {
+        min-width: 80px;
+        text-align: right;
+        font-weight: 600;
+        color: #1E3A8A;
+    }
+    
+    .pie-chart {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 15px;
+        margin: 20px 0;
+        justify-content: center;
+    }
+    
+    .pie-item {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        min-width: 100px;
+    }
+    
+    .pie-slice {
+        width: 80px;
+        height: 80px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin-bottom: 8px;
+        font-weight: bold;
+        color: white;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    
+    .pie-label {
+        text-align: center;
+        font-size: 0.9em;
+    }
+    
+    .color-1 { background-color: #1E3A8A; }
+    .color-2 { background-color: #3B82F6; }
+    .color-3 { background-color: #10B981; }
+    .color-4 { background-color: #F59E0B; }
+    .color-5 { background-color: #EF4444; }
+    .color-6 { background-color: #8B5CF6; }
+    .color-7 { background-color: #EC4899; }
+    .color-8 { background-color: #14B8A6; }
+    .color-9 { background-color: #F97316; }
+    .color-10 { background-color: #6366F1; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -525,45 +608,175 @@ def create_download_link(df, filename, file_format):
     except Exception as e:
         return None, None, f"Erro: {str(e)}"
 
-def criar_grafico_barras(dados, titulo, x_label, y_label, cor='#1E3A8A'):
-    """Cria um gráfico de barras usando matplotlib."""
-    fig, ax = plt.subplots(figsize=(10, 6))
+def criar_grafico_barras_html(dados, titulo, x_label, y_label, cor='#1E3A8A'):
+    """Cria um gráfico de barras usando HTML/CSS puro."""
+    if not dados:
+        return "<p>Sem dados para exibir</p>"
     
-    bars = ax.bar(range(len(dados)), dados.values(), color=cor)
-    ax.set_title(titulo, fontsize=14, fontweight='bold')
-    ax.set_xlabel(x_label)
-    ax.set_ylabel(y_label)
-    ax.set_xticks(range(len(dados)))
-    ax.set_xticklabels(dados.keys(), rotation=45, ha='right')
+    max_valor = max(dados.values()) if dados.values() else 1
     
-    for bar in bars:
-        height = bar.get_height()
-        ax.annotate(f'{height:,.0f}',
-                   xy=(bar.get_x() + bar.get_width() / 2, height),
-                   xytext=(0, 3),
-                   textcoords="offset points",
-                   ha='center', va='bottom',
-                   fontsize=9)
+    html = f"""
+    <div style="margin: 20px 0;">
+        <h4 style="margin-bottom: 15px; color: #333;">{titulo}</h4>
+        <div class="bar-chart">
+    """
     
-    plt.tight_layout()
-    return fig
+    for i, (label, valor) in enumerate(dados.items()):
+        porcentagem = (valor / max_valor * 100) if max_valor > 0 else 0
+        valor_formatado = formatar_valor_brl(valor) if 'R$' in y_label else formatar_numero(valor)
+        
+        html += f"""
+            <div class="bar-item">
+                <div class="bar-label" title="{label}">{label[:20]}{'...' if len(label) > 20 else ''}</div>
+                <div class="bar-container">
+                    <div class="bar-fill" style="width: {porcentagem}%"></div>
+                </div>
+                <div class="bar-value">{valor_formatado}</div>
+            </div>
+        """
+    
+    html += """
+        </div>
+    </div>
+    """
+    
+    return html
 
-def criar_grafico_pizza(labels, sizes, titulo):
-    """Cria um gráfico de pizza usando matplotlib."""
-    fig, ax = plt.subplots(figsize=(8, 8))
+def criar_grafico_pizza_html(labels, sizes, titulo):
+    """Cria um gráfico de pizza usando HTML/CSS puro."""
+    if not labels or not sizes:
+        return "<p>Sem dados para exibir</p>"
     
-    colors = plt.cm.Set3(np.linspace(0, 1, len(labels)))
-    wedges, texts, autotexts = ax.pie(sizes, labels=labels, colors=colors,
-                                     autopct='%1.1f%%', startangle=90)
+    total = sum(sizes)
+    if total == 0:
+        return "<p>Sem dados para exibir</p>"
     
-    ax.set_title(titulo, fontsize=14, fontweight='bold')
+    html = f"""
+    <div style="margin: 20px 0; text-align: center;">
+        <h4 style="margin-bottom: 15px; color: #333;">{titulo}</h4>
+        <div class="pie-chart">
+    """
     
-    for autotext in autotexts:
-        autotext.set_color('white')
-        autotext.set_fontweight('bold')
+    cores = ['color-1', 'color-2', 'color-3', 'color-4', 'color-5', 
+             'color-6', 'color-7', 'color-8', 'color-9', 'color-10']
     
-    plt.tight_layout()
-    return fig
+    for i, (label, valor) in enumerate(zip(labels, sizes)):
+        if i >= len(cores):
+            break
+            
+        porcentagem = (valor / total * 100) if total > 0 else 0
+        cor_classe = cores[i % len(cores)]
+        
+        html += f"""
+            <div class="pie-item">
+                <div class="pie-slice {cor_classe}" title="{label}: {valor} ({porcentagem:.1f}%)">
+                    {porcentagem:.1f}%
+                </div>
+                <div class="pie-label">{label[:15]}{'...' if len(label) > 15 else ''}</div>
+            </div>
+        """
+    
+    html += """
+        </div>
+    </div>
+    """
+    
+    return html
+
+def criar_grafico_linha_html(datas, valores, titulo):
+    """Cria um gráfico de linha usando HTML/CSS puro."""
+    if not datas or not valores or len(datas) < 2:
+        return "<p>Dados insuficientes para linha do tempo</p>"
+    
+    max_valor = max(valores)
+    min_valor = min(valores)
+    valor_range = max_valor - min_valor if max_valor != min_valor else 1
+    
+    html = f"""
+    <div style="margin: 20px 0;">
+        <h4 style="margin-bottom: 15px; color: #333;">{titulo}</h4>
+        <div style="position: relative; height: 200px; border-left: 2px solid #dee2e6; border-bottom: 2px solid #dee2e6; padding-left: 40px;">
+    """
+    
+    # Eixo Y
+    html += """
+        <div style="position: absolute; left: 0; top: 0; bottom: 0; width: 40px; display: flex; flex-direction: column; justify-content: space-between;">
+    """
+    
+    num_ticks = 5
+    for i in range(num_ticks + 1):
+        valor_tick = min_valor + (i * valor_range / num_ticks)
+        pos_y = 100 - (i * 100 / num_ticks)
+        html += f"""
+            <div style="position: absolute; left: 0; top: {pos_y}%; transform: translateY(-50%); font-size: 10px; color: #666;">
+                {formatar_numero(int(valor_tick))}
+            </div>
+        """
+    
+    html += """
+        </div>
+    """
+    
+    # Linha do gráfico
+    pontos = []
+    for i, (data, valor) in enumerate(zip(datas, valores)):
+        x_pos = (i / (len(datas) - 1)) * 100 if len(datas) > 1 else 0
+        y_pos = ((valor - min_valor) / valor_range) * 100 if valor_range > 0 else 50
+        pontos.append(f"{x_pos}% {100 - y_pos}%")
+    
+    pontos_str = ", ".join(pontos)
+    
+    html += f"""
+        <div style="position: absolute; left: 40px; right: 0; top: 0; bottom: 0;">
+            <svg width="100%" height="100%" style="overflow: visible;">
+                <polyline 
+                    points="{pontos_str}"
+                    fill="none"
+                    stroke="#3B82F6"
+                    stroke-width="3"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                />
+    """
+    
+    # Pontos
+    for i, (data, valor) in enumerate(zip(datas, valores)):
+        x_pos = (i / (len(datas) - 1)) * 100 if len(datas) > 1 else 0
+        y_pos = ((valor - min_valor) / valor_range) * 100 if valor_range > 0 else 50
+        
+        html += f"""
+                <circle 
+                    cx="{x_pos}%" 
+                    cy="{100 - y_pos}%" 
+                    r="4" 
+                    fill="#1E3A8A"
+                    stroke="white"
+                    stroke-width="2"
+                />
+        """
+    
+    # Labels das datas
+    html += """
+            </svg>
+            
+            <div style="position: absolute; left: 0; right: 0; bottom: -25px; display: flex; justify-content: space-between;">
+    """
+    
+    for i, data in enumerate(datas):
+        x_pos = (i / (len(datas) - 1)) * 100 if len(datas) > 1 else 0
+        html += f"""
+                <div style="position: absolute; left: {x_pos}%; transform: translateX(-50%); font-size: 10px; color: #666; white-space: nowrap;">
+                    {str(data)[:10]}
+                </div>
+        """
+    
+    html += """
+            </div>
+        </div>
+    </div>
+    """
+    
+    return html
 
 # ============================================
 # INICIALIZAÇÃO DO ESTADO
@@ -846,12 +1059,21 @@ try:
                         status_counts = df_consolidado['STATUS_PAGAMENTO'].value_counts()
                         
                         if len(status_counts) > 0:
-                            fig = criar_grafico_pizza(
+                            html_pizza = criar_grafico_pizza_html(
                                 status_counts.index.tolist(),
                                 status_counts.values.tolist(),
                                 'Distribuição por Status'
                             )
-                            st.pyplot(fig)
+                            st.markdown(html_pizza, unsafe_allow_html=True)
+                            
+                            # Tabela de detalhes
+                            with st.expander("📋 Detalhes do Status", expanded=False):
+                                status_df = pd.DataFrame({
+                                    'Status': status_counts.index,
+                                    'Quantidade': status_counts.values,
+                                    '%': (status_counts.values / status_counts.sum() * 100).round(1)
+                                })
+                                st.dataframe(status_df, use_container_width=True)
                         else:
                             st.info("Sem dados de status para exibir")
                     else:
@@ -866,14 +1088,24 @@ try:
                             projeto_summary = projeto_summary.sort_values(ascending=False).head(10)
                             
                             if len(projeto_summary) > 0:
-                                fig = criar_grafico_barras(
+                                html_barras = criar_grafico_barras_html(
                                     projeto_summary.to_dict(),
                                     'Top 10 Projetos por Valor Total',
                                     'Projeto',
                                     'Valor Total (R$)',
                                     '#1E3A8A'
                                 )
-                                st.pyplot(fig)
+                                st.markdown(html_barras, unsafe_allow_html=True)
+                                
+                                # Tabela de detalhes
+                                with st.expander("📋 Detalhes dos Projetos", expanded=False):
+                                    projeto_df = pd.DataFrame({
+                                        'Projeto': projeto_summary.index,
+                                        'Valor Total': projeto_summary.values,
+                                        '% do Total': (projeto_summary.values / projeto_summary.sum() * 100).round(1)
+                                    })
+                                    projeto_df['Valor Total'] = projeto_df['Valor Total'].apply(formatar_valor_brl)
+                                    st.dataframe(projeto_df, use_container_width=True)
                             else:
                                 st.info("Sem dados de projetos para exibir")
                         except Exception as e:
@@ -1183,14 +1415,22 @@ try:
                             projeto_valores = projeto_valores.sort_values(ascending=False).head(10)
                             
                             if len(projeto_valores) > 0:
-                                fig = criar_grafico_barras(
+                                html_barras = criar_grafico_barras_html(
                                     projeto_valores.to_dict(),
                                     'Top 10 Projetos por Valor Total',
                                     'Projeto',
                                     'Valor Total (R$)',
                                     '#3B82F6'
                                 )
-                                st.pyplot(fig)
+                                st.markdown(html_barras, unsafe_allow_html=True)
+                                
+                                # Estatísticas adicionais
+                                col_stats1, col_stats2 = st.columns(2)
+                                with col_stats1:
+                                    st.metric("Total de Projetos", len(projeto_valores))
+                                with col_stats2:
+                                    st.metric("Valor Médio por Projeto", 
+                                             formatar_valor_brl(projeto_valores.mean()))
                             else:
                                 st.info("Sem dados para exibir")
                         except:
@@ -1201,14 +1441,14 @@ try:
                         try:
                             agencia_counts = df_filtrado['AGENCIA'].value_counts().head(10)
                             if len(agencia_counts) > 0:
-                                fig = criar_grafico_barras(
+                                html_barras = criar_grafico_barras_html(
                                     agencia_counts.to_dict(),
                                     'Top 10 Agências',
                                     'Agência',
                                     'Quantidade',
                                     '#10B981'
                                 )
-                                st.pyplot(fig)
+                                st.markdown(html_barras, unsafe_allow_html=True)
                             else:
                                 st.info("Sem dados de agências para exibir")
                         except:
@@ -1221,17 +1461,23 @@ try:
                         try:
                             df_filtrado['DATA'] = pd.to_datetime(df_filtrado['DATA_CARREGAMENTO']).dt.date
                             data_counts = df_filtrado.groupby('DATA').size().reset_index(name='Quantidade')
+                            data_counts = data_counts.sort_values('DATA')
                             
                             if len(data_counts) > 1:
-                                fig, ax = plt.subplots(figsize=(10, 6))
-                                ax.plot(data_counts['DATA'], data_counts['Quantidade'], marker='o', linewidth=2)
-                                ax.set_title('Registros por Data', fontsize=14, fontweight='bold')
-                                ax.set_xlabel('Data')
-                                ax.set_ylabel('Quantidade')
-                                ax.grid(True, alpha=0.3)
-                                plt.xticks(rotation=45)
-                                plt.tight_layout()
-                                st.pyplot(fig)
+                                html_linha = criar_grafico_linha_html(
+                                    data_counts['DATA'].tolist(),
+                                    data_counts['Quantidade'].tolist(),
+                                    'Registros por Data'
+                                )
+                                st.markdown(html_linha, unsafe_allow_html=True)
+                                
+                                # Estatísticas
+                                col_stats1, col_stats2 = st.columns(2)
+                                with col_stats1:
+                                    st.metric("Período (dias)", len(data_counts))
+                                with col_stats2:
+                                    st.metric("Média diária", 
+                                             formatar_numero(data_counts['Quantidade'].mean().round(1)))
                             else:
                                 st.info("Dados insuficientes para linha do tempo")
                         except:
