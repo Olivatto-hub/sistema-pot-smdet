@@ -8,6 +8,7 @@ import io
 import re
 import os
 import tempfile
+import matplotlib.pyplot as plt
 from datetime import datetime
 from fpdf import FPDF
 
@@ -197,6 +198,40 @@ def remove_total_row(df):
         
     return df
 
+def parse_bb_txt_cadastro(file):
+    """
+    Lê arquivos de Cadastro do BB (Layout Posicional).
+    Estrutura estimada:
+    0-11: Tipo/Projeto, 11-42: Projeto, 42-52: Cartao, 52-92: Nome, ...
+    """
+    # Definição das larguras baseada na análise visual e do gerador
+    # Colspecs: (inicio, fim)
+    colspecs = [
+        (0, 11),   # Tipo / ID
+        (11, 42),  # Projeto
+        (42, 52),  # NumCartao
+        (52, 92),  # Nome
+        (92, 104), # RG
+        (104, 119) # CPF
+    ]
+    names = ['tipo', 'projeto_bb', 'num_cartao', 'nome_bb', 'rg_bb', 'cpf_bb']
+    
+    # Ler arquivo fwf
+    file.seek(0)
+    df = pd.read_fwf(file, colspecs=colspecs, names=names, dtype=str, encoding='latin1')
+    
+    # Filtrar apenas linhas de dados (que começam com '1')
+    # Às vezes o header começa com '0'.
+    if 'tipo' in df.columns:
+        df = df[df['tipo'].astype(str).str.strip() == '1'].copy()
+        
+    # Limpeza básica
+    df['num_cartao'] = df['num_cartao'].str.strip()
+    df['nome_bb'] = df['nome_bb'].str.strip()
+    df['cpf_bb'] = df['cpf_bb'].str.replace(r'\D', '', regex=True)
+    
+    return df
+
 def standardize_dataframe(df, filename):
     """Padroniza colunas, extrai metadados e trata Gerenciadoras."""
     
@@ -373,8 +408,6 @@ def generate_pdf_report(df_filtered):
     
     if 'programa' in df_filtered.columns and 'valor_pagto' in df_filtered.columns:
         try:
-            import matplotlib.pyplot as plt
-            
             # Gráfico 1: Valor por Projeto
             plt.figure(figsize=(10, 8))
             
@@ -406,9 +439,6 @@ def generate_pdf_report(df_filtered):
             pdf.ln(5)
             plt.close()
             os.remove(tmp_filename)
-        except ImportError:
-            pdf.set_font("Arial", 'I', 10)
-            pdf.cell(0, 10, "Biblioteca gráfica não encontrada.", 0, 1)
         except Exception as e:
             pdf.set_font("Arial", 'I', 10)
             pdf.cell(0, 10, f"Erro ao gerar gráfico: {str(e)}", 0, 1)
@@ -623,7 +653,7 @@ def main_app():
     st.sidebar.markdown(f"### Olá, {user['name']}")
     st.sidebar.caption(f"Perfil: {user['role'].upper().replace('_', ' ')}")
     
-    menu_options = ["Dashboard", "Upload e Processamento", "Análise e Correção", "Relatórios e Exportação"]
+    menu_options = ["Dashboard", "Upload e Processamento", "Análise e Correção", "Conferência Bancária (BB)", "Relatórios e Exportação"]
     
     if user['role'] in ['admin_ti', 'admin_equipe']:
         menu_options.append("Gestão de Equipe")
@@ -640,8 +670,8 @@ def main_app():
     
     if choice == "Upload e Processamento":
         render_header()
-        st.markdown("<h3 class='main-header'>📂 Upload de Arquivos</h3>", unsafe_allow_html=True)
-        st.info("Arraste arquivos CSV ou Excel. O sistema padronizará automaticamente as colunas.")
+        st.markdown("<h3 class='main-header'>📂 Upload de Arquivos de Pagamento</h3>", unsafe_allow_html=True)
+        st.info("Arraste arquivos CSV ou Excel contendo valores a pagar.")
         
         uploaded_files = st.file_uploader("Selecione os arquivos", accept_multiple_files=True, type=['csv', 'xlsx', 'txt'])
         
@@ -661,6 +691,11 @@ def main_app():
                     if file.name in existing_files:
                         st.warning(f"⚠️ O arquivo '{file.name}' já consta no banco de dados e foi ignorado.")
                         continue
+                    
+                    # Verificação se é arquivo de cadastro BB (sem valor)
+                    if 'REL.CADASTRO' in file.name.upper():
+                        st.warning(f"⚠️ Arquivo '{file.name}' identificado como relatório de cadastro (sem valor). Utilize a aba 'Conferência Bancária (BB)' para processá-lo.")
+                        continue
                         
                     try:
                         if file.name.endswith('.csv'):
@@ -672,6 +707,7 @@ def main_app():
                         elif file.name.endswith('.xlsx'):
                             df = pd.read_excel(file)
                         elif file.name.endswith('.txt'):
+                            # Tentar ler TXT tabulares, mas evitar o layout posicional do BB
                             df = pd.read_csv(file, sep=r'\s+', encoding='latin1', on_bad_lines='skip')
                             
                         # Padronizar e Aplicar Regra de Exclusão da Última Linha
@@ -698,7 +734,6 @@ def main_app():
                     df_to_save = final_df[cols_to_save].copy()
                     df_to_save['status'] = 'IMPORTADO'
                     
-                    # Evitar duplicatas exatas ao salvar
                     df_to_save.to_sql('payments', conn, if_exists='append', index=False)
                     conn.close()
                     
@@ -717,10 +752,7 @@ def main_app():
                     st.markdown("### Prévia dos Dados:")
                     st.dataframe(final_df.head())
                 else:
-                    if not uploaded_files:
-                        st.warning("Nenhum arquivo selecionado.")
-                    else:
-                        st.info("Nenhum novo dado para processar (arquivos repetidos ou vazios).")
+                    st.info("Nenhum dado financeiro novo processado.")
 
     elif choice == "Análise e Correção":
         render_header()
@@ -767,6 +799,87 @@ def main_app():
                 if not missing_cpf.empty:
                     st.error(f"⚠️ {len(missing_cpf)} Registros sem CPF!")
                     st.dataframe(missing_cpf)
+
+    elif choice == "Conferência Bancária (BB)":
+        render_header()
+        st.markdown("<h3 class='main-header'>🏦 Cruzamento de Dados (Banco do Brasil)</h3>", unsafe_allow_html=True)
+        st.info("Faça upload dos arquivos 'REL.CADASTRO.OT' para comparar com a base de dados do sistema.")
+        
+        bb_files = st.file_uploader("Arquivos de Retorno BB (.TXT)", accept_multiple_files=True, type=['txt'])
+        
+        if bb_files:
+            if st.button("Processar e Comparar"):
+                all_bb_data = []
+                for file in bb_files:
+                    try:
+                        df_bb = parse_bb_txt_cadastro(file)
+                        df_bb['arquivo_bb'] = file.name
+                        all_bb_data.append(df_bb)
+                    except Exception as e:
+                        st.error(f"Erro ao ler {file.name}: {e}")
+                
+                if all_bb_data:
+                    final_bb = pd.concat(all_bb_data, ignore_index=True)
+                    st.success(f"{len(final_bb)} registros lidos dos arquivos do Banco.")
+                    
+                    # Carregar dados do sistema
+                    conn = get_db_connection()
+                    df_db = pd.read_sql("SELECT num_cartao, nome, cpf, programa FROM payments", conn)
+                    conn.close()
+                    
+                    if df_db.empty:
+                        st.error("Base de dados do sistema vazia. Não é possível comparar.")
+                    else:
+                        # Preparar para merge
+                        # Limpeza para garantir match
+                        final_bb['match_cartao'] = final_bb['num_cartao'].astype(str).str.strip().str.replace(r'^0+', '', regex=True)
+                        df_db['match_cartao'] = df_db['num_cartao'].astype(str).str.strip().str.replace(r'^0+', '', regex=True).str.replace(r'\.0$', '', regex=True)
+                        
+                        # Merge (Inner Join para pegar apenas os que existem em ambos, ou Left para ver quem falta)
+                        # O objetivo é validar dados de quem existe
+                        merged = pd.merge(df_db, final_bb, on='match_cartao', how='inner', suffixes=('_sis', '_bb'))
+                        
+                        # Análise de Divergências
+                        divergencias = []
+                        
+                        for _, row in merged.iterrows():
+                            # Comparar Nomes (Normalizados)
+                            nome_sis = str(row['nome']).strip().upper()
+                            nome_bb = str(row['nome_bb']).strip().upper()
+                            
+                            # Comparar CPF
+                            cpf_sis = str(row['cpf']).strip()
+                            cpf_bb = str(row['cpf_bb']).strip()
+                            
+                            motivos = []
+                            if nome_sis != nome_bb:
+                                motivos.append(f"Nome Diferente ({nome_bb})")
+                            if cpf_sis != cpf_bb and cpf_sis != '' and cpf_bb != '':
+                                motivos.append(f"CPF Diferente ({cpf_bb})")
+                                
+                            if motivos:
+                                divergencias.append({
+                                    'Cartão': row['num_cartao'],
+                                    'Nome Sistema': row['nome'],
+                                    'Nome Banco': row['nome_bb'],
+                                    'CPF Sistema': row['cpf'],
+                                    'CPF Banco': row['cpf_bb'],
+                                    'Divergência': ", ".join(motivos),
+                                    'Arquivo BB': row['arquivo_bb']
+                                })
+                        
+                        if divergencias:
+                            df_div = pd.DataFrame(divergencias)
+                            st.error(f"⚠️ Foram encontradas {len(df_div)} inconsistências entre o Sistema e o Banco!")
+                            st.dataframe(df_div)
+                            
+                            csv_div = df_div.to_csv(index=False, sep=';').encode('utf-8-sig')
+                            st.download_button("Baixar Relatório de Divergências", csv_div, "divergencias_bb.csv", "text/csv")
+                        else:
+                            st.success("✅ Nenhuma divergência cadastral encontrada nos registros cruzados.")
+                            
+                        # Mostrar quem está no arquivo do banco mas não no sistema (Opcional, mas útil)
+                        # st.write("Registros no arquivo BB não encontrados no sistema: ...")
 
     elif choice == "Dashboard":
         render_header()
