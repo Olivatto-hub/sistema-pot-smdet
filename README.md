@@ -4,12 +4,11 @@ Sistema web para análise e monitoramento de pagamentos dos projetos do Programa
 
 ## 🚀 Funcionalidades
 
-- **Processamento automático** de arquivos CSV e Excel
+- **Processamento automático** de arquivos CSV, Excel e txt.
 - **Detecção de inconsistências** e dados críticos
 - **Análise por agência** e **gerenciadora**
-- **Gráficos interativos** com Plotly
-- **Exportação** para múltiplos formatos (Excel, CSV, JSON)
-- **Correção automática** de valores duplicados
+- **Gráficos interativos** 
+- **Exportação** para múltiplos formatos (Excel, CSV, PDF)
 - **Relatórios detalhados** com métricas principais
 
 ## 📋 Pré-requisitos
