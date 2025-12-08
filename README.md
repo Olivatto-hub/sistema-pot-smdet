@@ -1,6 +1,6 @@
-# Sistema de Monitoramento de Pagamentos - POT
+# Sistema de Gestão e Monitoramento de Pagamentos - POT
 
-Sistema web para análise e monitoramento de pagamentos dos projetos do Programa Operacional de Trabalho (POT).
+Sistema web para análise, gestão e monitoramento de pagamentos dos projetos do Programa Operação Trabalho (POT).
 
 ## 🚀 Funcionalidades
 
