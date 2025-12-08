@@ -1,95 +1,101 @@
-# Sistema de Gestão e Monitoramento de Pagamentos - POT (SMDET)
+Sistema de Gestão e Monitoramento de Pagamentos - POT (SMDET)
 
-Sistema web desenvolvido em Python/Streamlit para a **Secretaria Municipal de Desenvolvimento Econômico e Trabalho (SMDET)**. O objetivo é centralizar, validar, monitorar e gerar relatórios das folhas de pagamento dos beneficiários do **Programa Operação Trabalho (POT)**.
+Sistema web corporativo desenvolvido para a Secretaria Municipal de Desenvolvimento Econômico e Trabalho (SMDET) da Prefeitura de São Paulo. A plataforma centraliza, valida e audita o processamento das folhas de pagamento do Programa Operação Trabalho (POT), garantindo conformidade e segurança dos dados.
 
-## 🎯 Visão Geral
+🎯 Visão Geral
 
-O sistema automatiza o recebimento de arquivos de diferentes fontes (CSV/Excel), padroniza os dados, aplica regras de validação ("Malha Fina") para detectar inconsistências críticas e realiza a conferência com arquivos bancários.
+O sistema automatiza o fluxo de recebimento de arquivos (ETL), aplica regras rigorosas de validação ("Malha Fina") para detectar fraudes e duplicidades, realiza o cruzamento com arquivos bancários e fornece um ambiente seguro com controle de acesso baseado em perfis (RBAC) e auditoria completa de ações.
 
-## 🚀 Funcionalidades Principais
+🚀 Funcionalidades Principais
 
-### 1. Processamento de Arquivos (ETL)
-- **Upload Flexível:** Suporte simultâneo a arquivos CSV e Excel (`.xlsx`).
-- **Padronização Automática:** Algoritmo inteligente que reconhece diferentes nomes para a mesma coluna (ex: `NumCartão`, `Cartão`, `Código` são transformados automaticamente para `num_cartao`).
-- **Limpeza de Dados:** Remoção automática de linhas de "totais" no rodapé dos arquivos para evitar duplicação de valores.
-- **Detecção de Referência:** Identificação automática do Mês e Ano de competência baseada no nome do arquivo ou datas internas.
+1. Processamento Inteligente (ETL)
 
-### 2. Validação e Malha Fina (Quality Assurance)
-- **Inconsistências Críticas:** Identifica registros sem CPF ou sem Número de Cartão.
-- **Detecção de Fraudes:** Alerta duplicidades (mesmo CPF com múltiplos cartões/nomes ou mesmo cartão em múltiplos CPFs).
-- **Correção Online:** Interface para edição direta de dados incorretos no banco de dados (para perfis autorizados).
+Upload Universal: Suporte a arquivos Excel (.xlsx) e CSV simultâneos.
 
-### 3. Conferência Bancária (Banco do Brasil)
-- **Processamento de Retorno:** Leitura de arquivos `.txt` de retorno do banco.
-- **Cruzamento de Dados:** Comparação automática entre nomes no sistema vs. nomes no banco.
-- **Relatório de Divergências:** Histórico e exportação PDF das discrepâncias encontradas.
+Padronização Automática: Algoritmo que identifica e normaliza colunas (ex: NumCartão, Cartão, Código -> num_cartao).
 
-### 4. Relatórios e Exportação
-- **Dashboard Executivo:** Métricas de total pago, beneficiários e gráficos interativos (Plotly).
-- **Relatórios PDF:** Geração de relatórios gerenciais e logs de auditoria utilizando a biblioteca FPDF.
-- **Exportação de Dados:** Planilhas consolidadas em Excel/CSV e arquivo de remessa (`.txt`) no layout padrão do Banco do Brasil.
+Sanitização: Remoção automática de linhas de "totais" e caracteres especiais que quebram integrações bancárias.
 
-### 5. Segurança e Auditoria
-- **Login Institucional:** Restrito ao domínio `@prefeitura.sp.gov.br`.
-- **Logs de Auditoria:** Rastreabilidade completa (quem fez o quê e quando).
-- **Troca de Senha:** Obrigatoriedade de alteração de senha no primeiro acesso.
+2. Malha Fina e Segurança (Anti-Fraude)
 
-## 👥 Perfis de Acesso (RBAC)
+Detecção de Conflitos Cadastrais: Identifica CPFs que aparecem com Nomes ou Cartões diferentes em registros distintos.
 
-**1. Analista (user)**
-- Visualização de Dashboard.
-- Upload de arquivos.
-- Geração de relatórios e exportações.
+Prevenção de Fraudes: Alerta imediato se um único Cartão Bancário estiver associado a múltiplos CPFs diferentes.
 
-**2. Líder/Gestor (admin_equipe)**
-- Todas as funções de Analista.
-- **Gestão de Equipe:** Cadastrar e remover usuários.
-- **Edição de Dados:** Permissão para corrigir registros e excluir arquivos incorretos.
+Validação Cruzada: Diferencia pagamentos recorrentes legítimos de duplicidades indevidas.
 
-**3. Admin TI (admin_ti)**
-- Acesso total ao sistema.
-- Visualização e limpeza de Logs de Auditoria.
-- Reset total do banco de dados (Limpeza de Tabelas).
+3. Conferência Bancária
 
-## 🛠️ Tecnologias Utilizadas
+Conciliação Automática: Processamento de arquivos de retorno do Banco do Brasil (REL.CADASTRO.OT).
 
-- **Linguagem:** Python 3.8+
-- **Frontend:** Streamlit
-- **Banco de Dados:** SQLite (`pot_system.db`)
-- **Bibliotecas Principais:** Pandas, Plotly, FPDF, Matplotlib, Openpyxl.
+Relatório de Divergências: Aponta inconsistências entre o banco de dados da Prefeitura e o cadastro do Banco (ex: Nome divergente).
 
-## 📋 Como Executar o Projeto
+4. Gestão e Auditoria
 
-**1. Instale as dependências**
+Controle de Acesso (RBAC):
 
-Certifique-se de ter o Python instalado e execute o comando abaixo no terminal:
+Analista: Operação básica.
 
-```bash
-pip install streamlit pandas plotly fpdf xlsxwriter openpyxl matplotlib
-```
-2. Execute a aplicação
+Líder/Gestor: Correção de dados e gestão de equipe.
 
-No terminal, dentro da pasta do projeto:
+Admin TI: Controle total, limpeza de dados e acesso aos logs.
 
-```Bash
+Logs de Auditoria: Registro imutável de todas as ações críticas (quem fez, o que fez e quando).
+
+Manuais Integrados: Documentação específica por perfil disponível dentro da plataforma.
+
+🛠️ Tecnologias Utilizadas
+
+Frontend/Backend: Python + Streamlit
+
+Banco de Dados: SQLite (com suporte nativo para migração PostgreSQL)
+
+Análise de Dados: Pandas, NumPy
+
+Visualização: Plotly Express
+
+Relatórios: FPDF (Geração de PDFs dinâmicos)
+
+📋 Como Executar o Projeto
+
+Pré-requisitos
+
+Certifique-se de ter o Python 3.9+ instalado.
+
+Clone o repositório:
+
+git clone [https://github.com/seu-usuario/sistema-pot-smdet.git](https://github.com/seu-usuario/sistema-pot-smdet.git)
+cd sistema-pot-smdet
+
+
+Instale as dependências:
+
+pip install -r requirements.txt
+
+
+Execute a aplicação:
+
 streamlit run app.py
-```
 
-3. Primeiro Acesso
 
-O sistema gera automaticamente um usuário administrador na primeira execução:
+🔐 Primeiro Acesso (Admin Padrão)
+
+O sistema cria automaticamente um superusuário na primeira execução:
 
 E-mail: admin@prefeitura.sp.gov.br
 
 Senha Inicial: smdet2025
 
-Nota: O sistema solicitará a troca desta senha imediatamente após o login.
+Nota: O sistema exigirá a troca desta senha imediatamente após o login.
 
 📂 Estrutura de Arquivos
-app.py: Código fonte principal da aplicação.
 
-pot_system.db: Banco de dados SQLite (criado automaticamente na execução).
+app.py: Código fonte principal (Monolito).
 
-README.md: Documentação do sistema.
+pot_system.db: Banco de dados local (criado automaticamente).
 
-Desenvolvido para a SMDET - Prefeitura de São Paulo por Ricardo Olivatto APDO-TI
+requirements.txt: Lista de bibliotecas necessárias.
+
+README.md: Documentação do projeto.
+
+Desenvolvido para a Prefeitura de São Paulo - SMDET.
