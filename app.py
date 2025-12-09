@@ -6,10 +6,10 @@ import hashlib
 import io
 import re
 import unicodedata
-import os
+import difflib
 import tempfile
+import os
 from datetime import datetime
-import difflib  # Biblioteca nativa para comparar similaridade de texto
 
 # --- IMPORTAÇÕES OPCIONAIS ---
 try:
@@ -25,20 +25,14 @@ except ImportError:
 # ===========================================
 # 1. CONFIGURAÇÃO E ESTILOS
 # ===========================================
-st.set_page_config(
-    page_title="SMDET - Gestão POT",
-    page_icon="💰",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+st.set_page_config(page_title="SMDET - Gestão POT", page_icon="💰", layout="wide")
 
 st.markdown("""
 <style>
     .header-container { text-align: center; padding-bottom: 20px; border-bottom: 2px solid #ddd; margin-bottom: 30px; }
-    .header-secretaria { color: #555; font-size: 1rem; margin-bottom: 5px; font-weight: 500; }
-    .header-programa { color: #1E3A8A; font-size: 1.5rem; font-weight: bold; margin-bottom: 5px; }
-    .header-sistema { color: #2563EB; font-size: 1.8rem; font-weight: bold; }
+    .header-programa { color: #1E3A8A; font-size: 1.5rem; font-weight: bold; }
     .metric-card { background-color: #f8f9fa; padding: 15px; border-radius: 10px; border-left: 5px solid #1E3A8A; }
+    /* Força a tabela a ocupar largura total */
     [data-testid="stDataFrame"] { width: 100%; }
 </style>
 """, unsafe_allow_html=True)
@@ -46,16 +40,15 @@ st.markdown("""
 def render_header():
     st.markdown("""
         <div class="header-container">
-            <div class="header-secretaria">Secretaria Municipal de Desenvolvimento Econômico e Trabalho (SMDET)</div>
+            <div style="color: #555;">Secretaria Municipal de Desenvolvimento Econômico e Trabalho (SMDET)</div>
             <div class="header-programa">Programa Operação Trabalho (POT)</div>
-            <div class="header-sistema">Sistema de Gestão e Monitoramento de Pagamentos</div>
+            <div style="color: #2563EB; font-size: 1.2rem; font-weight: bold;">Sistema de Gestão e Monitoramento</div>
         </div>
     """, unsafe_allow_html=True)
 
 # ===========================================
 # 2. BANCO DE DADOS
 # ===========================================
-
 @st.cache_resource
 def get_db_engine():
     try:
@@ -76,6 +69,7 @@ def init_db():
     if not eng: return
     with eng.connect() as conn:
         conn.execute(text('''CREATE TABLE IF NOT EXISTS users (email TEXT PRIMARY KEY, password TEXT, role TEXT, name TEXT, first_login INTEGER DEFAULT 1)'''))
+        # Tabela principal expandida para conter Lote e Agência se disponíveis
         conn.execute(text('''CREATE TABLE IF NOT EXISTS payments (
             id SERIAL PRIMARY KEY, 
             programa TEXT, 
@@ -86,17 +80,19 @@ def init_db():
             rg TEXT, 
             valor_pagto REAL, 
             data_pagto TEXT, 
-            qtd_dias INTEGER, 
-            mes_ref TEXT, 
-            ano_ref TEXT, 
+            lote_pagto TEXT,
+            agencia TEXT,
             arquivo_origem TEXT, 
             linha_arquivo INTEGER, 
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )'''))
-        conn.execute(text('''CREATE TABLE IF NOT EXISTS bank_discrepancies (id SERIAL PRIMARY KEY, cartao TEXT, nome_sis TEXT, nome_bb TEXT, cpf_sis TEXT, cpf_bb TEXT, divergencia TEXT, arquivo_origem TEXT, tipo_erro TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)'''))
         conn.execute(text('''CREATE TABLE IF NOT EXISTS audit_logs (id SERIAL PRIMARY KEY, user_email TEXT, action TEXT, details TEXT, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)'''))
+        conn.execute(text('''CREATE TABLE IF NOT EXISTS bank_discrepancies (
+            id SERIAL PRIMARY KEY, cartao TEXT, nome_sis TEXT, nome_bb TEXT, 
+            divergencia TEXT, arquivo_origem TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )'''))
         conn.commit()
-        
+        # Admin padrão
         res = conn.execute(text("SELECT email FROM users WHERE email=:e"), {"e": 'admin@prefeitura.sp.gov.br'}).fetchone()
         if not res:
             h = hashlib.sha256('smdet2025'.encode()).hexdigest()
@@ -109,188 +105,174 @@ def log_action(email, action, details):
                    {"e": email, "a": action, "d": details})
 
 # ===========================================
-# 3. TRATAMENTO INTELIGENTE DE DADOS
+# 3. PARSERS ESPECÍFICOS DO BB (TEXTO/LARGURA FIXA)
 # ===========================================
-
-def sanitize_text(text):
-    if not isinstance(text, str): return str(text)
-    return text.encode('latin-1', 'replace').decode('latin-1')
 
 def normalize_name(name):
-    """Remove acentos, espaços extras e converte para maiúsculo."""
     if not name or str(name).lower() in ['nan', 'none', '']: return ""
     s = str(name)
-    # Tenta corrigir encoding comum de arquivos de banco (cp850/latin1 misturado)
-    try:
-        s = s.encode('cp1252').decode('utf-8') 
+    try: s = s.encode('cp1252').decode('utf-8') # Tenta corrigir encoding comum
     except: pass
-    
     nfkd = unicodedata.normalize('NFKD', s)
-    ascii_only = "".join([c for c in nfkd if not unicodedata.combining(c)])
-    return " ".join(ascii_only.upper().split())
+    return " ".join("".join([c for c in nfkd if not unicodedata.combining(c)]).upper().split())
 
-def nomes_sao_similares(nome1, nome2, limite=0.75):
-    """
-    Compara dois nomes ignorando preposições e tolerando pequenas diferenças.
-    Retorna True se forem considerados a mesma pessoa.
-    """
-    n1 = normalize_name(nome1)
-    n2 = normalize_name(nome2)
+def nomes_sao_similares(n1, n2):
+    """Compara nomes ignorando case, preposições e pequenas diferenças."""
+    s1 = normalize_name(n1)
+    s2 = normalize_name(n2)
+    if s1 == s2: return True
     
-    # 1. Igualdade exata após normalização
-    if n1 == n2: return True
-    
-    # 2. Remover preposições (DE, DA, DOS, E...)
-    stops = [' DE ', ' DA ', ' DO ', ' DOS ', ' DAS ', ' E ']
-    for s in stops:
-        n1 = n1.replace(s, ' ')
-        n2 = n2.replace(s, ' ')
-    
-    # 3. Comparação por Similaridade (SequenceMatcher)
-    # Isso resolve "ADRIANA" vs "ADRIANS" (Typo)
-    ratio = difflib.SequenceMatcher(None, n1, n2).ratio()
-    if ratio > limite:
-        return True
+    # Remove preposições comuns
+    for p in [' DE ', ' DA ', ' DO ', ' DOS ', ' E ']:
+        s1 = s1.replace(p, ' ')
+        s2 = s2.replace(p, ' ')
         
-    # 4. Verificação de Abreviações (Mauricio -> M)
-    # Se todas as palavras de um nome curto estiverem contidas no nome longo (iniciais)
-    parts1 = n1.split()
-    parts2 = n2.split()
-    
-    if len(parts1) == len(parts2):
-        match_count = 0
-        for p1, p2 in zip(parts1, parts2):
-            # Se for igual ou se um for abreviação do outro (M == MAURICIO)
-            if p1 == p2 or (len(p1) == 1 and p2.startswith(p1)) or (len(p2) == 1 and p1.startswith(p2)):
-                match_count += 1
-        
-        if match_count == len(parts1):
-            return True
+    # Similaridade (0.85 = 85% igual)
+    return difflib.SequenceMatcher(None, s1, s2).ratio() > 0.85
 
-    return False
+def parse_bb_resumo(file_obj):
+    """Lê o arquivo Resumo_CREDITO... que tem dados em multiplas linhas."""
+    content = file_obj.getvalue().decode('latin-1', errors='ignore')
+    lines = content.split('\n')
+    
+    data = []
+    current_record = {}
+    
+    # Regex para capturar a linha principal: Cartão (6 digitos) + Valor + Nome
+    # Ex: 377120     1386.00       ABDUL MANAN SHARIFI
+    regex_main = re.compile(r'^(\d{6})\s+(\d+\.\d{2})\s+(.+)$')
+    
+    # Regex para capturar a linha secundária: Distrito + Agencia
+    # Ex:           00          2445        3                24
+    regex_sec = re.compile(r'^\s+(\d{2})\s+(\d{4})\s+')
+
+    for line in lines:
+        line = line.strip()
+        if not line: continue
+        
+        # Tenta casar linha principal
+        match_main = regex_main.match(line)
+        if match_main:
+            # Se já tinha um record aberto, salva (embora nesse layout o record feche na prox linha)
+            if current_record: 
+                data.append(current_record)
+            
+            cartao, valor, nome = match_main.groups()
+            current_record = {
+                'num_cartao': cartao,
+                'valor_pagto': float(valor),
+                'nome': nome.strip(),
+                'agencia': '', # Será preenchido na proxima linha
+                'lote_pagto': '',
+                'programa': 'PAGAMENTO BB',
+                'arquivo_origem': file_obj.name
+            }
+            continue
+            
+        # Tenta casar linha secundária (Agência)
+        if current_record:
+            match_sec = regex_sec.match(line)
+            if match_sec:
+                distrito, agencia = match_sec.groups()
+                current_record['agencia'] = agencia
+                data.append(current_record)
+                current_record = {} # Reseta
+                
+    # Adiciona o último se sobrar
+    if current_record: data.append(current_record)
+    
+    return pd.DataFrame(data)
+
+def parse_bb_cadastro(file_obj):
+    """Lê o arquivo REL.CADASTRO... que tem Lote e Agência."""
+    content = file_obj.getvalue().decode('latin-1', errors='ignore')
+    lines = content.split('\n')
+    
+    data = []
+    # Padrão: ID + PROJETO + CARTÃO + NOME ... e na mesma linha ou quebra: LOTE
+    # Observando os dados:
+    # 1 AGRICULTURA 381001 GABRIEL... (dados) ... 2996 (ag) ... 5480 (lote)
+    
+    for line in lines:
+        if len(line) < 50 or "Projeto" in line: continue
+        
+        # Tenta extrair via Regex flexível para o formato observado
+        # Procura: Seq (digitos) + Espaços + Projeto (texto) + Espaços + Cartão (6 dig)
+        match = re.search(r'^\s*\d+\s+([A-Z\s]+?)\s+(\d{6})\s+([A-Z\s\.]+?)\s+\d+', line)
+        
+        if match:
+            proj, cartao, nome = match.groups()
+            
+            # Tenta achar o lote e agencia no final da linha
+            # O lote costuma ser o último número de 4 digitos, a agência o antepenúltimo
+            parts = line.split()
+            lote = parts[-1] if len(parts[-1]) == 4 else ''
+            # A data costuma ser antes do lote
+            # A agência costuma vir antes do nome da agência. É arriscado pegar por posição fixa sem split.
+            
+            # Busca agencia (4 digitos) próximo ao fim
+            agencia = ''
+            matches_nums = re.findall(r'\s(\d{4})\s', line)
+            if matches_nums:
+                agencia = matches_nums[-1] # Assume que é o último número de 4 dígitos isolado antes do lote
+
+            data.append({
+                'programa': proj.strip(),
+                'num_cartao': cartao,
+                'nome': nome.strip(),
+                'lote_pagto': lote,
+                'agencia': agencia,
+                'valor_pagto': 0.0, # Cadastro não tem valor de pagamento geralmente
+                'arquivo_origem': file_obj.name
+            })
+            
+    return pd.DataFrame(data)
+
+# ===========================================
+# 4. PADRONIZAÇÃO E ANÁLISE
+# ===========================================
 
 def padronizar_nome_projeto(nome_original):
-    if pd.isna(nome_original) or str(nome_original).strip() == '': return "NÃO IDENTIFICADO"
+    if pd.isna(nome_original): return "NÃO IDENTIFICADO"
     nome = normalize_name(nome_original)
-    nome = re.sub(r'^POT\s?', '', nome).strip()
+    nome = re.sub(r'^POT\s?', '', nome).strip() # Remove POT do começo
     
-    if any(x in nome for x in ['DEFESA', 'CIVIL', 'CICIL']): return 'DEFESA CIVIL'
-    elif any(x in nome for x in ['ZELADOR', 'ZELADORIA']): return 'ZELADORIA'
-    elif any(x in nome for x in ['AGRI', 'HORTA']): return 'AGRICULTURA'
-    elif any(x in nome for x in ['ADM', 'ADMINISTRATIVO']): return 'ADM'
-    elif any(x in nome for x in ['PARQUE']): return 'PARQUES'
-    elif any(x in nome for x in ['REDENCAO', 'REDENÇÃO']): return 'REDENÇÃO'
-    elif any(x in nome for x in ['VIVARURAL', 'VIVA']): return 'VIVA RURAL'
+    # Regras de Unificação
+    if 'DEFESA' in nome or 'CIVIL' in nome: return 'DEFESA CIVIL'
+    if 'ZELADOR' in nome: return 'ZELADORIA'
+    if 'AGRI' in nome or 'HORTA' in nome: return 'AGRICULTURA'
+    if 'ADM' in nome: return 'ADM'
+    if 'PARQUE' in nome: return 'PARQUES'
     return nome
 
-def standardize_dataframe(df, filename):
-    df.columns = [str(c).strip() for c in df.columns]
-    mapa = {
-        'projeto': 'programa', 'programa': 'programa', 'eixo': 'programa', 'acao': 'programa',
-        'valor': 'valor_pagto', 'liquido': 'valor_pagto', 'pagto': 'valor_pagto',
-        'nome': 'nome', 'beneficiario': 'nome',
-        'cpf': 'cpf', 'rg': 'rg',
-        'cartao': 'num_cartao', 'codigo': 'num_cartao',
-        'gerenciadora': 'gerenciadora', 'parceiro': 'gerenciadora', 'entidade': 'gerenciadora'
-    }
-    cols_new = {}
-    for col in df.columns:
-        c_low = col.lower()
-        match = mapa.get(c_low) or next((v for k, v in mapa.items() if k in c_low), None)
-        if match: cols_new[col] = match
+def processar_upload(dfs):
+    if not dfs: return None
+    final = pd.concat(dfs, ignore_index=True)
     
-    df = df.rename(columns=cols_new)
-    essential = ['programa', 'gerenciadora', 'num_cartao', 'nome', 'cpf', 'rg', 'valor_pagto', 'arquivo_origem', 'linha_arquivo']
-    for c in essential: 
-        if c not in df.columns: df[c] = None
-
-    if df['programa'].isnull().all(): df['programa'] = filename.split('.')[0]
-    df['programa'] = df['programa'].apply(padronizar_nome_projeto)
-    df['arquivo_origem'] = filename
-    df['linha_arquivo'] = df.index + 2
+    # Padronizações Finais
+    if 'programa' in final.columns:
+        final['programa'] = final['programa'].apply(padronizar_nome_projeto)
     
-    def clean_money(x):
-        if isinstance(x, str):
-            x = x.replace('R$', '').replace(' ', '')
-            if ',' in x and '.' in x: x = x.replace('.', '').replace(',', '.') 
-            elif ',' in x: x = x.replace(',', '.') 
-        try: return float(x)
-        except: return 0.0
-    
-    if 'valor_pagto' in df.columns: df['valor_pagto'] = df['valor_pagto'].apply(clean_money)
-    if 'cpf' in df.columns: df['cpf'] = df['cpf'].astype(str).str.replace(r'\D', '', regex=True)
-    if 'num_cartao' in df.columns: df['num_cartao'] = df['num_cartao'].astype(str).str.replace(r'\.0$', '', regex=True)
-    return df[essential]
-
-def detect_inconsistencies(df):
-    if df is None or df.empty: return pd.DataFrame()
-    errs = []
-    df['cpf_c'] = df['cpf'].fillna('').astype(str).str.replace(r'\D', '', regex=True)
-    for i, r in df.iterrows():
-        if len(r['cpf_c']) < 5: 
-            errs.append({'ID': r.get('id'), 'NOME': r.get('nome'), 'ERRO': 'CPF AUSENTE/INVÁLIDO', 'ARQUIVO': r.get('arquivo_origem')})
-    return pd.DataFrame(errs)
-
-def parse_bb_txt(file):
-    try:
-        # Layout estimado BB. Se tiver Lote/Agencia em posições fixas, ajustar aqui.
-        # Adicionei campos genéricos para Lote/Agencia caso estejam no header ou em colunas extras
-        # Nota: Sem o manual exato, estamos lendo colunas chave. 
-        colspecs = [(0, 11), (11, 42), (42, 52), (52, 92), (92, 104), (104, 119)]
-        names = ['tipo','projeto','cartao','nome','rg','cpf']
+    # Garante colunas
+    cols_check = ['lote_pagto', 'agencia', 'cpf', 'rg']
+    for c in cols_check:
+        if c not in final.columns: final[c] = ''
         
-        df = pd.read_fwf(file, colspecs=colspecs, names=names, dtype=str, encoding='latin1')
-        
-        # Filtra apenas linhas de dados (Tipo 1)
-        df = df[df['tipo'] == '1'].copy()
-        
-        # Cria colunas vazias para busca futura se o layout mudar
-        df['lote'] = 'N/A'
-        df['agencia'] = 'N/A'
-        
-        return df
-    except: return pd.DataFrame()
+    return final
 
 # ===========================================
-# 4. PDF
-# ===========================================
-def generate_pdf_report(df_filt, titulo="Relatório"):
-    if FPDF is None: return None
-    pdf = FPDF(); pdf.add_page(orientation='L'); pdf.set_font("Arial", 'B', 14)
-    pdf.cell(0, 10, sanitize_text("SMDET - Sistema POT"), 0, 1, 'C')
-    pdf.set_font("Arial", 'B', 12); pdf.cell(0, 10, sanitize_text(titulo), 0, 1, 'C')
-    
-    total = df_filt['valor_pagto'].sum() if 'valor_pagto' in df_filt.columns else 0
-    pdf.set_font("Arial", '', 10)
-    pdf.cell(0, 10, f"Registros: {len(df_filt)} | Total: R$ {total:,.2f}", 0, 1)
-    
-    pdf.set_font("Arial", 'B', 8); pdf.set_fill_color(240,240,240)
-    w = [90, 35, 35, 30, 80]
-    h = ["NOME", "CPF", "CARTAO", "VALOR", "PROJETO"]
-    for i, head in enumerate(h): pdf.cell(w[i], 8, sanitize_text(head), 1, 0, 'C', True)
-    pdf.ln()
-    
-    pdf.set_font("Arial", '', 8)
-    for _, r in df_filt.head(500).iterrows():
-        d = [str(r.get('nome',''))[:40], str(r.get('cpf','')), str(r.get('num_cartao','')), f"{float(r.get('valor_pagto',0)):.2f}", str(r.get('programa',''))[:40]]
-        for i, val in enumerate(d): pdf.cell(w[i], 8, sanitize_text(val), 1, 0, 'L')
-        pdf.ln()
-    return pdf.output(dest='S').encode('latin-1', 'replace')
-
-# ===========================================
-# 5. APP
+# 5. APP PRINCIPAL
 # ===========================================
 
 def login_screen():
     render_header()
     c1,c2,c3 = st.columns([1,2,1])
     with c2:
-        st.markdown("### Acesso Restrito")
         with st.form("login"):
-            e = st.text_input("Email"); p = st.text_input("Senha", type="password")
+            email = st.text_input("Email"); p = st.text_input("Senha", type="password")
             if st.form_submit_button("Entrar"):
                 eng = get_db_engine()
-                if not eng: st.error("Erro Conexão"); return
+                if not eng: st.error("Erro BD"); return
                 with eng.connect() as conn:
                     res = conn.execute(text("SELECT * FROM users WHERE email=:e"), {"e": e}).fetchone()
                     if res and res.password == hashlib.sha256(p.encode()).hexdigest():
@@ -301,206 +283,209 @@ def login_screen():
 
 def app():
     u = st.session_state['u']
-    st.sidebar.markdown(f"### Olá, {u['name']}")
-    menu_options = ["Dashboard", "Upload", "Análise e Correção", "Conferência BB", "Relatórios", "Gestão de Dados", "Manuais"]
-    if u['role'] in ['admin_ti', 'admin_equipe']: menu_options.insert(6, "Gestão de Equipe")
-    if u['role'] == 'admin_ti': menu_options.append("Admin TI (Logs)")
-    op = st.sidebar.radio("Menu", menu_options)
-    if st.sidebar.button("Sair"): st.session_state.clear(); st.rerun()
+    st.sidebar.markdown(f"**Usuário:** {u['name']}")
+    
+    # Botão para limpar cache se houver problemas de atualização
+    if st.sidebar.button("🧹 Limpar Cache do Sistema"):
+        st.cache_data.clear()
+        st.rerun()
+
+    menu = st.sidebar.radio("Navegação", ["Dashboard", "Upload", "Análise e Correção", "Conferência BB", "Relatórios"])
     
     eng = get_db_engine()
+    
+    # Carrega dados para memória (Cacheado)
     df_raw = pd.DataFrame()
     if eng:
         try: df_raw = pd.read_sql("SELECT * FROM payments", eng)
         except: pass
+
     render_header()
 
     # --- DASHBOARD ---
-    if op == "Dashboard":
-        st.markdown("### 📊 Visão Geral")
+    if menu == "Dashboard":
+        st.subheader("📊 Visão Geral (Dados Válidos)")
         if not df_raw.empty:
             df_raw['valor_pagto'] = pd.to_numeric(df_raw['valor_pagto'], errors='coerce').fillna(0.0)
-            mask_valid = ((df_raw['valor_pagto'] > 0.01) & (df_raw['programa'].notna()) & (df_raw['programa'] != '') & (~df_raw['programa'].astype(str).str.isnumeric()))
+            
+            # Filtro de Higiene: Remove zerados e nomes de projeto inválidos (só números)
+            mask_valid = (df_raw['valor_pagto'] > 0.01) & (~df_raw['programa'].astype(str).str.isnumeric())
             df_clean = df_raw[mask_valid].copy()
             
-            k1,k2,k3,k4 = st.columns(4)
-            k1.metric("Total Pago (Válido)", f"R$ {df_clean['valor_pagto'].sum():,.2f}")
-            k2.metric("Beneficiários", df_clean['cpf'].nunique())
+            k1,k2,k3 = st.columns(3)
+            k1.metric("Total Pago", f"R$ {df_clean['valor_pagto'].sum():,.2f}")
+            k2.metric("Beneficiários", df_clean['nome'].nunique())
             k3.metric("Projetos", df_clean['programa'].nunique())
-            k4.metric("Registros", len(df_clean))
+            
             st.markdown("---")
             
-            st.subheader("Total de Repasses por Projeto")
             if not df_clean.empty:
-                df_clean['programa'] = df_clean['programa'].apply(padronizar_nome_projeto)
+                # Gráfico Horizontal
                 grp = df_clean.groupby('programa')['valor_pagto'].sum().reset_index().sort_values('valor_pagto', ascending=True)
-                fig = px.bar(grp, x='valor_pagto', y='programa', orientation='h', text_auto='.2s', title="Valores Pagos por Projeto")
+                fig = px.bar(grp, x='valor_pagto', y='programa', orientation='h', text_auto='.2s', title="Totais por Projeto")
                 fig.update_traces(texttemplate='R$ %{x:,.2f}', textposition='outside')
-                fig.update_layout(xaxis_title="Valor (R$)", yaxis_title="Projeto", height=max(400, len(grp)*50), margin=dict(l=150))
+                fig.update_layout(height=max(400, len(grp)*40)) # Altura dinâmica
                 st.plotly_chart(fig, use_container_width=True)
                 
-                st.markdown("### 📋 Detalhamento")
+                # Tabela Detalhada
                 st.dataframe(grp.sort_values('valor_pagto', ascending=False).style.format({'valor_pagto': 'R$ {:,.2f}'}), use_container_width=True)
-                st.markdown("---")
-                g2 = df_clean.groupby('gerenciadora')['valor_pagto'].sum().reset_index()
-                st.plotly_chart(px.pie(g2, values='valor_pagto', names='gerenciadora', title="Por Gerenciadora"), use_container_width=True)
-            else: st.warning("Sem dados válidos.")
-        else: st.info("Sem dados.")
+            else:
+                st.warning("Sem dados válidos para exibir (Valores > 0).")
+        else:
+            st.info("Base de dados vazia.")
 
-    # --- UPLOAD ---
-    elif op == "Upload":
-        st.markdown("### 📂 Upload")
-        files = st.file_uploader("CSV/Excel", accept_multiple_files=True)
-        if files and st.button("Processar"):
+    # --- UPLOAD INTELIGENTE ---
+    elif menu == "Upload":
+        st.subheader("📂 Upload de Arquivos (BB / Excel / CSV)")
+        files = st.file_uploader("Arraste seus arquivos aqui", accept_multiple_files=True)
+        
+        if files and st.button("Processar Arquivos"):
             dfs = []
-            exist = df_raw['arquivo_origem'].unique().tolist() if not df_raw.empty else []
             for f in files:
-                if f.name in exist: st.warning(f"{f.name} já existe."); continue
                 try:
-                    d = pd.read_csv(f, sep=';', dtype=str, encoding='latin1') if f.name.endswith('.csv') else pd.read_excel(f, dtype=str)
-                    d = standardize_dataframe(d, f.name)
-                    dfs.append(d)
-                except Exception as e: st.error(f"Erro {f.name}: {e}")
+                    # Identifica tipo de arquivo pelo nome ou extensão
+                    if f.name.startswith("Resumo_CREDITO"):
+                        st.info(f"Processando arquivo de Crédito BB: {f.name}")
+                        d = parse_bb_resumo(f)
+                    elif f.name.startswith("REL.CADASTRO"):
+                        st.info(f"Processando arquivo de Cadastro BB: {f.name}")
+                        d = parse_bb_cadastro(f)
+                    elif f.name.endswith(".csv"):
+                        d = pd.read_csv(f, sep=';', encoding='latin1', dtype=str)
+                    else:
+                        d = pd.read_excel(f, dtype=str)
+                    
+                    if not d.empty: dfs.append(d)
+                    
+                except Exception as e:
+                    st.error(f"Erro ao ler {f.name}: {e}")
+            
             if dfs:
-                final = pd.concat(dfs)
+                final = processar_upload(dfs)
+                # Salva no Banco
                 final.to_sql('payments', eng, if_exists='append', index=False, method='multi', chunksize=500)
-                st.success("Sucesso!"); log_action(u['email'], "UPLOAD", f"{len(final)} regs"); st.rerun()
+                st.success("✅ Arquivos processados e salvos com sucesso!")
+                st.cache_data.clear() # Força atualização
+                st.rerun()
 
-    # --- ANÁLISE ---
-    elif op == "Análise e Correção":
-        st.markdown("### 🔍 Busca e Auditoria")
-        q = st.text_input("🔎 Buscar Beneficiário (Nome, CPF, Cartão, RG):")
+    # --- ANÁLISE (BUSCA AVANÇADA) ---
+    elif menu == "Análise e Correção":
+        st.subheader("🔍 Busca Avançada e Auditoria")
+        
+        # Filtros
+        c1, c2, c3 = st.columns(3)
+        q_geral = c1.text_input("🔎 Busca Geral (Nome/CPF/Cartão/RG)")
+        q_lote = c2.text_input("📦 Filtrar por Lote")
+        q_agencia = c3.text_input("🏦 Filtrar por Agência")
+        
         if not df_raw.empty:
-            df_disp = df_raw.copy()
-            if q:
-                mask = df_disp.apply(lambda x: x.astype(str).str.contains(q, case=False, na=False)).any(axis=1)
-                df_disp = df_disp[mask]
+            df_view = df_raw.copy()
             
-            event = st.dataframe(df_disp, use_container_width=True, hide_index=True, on_select="rerun", selection_mode="multi-row")
-            if event.selection.rows:
-                sel = df_disp.iloc[event.selection.rows]
-                st.success(f"{len(sel)} selecionados.")
-                c1,c2 = st.columns(2)
-                pdf = generate_pdf_report(sel, "Auditoria")
-                if pdf: c1.download_button("📄 PDF", pdf, "audit.pdf")
-                c2.download_button("📊 CSV", sel.to_csv(index=False).encode('utf-8'), "audit.csv")
+            # Aplica Filtros
+            if q_geral:
+                t = q_geral.upper()
+                df_view = df_view[
+                    df_view['nome'].str.upper().str.contains(t, na=False) | 
+                    df_view['cpf'].str.contains(t, na=False) |
+                    df_view['num_cartao'].str.contains(t, na=False) |
+                    df_view['rg'].str.contains(t, na=False)
+                ]
+            if q_lote:
+                df_view = df_view[df_view['lote_pagto'].astype(str).str.contains(q_lote, na=False)]
+            if q_agencia:
+                df_view = df_view[df_view['agencia'].astype(str).str.contains(q_agencia, na=False)]
+            
+            st.write(f"**Resultados:** {len(df_view)} registros encontrados.")
+            
+            # Tabela Interativa
+            event = st.dataframe(
+                df_view,
+                use_container_width=True,
+                hide_index=True,
+                selection_mode="multi-row",
+                on_select="rerun"
+            )
+            
+            # Ações em Lote
+            sel_rows = event.selection.rows
+            if sel_rows:
+                df_sel = df_view.iloc[sel_rows]
+                st.success(f"{len(df_sel)} itens selecionados.")
                 
-                if u['role'] in ['admin_ti', 'admin_equipe']:
-                    with st.expander("✏️ Editar Selecionados"):
-                        ed = st.data_editor(sel, hide_index=True)
-                        if st.button("Salvar Edição"):
+                col_btn1, col_btn2 = st.columns(2)
+                col_btn1.download_button("📥 Baixar CSV dos Selecionados", df_sel.to_csv(index=False), "selecao.csv")
+                
+                with st.expander("✏️ Editar Selecionados (Admin)"):
+                    if u['role'] == 'admin_ti':
+                        edit_df = st.data_editor(df_sel, hide_index=True)
+                        if st.button("Salvar Edições"):
                             with eng.begin() as conn:
-                                for i, r in ed.iterrows():
-                                    p_corr = padronizar_nome_projeto(r['programa'])
-                                    conn.execute(text("UPDATE payments SET nome=:n, cpf=:c, num_cartao=:nc, valor_pagto=:v, programa=:p WHERE id=:id"),
-                                                 {"n":r['nome'], "c":r['cpf'], "nc":r['num_cartao'], "v":r['valor_pagto'], "p":p_corr, "id":r['id']})
-                            st.success("Salvo!"); st.rerun()
+                                for i, r in edit_df.iterrows():
+                                    conn.execute(text("""
+                                        UPDATE payments SET nome=:n, cpf=:c, num_cartao=:nc, lote_pagto=:l, agencia=:a 
+                                        WHERE id=:id
+                                    """), {"n":r['nome'], "c":r['cpf'], "nc":r['num_cartao'], "l":r['lote_pagto'], "a":r['agencia'], "id":r['id']})
+                            st.success("Salvo!")
+                            st.rerun()
+                    else:
+                        st.error("Apenas Admin pode editar.")
 
-    # --- CONFERÊNCIA BB (MELHORADA) ---
-    elif op == "Conferência BB":
-        st.markdown("### 🏦 Conferência Bancária Inteligente")
-        t1, t2 = st.tabs(["Processar Retorno", "Histórico Divergências"])
+    # --- CONFERÊNCIA BB (CORRIGIDA) ---
+    elif menu == "Conferência BB":
+        st.subheader("🏦 Conferência Bancária (Inteligente)")
         
-        with t1:
-            st.info("O sistema agora ignora diferenças de caixa alta, abreviações (M vs MAURICIO) e preposições (DE, DA).")
-            fbb = st.file_uploader("Arquivo TXT Banco", accept_multiple_files=True)
-            if fbb and st.button("Processar Comparação"):
-                dfs = []
-                for f in fbb:
-                    d = parse_bb_txt(f); d['arquivo_origem'] = f.name; dfs.append(d)
-                
-                if dfs:
-                    bb = pd.concat(dfs)
-                    sis = df_raw[['num_cartao','nome','cpf']].copy()
-                    sis['k'] = sis['num_cartao'].astype(str).str.replace(r'\.0$','', regex=True)
-                    bb['k'] = bb['cartao'].astype(str).str.replace(r'^0+','', regex=True)
-                    
-                    merged = pd.merge(sis, bb, on='k', suffixes=('_sis', '_bb'))
-                    divs = []
-                    
-                    with st.spinner("Analisando similaridade de nomes..."):
-                        for i, r in merged.iterrows():
-                            # USA A NOVA FUNÇÃO DE SIMILARIDADE
-                            if not nomes_sao_similares(r['nome_sis'], r['nome_bb']):
-                                divs.append({
-                                    'cartao':r['k'], 
-                                    'nome_sis':r['nome_sis'], 
-                                    'nome_bb':r['nome_bb'], 
-                                    'divergencia':'NOME', 
-                                    'arquivo_origem':r['arquivo_origem']
-                                })
-                    
-                    if divs:
-                        pd.DataFrame(divs).to_sql('bank_discrepancies', eng, if_exists='append', index=False)
-                        st.error(f"🚨 {len(divs)} divergências reais encontradas!")
-                    else: st.success("✅ Nenhuma divergência encontrada (considerando similaridades).")
+        f_bb = st.file_uploader("Suba o arquivo TXT do Banco", type=['txt'])
         
-        with t2:
-            h = pd.read_sql("SELECT * FROM bank_discrepancies", eng)
+        if f_bb:
+            # Tenta processar o arquivo usando os parsers
+            df_bb = pd.DataFrame()
+            if "Resumo" in f_bb.name:
+                df_bb = parse_bb_resumo(f_bb)
+            elif "REL" in f_bb.name:
+                df_bb = parse_bb_cadastro(f_bb)
+            else:
+                st.warning("Formato desconhecido. Tentando parser genérico.")
+                df_bb = parse_bb_resumo(f_bb) # Tenta o resumo por padrão
             
-            # --- BUSCA NO HISTÓRICO ---
-            c_busca = st.columns([2, 1, 1, 1])
-            q_nome = c_busca[0].text_input("Buscar Nome")
-            q_cpf = c_busca[1].text_input("CPF")
-            q_lote = c_busca[2].text_input("Lote") # Placeholder
-            q_ag = c_busca[3].text_input("Agência") # Placeholder
-            
-            if not h.empty:
-                if q_nome: h = h[h['nome_sis'].str.contains(q_nome, case=False) | h['nome_bb'].str.contains(q_nome, case=False)]
-                if q_cpf: h = h[h['cpf_sis'].astype(str).str.contains(q_cpf) | h['cpf_bb'].astype(str).str.contains(q_cpf)]
-                # Filtros de Lote/Agencia funcionariam se as colunas existissem preenchidas no DB
+            if not df_bb.empty and not df_raw.empty:
+                st.info(f"Analisando {len(df_bb)} registros do Banco contra {len(df_raw)} do Sistema...")
                 
-                st.dataframe(h, use_container_width=True)
-                if st.button("Limpar Histórico"):
-                    run_db_command("DELETE FROM bank_discrepancies"); st.rerun()
-            else: st.info("Histórico vazio.")
-
-    # --- GESTÃO DE DADOS ---
-    elif op == "Gestão de Dados":
-        st.markdown("### 🗄️ Gestão de Arquivos")
-        if not df_raw.empty:
-            resumo = df_raw.groupby('arquivo_origem').size().reset_index(name='qtd')
-            st.dataframe(resumo)
-            fdel = st.selectbox("Excluir:", resumo['arquivo_origem'].unique())
-            if st.button("🗑️ Excluir"):
-                run_db_command("DELETE FROM payments WHERE arquivo_origem = :f", {"f": fdel})
-                log_action(u['email'], "DEL_FILE", f"Excluiu {fdel}"); st.rerun()
-
-    # --- GESTÃO DE EQUIPE ---
-    elif op == "Gestão de Equipe":
-        st.markdown("### 👥 Usuários")
-        with st.form("nu"):
-            ne = st.text_input("Email"); nn = st.text_input("Nome"); nr = st.selectbox("Perfil", ["user", "admin_equipe"])
-            if st.form_submit_button("Criar"):
-                try:
-                    hp = hashlib.sha256('123456'.encode()).hexdigest()
-                    run_db_command("INSERT INTO users VALUES (:e, :p, :r, :n, 1)", {"e":ne, "p":hp, "r":nr, "n":nn})
-                    st.success("Criado!")
-                except: st.error("Erro")
-        st.dataframe(pd.read_sql("SELECT email, name, role FROM users", eng))
-
-    # --- RELATÓRIOS ---
-    elif op == "Relatórios":
-        st.markdown("### 📥 Exportação")
-        if not df_raw.empty:
-            proj = st.multiselect("Filtrar Projeto", df_raw['programa'].unique())
-            dff = df_raw[df_raw['programa'].isin(proj)] if proj else df_raw
-            c1, c2 = st.columns(2)
-            c1.download_button("CSV", dff.to_csv(index=False).encode('utf-8'), "dados.csv")
-            pdf = generate_pdf_report(dff)
-            if pdf: c2.download_button("PDF", pdf, "relatorio.pdf")
-
-    # --- MANUAIS ---
-    elif op == "Manuais":
-        st.markdown("### 📚 Manuais")
-        t1, t2 = st.tabs(["Usuário", "Admin"])
-        t1.markdown("""**Conferência Bancária:** O sistema agora aceita abreviações e pequenas diferenças (ex: 'De Souza' = 'D Souza').""")
-        t2.markdown("### Admin\nGestão completa do sistema.")
-
-    # --- LOGS ---
-    elif op == "Admin TI (Logs)":
-        st.markdown("### 🛡️ Logs")
-        st.dataframe(pd.read_sql("SELECT * FROM audit_logs ORDER BY timestamp DESC LIMIT 200", eng))
+                # Normaliza para comparação
+                df_bb['key'] = df_bb['num_cartao'].str.strip().str.lstrip('0')
+                df_raw['key'] = df_raw['num_cartao'].astype(str).str.strip().str.replace(r'\.0$', '', regex=True).str.lstrip('0')
+                
+                # Cruza os dados
+                merged = pd.merge(df_raw, df_bb, on='key', suffixes=('_sis', '_bb'), how='inner')
+                
+                divergencias = []
+                
+                # Barra de progresso para a comparação fuzzy (pode ser lenta)
+                prog_bar = st.progress(0)
+                total = len(merged)
+                
+                for idx, row in merged.iterrows():
+                    prog_bar.progress((idx + 1) / total)
+                    
+                    # COMPARAÇÃO INTELIGENTE
+                    nome_sis = row['nome_sis']
+                    nome_bb = row['nome_bb']
+                    
+                    if not nomes_sao_similares(nome_sis, nome_bb):
+                        divergencias.append({
+                            'Cartão': row['key'],
+                            'Nome Sistema': nome_sis,
+                            'Nome Banco': nome_bb,
+                            'Status': 'DIVERGENTE'
+                        })
+                
+                prog_bar.empty()
+                
+                if divergencias:
+                    df_div = pd.DataFrame(divergencias)
+                    st.error(f"{len(df_div)} Divergências Reais Encontradas!")
+                    st.dataframe(df_div, use_container_width=True)
+                else:
+                    st.success("✅ Nenhuma divergência encontrada! (Ignorando diferenças de caixa alta e abreviações)")
 
 if __name__ == "__main__":
     init_db()
