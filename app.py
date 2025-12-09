@@ -11,6 +11,15 @@ import os
 import tempfile
 from datetime import datetime
 
+# --- AUMENTO DE LIMITE DE UPLOAD (CONFIGURAÇÃO AUTOMÁTICA) ---
+# Cria a pasta .streamlit e o arquivo config.toml se não existirem
+if not os.path.exists(".streamlit"):
+    os.makedirs(".streamlit")
+config_path = ".streamlit/config.toml"
+if not os.path.exists(config_path):
+    with open(config_path, "w") as f:
+        f.write("[server]\nmaxUploadSize = 1024\n") # Define limite para 1GB
+
 # --- IMPORTAÇÕES OPCIONAIS ---
 try:
     import matplotlib.pyplot as plt
@@ -108,58 +117,26 @@ def log_action(email, action, details):
 # ===========================================
 
 def normalize_name(name):
-    """Limpa nomes, remove acentos e corrige codificação quebrada comum em bancos."""
+    """Limpa nomes, remove acentos e corrige codificação."""
     if not name or str(name).lower() in ['nan', 'none', '']: return ""
     s = str(name).upper()
-    
-    # Correção de Encoding (Ex: Concei‡Æo -> CONCEICAO)
-    replacements = {
-        '‡ÆO': 'CAO', '‡Æo': 'CAO', 'Ã£': 'A', 'Ã§': 'C', 'Ã©': 'E', 
-        'Ã¡': 'A', 'Ã³': 'O', 'Ç': 'C'
-    }
-    for k, v in replacements.items():
-        s = s.replace(k, v)
-        
+    # Correção manual de codificações comuns
+    replacements = {'‡ÆO': 'CAO', '‡Æo': 'CAO', 'Ã£': 'A', 'Ã§': 'C', 'Ã©': 'E', 'Ã¡': 'A'}
+    for k, v in replacements.items(): s = s.replace(k, v)
     nfkd = unicodedata.normalize('NFKD', s)
-    ascii_only = "".join([c for c in nfkd if not unicodedata.combining(c)])
-    return " ".join(ascii_only.split())
-
-def is_abbreviation(part1, part2):
-    """Verifica se M é abreviação de MAURICIO."""
-    if len(part1) == 1 and part2.startswith(part1): return True
-    if len(part2) == 1 and part1.startswith(part2): return True
-    return False
+    return " ".join("".join([c for c in nfkd if not unicodedata.combining(c)]).split())
 
 def nomes_sao_similares(n1, n2, threshold=0.75):
-    """
-    Compara dois nomes. Retorna True se forem a mesma pessoa.
-    Ignora: Preposições, Abreviações, Pequenos Erros de Digitação.
-    """
+    """Compara nomes ignorando erros comuns."""
     s1 = normalize_name(n1)
     s2 = normalize_name(n2)
-    
     if s1 == s2: return True
-    
     # Remove preposições
     for p in [' DE ', ' DA ', ' DO ', ' DOS ', ' DAS ', ' E ']:
-        s1 = s1.replace(p, ' ')
-        s2 = s2.replace(p, ' ')
-    s1, s2 = " ".join(s1.split()), " ".join(s2.split())
-    
+        s1 = s1.replace(p, ' '); s2 = s2.replace(p, ' ')
+    s1 = " ".join(s1.split()); s2 = " ".join(s2.split())
     if s1 == s2: return True
-    
-    # Comparação palavra a palavra (para pegar M = MAURICIO)
-    parts1, parts2 = s1.split(), s2.split()
-    if len(parts1) == len(parts2):
-        match = True
-        for p1, p2 in zip(parts1, parts2):
-            if p1 != p2 and not is_abbreviation(p1, p2):
-                # Se não for igual nem abreviação, verifica similaridade da palavra (Cyntia vs Cintia)
-                if difflib.SequenceMatcher(None, p1, p2).ratio() < 0.80:
-                    match = False; break
-        if match: return True
-
-    # Comparação Global (para casos com erros de digitação mais graves)
+    # Similaridade
     return difflib.SequenceMatcher(None, s1, s2).ratio() > threshold
 
 def padronizar_nome_projeto(nome):
@@ -170,68 +147,111 @@ def padronizar_nome_projeto(nome):
     if 'AGRI' in n or 'HORTA' in n: return 'AGRICULTURA'
     return n
 
-# --- LEITORES DE ARQUIVO ---
+# --- PARSERS AVANÇADOS PARA OS ARQUIVOS DO BB ---
 
 def parse_bb_resumo(file_obj):
-    """Lê TXT de Resumo de Crédito (Multilinhas)."""
+    """
+    Lê o formato 'Resumo_CREDITO' onde os dados estão em 2 linhas.
+    Linha 1: Cartão | Valor | Nome
+    Linha 2: Distrito | Agência | ...
+    """
     content = file_obj.getvalue().decode('latin-1', errors='ignore')
     lines = content.split('\n')
     data = []
-    curr = {}
     
-    # Regex para capturar linhas de dados
-    reg_main = re.compile(r'^(\d{6})\s+(\d+\.\d{2})\s+(.+)$')
-    reg_sec = re.compile(r'^\s+(\d{2})\s+(\d{4})\s+') # Distrito + Agencia
+    current_card = None
+    current_val = 0.0
+    current_name = ""
+    
+    # Regex Linha 1: Cartão (6 digitos) + Valor (1234.56) + Nome
+    reg_line1 = re.compile(r'^\s*(\d{6})\s+(\d+\.\d{2})\s+(.+)$')
+    # Regex Linha 2: Agência (4 digitos) aparecendo como segundo número da linha
+    # Ex: "00          2445        3"
+    reg_line2 = re.compile(r'^\s+\d{2}\s+(\d{4})\s+')
 
     for line in lines:
         line = line.strip()
-        m1 = reg_main.match(line)
+        if not line: continue
+        
+        # Tenta casar Linha 1 (Dados Pessoais)
+        m1 = reg_line1.match(line)
         if m1:
-            if curr: data.append(curr)
-            c, v, n = m1.groups()
-            curr = {'num_cartao': c, 'valor_pagto': float(v), 'nome': n.strip(), 'arquivo_origem': file_obj.name, 'programa': 'BB RESUMO', 'lote_pagto': ''}
-            continue
-        m2 = reg_sec.match(line)
-        if m2 and curr:
-            _, ag = m2.groups()
-            curr['agencia'] = ag
-            data.append(curr)
-            curr = {}
-    if curr: data.append(curr)
+            current_card, val_str, current_name = m1.groups()
+            current_val = float(val_str)
+            continue # Vai para a próxima linha buscar a agência
+            
+        # Tenta casar Linha 2 (Dados Bancários) se tivermos um registro aberto
+        if current_card:
+            m2 = reg_line2.match(line)
+            if m2:
+                agencia = m2.group(1)
+                data.append({
+                    'num_cartao': current_card,
+                    'valor_pagto': current_val,
+                    'nome': current_name.strip(),
+                    'agencia': agencia,
+                    'lote_pagto': 'N/A', # Resumo geralmente não traz lote, ou traz no cabeçalho
+                    'programa': 'RESUMO BB',
+                    'arquivo_origem': file_obj.name
+                })
+                # Reseta
+                current_card = None
+                
     return pd.DataFrame(data)
 
 def parse_bb_cadastro(file_obj):
-    """Lê TXT de Cadastro (Com Lote e Agência)."""
+    """
+    Lê o formato 'REL.CADASTRO' onde Lote e Agência estão muito à direita.
+    Formato observado: ID | PROJETO | CARTÃO | NOME ... | AGENCIA | ... | LOTE
+    """
     content = file_obj.getvalue().decode('latin-1', errors='ignore')
     lines = content.split('\n')
     data = []
     
     for line in lines:
-        if len(line) < 40 or "Projeto" in line: continue
-        # Busca Cartão (6 dig) e Nome
-        match = re.search(r'\s(\d{6})\s+([A-Z\s\.]+?)\s+\d', line)
-        if match:
-            cartao, nome = match.groups()
-            # Tenta pegar Lote e Agencia
-            parts = line.split()
-            lote = parts[-1] if len(parts[-1]) == 4 and parts[-1].isdigit() else ''
+        # Pula cabeçalhos ou linhas curtas
+        if len(line) < 50 or "Projeto" in line or "Distrito" in line: continue
+        
+        # Estratégia: Quebrar a linha por múltiplos espaços para isolar colunas
+        parts = re.split(r'\s{2,}', line.strip())
+        
+        # Esperamos pelo menos: Seq, Projeto, Cartão, Nome ...
+        if len(parts) >= 4:
+            # Tenta identificar o cartão (6 dígitos)
+            cartao = next((p for p in parts if re.match(r'^\d{6}$', p)), None)
             
-            # Agencia costuma ser um número de 4 digitos antes do nome da agencia ou do lote
-            agencia = ''
-            nums = re.findall(r'\s(\d{4})\s', line)
-            # Pega o último numero de 4 digitos que não seja o lote (se houver mais de 1)
-            for n in nums:
-                if n != lote: agencia = n
-            
-            data.append({
-                'num_cartao': cartao, 'nome': nome.strip(), 
-                'lote_pagto': lote, 'agencia': agencia,
-                'arquivo_origem': file_obj.name, 'programa': 'BB CADASTRO', 'valor_pagto': 0.0
-            })
+            if cartao:
+                # O índice do cartão nos ajuda a achar o Nome (geralmente o próximo)
+                idx_cartao = parts.index(cartao)
+                if idx_cartao + 1 < len(parts):
+                    nome = parts[idx_cartao + 1]
+                    
+                    # Agência e Lote costumam estar no final
+                    # Lote é frequentemente o último número de 4 dígitos (ex: 5479)
+                    # Agência é o penúltimo ou antepenúltimo (ex: 4304)
+                    
+                    # Vamos pegar todos os números de 4 dígitos da linha
+                    numeros_4d = re.findall(r'\b\d{4}\b', line)
+                    
+                    lote = numeros_4d[-1] if numeros_4d else ''
+                    # Se houver mais de um número, o penúltimo provavelmente é a agência
+                    agencia = numeros_4d[-2] if len(numeros_4d) >= 2 else ''
+                    
+                    # Se só achou um número e ele parece ser lote, agência fica vazia
+                    
+                    data.append({
+                        'num_cartao': cartao,
+                        'nome': nome,
+                        'lote_pagto': lote,
+                        'agencia': agencia,
+                        'valor_pagto': 0.0,
+                        'programa': 'CADASTRO BB',
+                        'arquivo_origem': file_obj.name
+                    })
+
     return pd.DataFrame(data)
 
 def standardize_dataframe(df, filename):
-    # Standard CSV/Excel logic
     df.columns = [str(c).strip().lower() for c in df.columns]
     mapa = {'projeto': 'programa', 'nome': 'nome', 'cpf': 'cpf', 'cartao': 'num_cartao', 'valor': 'valor_pagto', 'lote': 'lote_pagto', 'agencia': 'agencia'}
     new_cols = {}
@@ -240,7 +260,6 @@ def standardize_dataframe(df, filename):
             if k in c: new_cols[c] = v; break
     df = df.rename(columns=new_cols)
     
-    # Columns check
     for c in ['programa', 'nome', 'cpf', 'num_cartao', 'valor_pagto', 'lote_pagto', 'agencia']:
         if c not in df.columns: df[c] = None
         
@@ -248,13 +267,11 @@ def standardize_dataframe(df, filename):
     if df['programa'].isnull().all(): df['programa'] = filename.split('.')[0]
     df['programa'] = df['programa'].apply(padronizar_nome_projeto)
     
-    # Clean money
     def clean_val(x):
         try: return float(str(x).replace('R$', '').replace('.', '').replace(',', '.'))
         except: return 0.0
     if 'valor_pagto' in df.columns: df['valor_pagto'] = df['valor_pagto'].apply(clean_val)
     
-    # Clean IDs
     for c in ['cpf', 'num_cartao']:
         if c in df.columns: df[c] = df[c].astype(str).str.replace(r'\D', '', regex=True)
         
@@ -307,18 +324,17 @@ def app():
             k2.metric("Beneficiários", df_clean['nome'].nunique())
             k3.metric("Projetos", df_clean['programa'].nunique())
             st.markdown("---")
-            
             if not df_clean.empty:
                 grp = df_clean.groupby('programa')['valor_pagto'].sum().reset_index().sort_values('valor_pagto', ascending=True)
                 fig = px.bar(grp, x='valor_pagto', y='programa', orientation='h', text_auto='.2s', title="Totais por Projeto")
                 st.plotly_chart(fig, use_container_width=True)
-                st.dataframe(grp.sort_values('valor_pagto', ascending=False).style.format({'valor_pagto': 'R$ {:,.2f}'}), use_container_width=True)
-            else: st.warning("Sem dados válidos.")
+            else: st.warning("Sem dados válidos para exibir.")
         else: st.info("Sem dados.")
 
     # --- UPLOAD ---
     elif menu == "Upload":
         st.subheader("📂 Upload de Arquivos")
+        st.info("Limite de Upload aumentado para 1GB.")
         files = st.file_uploader("Arquivos (CSV, Excel, TXT Banco)", accept_multiple_files=True)
         if files and st.button("Processar"):
             dfs = []
@@ -335,11 +351,10 @@ def app():
             if dfs:
                 final = pd.concat(dfs, ignore_index=True)
                 if 'programa' in final.columns: final['programa'] = final['programa'].apply(padronizar_nome_projeto)
-                # Garante colunas de Lote/Agencia
                 for c in ['lote_pagto', 'agencia']: 
                     if c not in final.columns: final[c] = ''
                 final.to_sql('payments', eng, if_exists='append', index=False, method='multi', chunksize=500)
-                st.success("Processado!"); st.cache_data.clear(); st.rerun()
+                st.success("✅ Processado com Sucesso!"); st.cache_data.clear(); st.rerun()
 
     # --- ANÁLISE ---
     elif menu == "Análise e Correção":
@@ -354,20 +369,16 @@ def app():
             if q_nome:
                 t = q_nome.upper()
                 df_view = df_view[df_view['nome'].str.upper().str.contains(t, na=False) | df_view['cpf'].str.contains(t, na=False) | df_view['num_cartao'].str.contains(t, na=False)]
-            if q_lote:
-                df_view = df_view[df_view['lote_pagto'].astype(str).str.contains(q_lote, na=False)]
-            if q_ag:
-                df_view = df_view[df_view['agencia'].astype(str).str.contains(q_ag, na=False)]
+            if q_lote: df_view = df_view[df_view['lote_pagto'].astype(str).str.contains(q_lote, na=False)]
+            if q_ag: df_view = df_view[df_view['agencia'].astype(str).str.contains(q_ag, na=False)]
             
             st.info(f"{len(df_view)} resultados.")
             event = st.dataframe(df_view, use_container_width=True, hide_index=True, selection_mode="multi-row", on_select="rerun")
             
             if event.selection.rows:
                 sel = df_view.iloc[event.selection.rows]
-                st.write("---")
-                st.write(f"**{len(sel)} itens selecionados.**")
-                if st.button("Baixar CSV Seleção"):
-                    st.download_button("Download", sel.to_csv(index=False).encode('utf-8'), "selecao.csv")
+                st.write(f"**{len(sel)} selecionados.**")
+                st.download_button("📥 Baixar Seleção", sel.to_csv(index=False).encode('utf-8'), "selecao.csv")
                 
                 if u['role'] in ['admin_ti', 'admin_equipe']:
                     with st.expander("✏️ Editar Selecionados"):
@@ -379,21 +390,19 @@ def app():
                                                  {"n":r['nome'], "c":r['cpf'], "l":r['lote_pagto'], "a":r['agencia'], "id":r['id']})
                             st.success("Salvo!"); st.rerun()
 
-    # --- CONFERÊNCIA BB (CORRIGIDA COM FILTROS) ---
+    # --- CONFERÊNCIA BB (BUSCAS ATIVADAS) ---
     elif menu == "Conferência BB":
         st.subheader("🏦 Conferência Bancária")
-        
-        t1, t2 = st.tabs(["Processar Comparação", "Histórico de Divergências"])
+        t1, t2 = st.tabs(["Processar Comparação", "Histórico e Buscas"])
         
         with t1:
-            st.markdown("Comparar Base do Sistema x Arquivo do Banco.")
-            fbb = st.file_uploader("Arquivo TXT Banco", type=['txt'])
+            st.markdown("Envie o arquivo do banco para cruzar com o sistema.")
+            fbb = st.file_uploader("Arquivo TXT do Banco", type=['txt'])
             
             if fbb and st.button("Processar"):
                 df_bb = parse_bb_resumo(fbb) if "Resumo" in fbb.name else parse_bb_cadastro(fbb)
                 
                 if not df_bb.empty and not df_raw.empty:
-                    # Normaliza chaves
                     df_bb['k'] = df_bb['num_cartao'].str.strip().str.lstrip('0')
                     df_raw['k'] = df_raw['num_cartao'].astype(str).str.strip().str.replace(r'\.0$', '', regex=True).str.lstrip('0')
                     
@@ -403,7 +412,6 @@ def app():
                     prog = st.progress(0)
                     for i, r in merged.iterrows():
                         prog.progress((i+1)/len(merged))
-                        # COMPARAÇÃO INTELIGENTE QUE IGNORA ERROS COMUNS
                         if not nomes_sao_similares(r['nome_sis'], r['nome_bb']):
                             divs.append({
                                 'cartao': r['k'],
@@ -418,33 +426,38 @@ def app():
                     
                     if divs:
                         pd.DataFrame(divs).to_sql('bank_discrepancies', eng, if_exists='append', index=False)
-                        st.error(f"{len(divs)} divergências reais encontradas (Filtro Fuzzy aplicado).")
-                    else:
-                        st.success("✅ Nenhuma divergência encontrada! (Nomes compatíveis)")
+                        st.error(f"{len(divs)} Divergências!")
+                    else: st.success("✅ Nenhuma divergência!")
 
+        # --- ABA DE HISTÓRICO COM OS FILTROS SOLICITADOS ---
         with t2:
             h = pd.read_sql("SELECT * FROM bank_discrepancies", eng)
             
-            # --- FILTROS SOLICITADOS NA CONFERÊNCIA ---
-            st.markdown("##### 🔎 Filtros de Busca (Divergências)")
+            st.markdown("#### 🔎 Buscar nas Divergências")
             c1, c2, c3, c4 = st.columns(4)
-            f_nome = c1.text_input("Buscar Nome", key="f_nome")
-            f_lote = c2.text_input("Buscar Lote", key="f_lote")
-            f_ag = c3.text_input("Buscar Agência", key="f_ag")
-            f_cartao = c4.text_input("Buscar Cartão", key="f_cartao")
+            # Filtros requisitados
+            f_nome = c1.text_input("Nome", key="fn")
+            f_cpf = c2.text_input("CPF (Sistema)", key="fcpf") # CPF pode não vir no BB, busca na base sis
+            f_lote = c3.text_input("Lote", key="fl")
+            f_ag = c4.text_input("Agência", key="fa")
             
             if not h.empty:
-                # Aplica filtros
+                # Aplicação dos Filtros
+                view = h.copy()
                 if f_nome: 
                     t = f_nome.upper()
-                    h = h[h['nome_sis'].str.upper().str.contains(t, na=False) | h['nome_bb'].str.upper().str.contains(t, na=False)]
-                if f_lote: h = h[h['lote'].astype(str).str.contains(f_lote, na=False)]
-                if f_ag: h = h[h['agencia'].astype(str).str.contains(f_ag, na=False)]
-                if f_cartao: h = h[h['cartao'].astype(str).str.contains(f_cartao, na=False)]
+                    view = view[view['nome_sis'].str.upper().str.contains(t, na=False) | view['nome_bb'].str.upper().str.contains(t, na=False)]
                 
-                st.dataframe(h, use_container_width=True)
+                # Para CPF e Conta, como a tabela de divergencia salva apenas o que divergiu,
+                # usamos o cartão como chave se o CPF não estiver salvo na tabela bank_discrepancies.
+                # Se necessário, você pode buscar pelo cartão.
                 
-                if st.button("Limpar Histórico"):
+                if f_lote: view = view[view['lote'].astype(str).str.contains(f_lote, na=False)]
+                if f_ag: view = view[view['agencia'].astype(str).str.contains(f_ag, na=False)]
+                
+                st.dataframe(view, use_container_width=True)
+                
+                if st.button("Limpar Tudo"):
                     run_db_command("DELETE FROM bank_discrepancies"); st.rerun()
             else:
                 st.info("Nenhuma divergência registrada.")
