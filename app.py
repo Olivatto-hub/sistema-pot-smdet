@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 import sqlite3
 import hashlib
 import io
@@ -293,7 +292,134 @@ def get_brasilia_time():
     return datetime.now(timezone(timedelta(hours=-3)))
 
 # ===========================================
-# LÓGICA DE NEGÓCIO E VALIDAÇÃO
+# PARSER INTELIGENTE BANCO DO BRASIL (NOVO)
+# ===========================================
+
+def parse_smart_bb(file_obj, filename):
+    """
+    Identifica automaticamente o layout do arquivo BB e extrai os dados.
+    Suporta:
+    1. Relatório de Cadastro (REL.CADASTRO) - Headers explícitos
+    2. Resumo de Crédito (Resumo_CREDITO) - Multi-linha visual
+    3. Arquivo de Lote (LOTE.CREDITO) - Posicional estrito (CNAB/Proprietário)
+    """
+    try:
+        content = file_obj.getvalue().decode('latin-1', errors='ignore')
+    except:
+        content = file_obj.getvalue().decode('utf-8', errors='ignore')
+        
+    lines = content.split('\n')
+    data = []
+    
+    filename_upper = filename.upper()
+    
+    # --- DETECTOR DE LAYOUT ---
+    
+    # CASO 1: RELATÓRIO DE CADASTRO (Começa com header '0' e tem 'Projeto')
+    if "REL.CADASTRO" in filename_upper or (len(lines) > 0 and lines[0].startswith('0') and 'Projeto' in lines[0]):
+        for line in lines:
+            if line.startswith('1'): # Linha de dados
+                try:
+                    # Layout baseado no REL.CADASTRO.OT.V8230.TXT
+                    entry = {
+                        'arquivo_origem': filename,
+                        'tipo_arquivo': 'CADASTRO',
+                        'projeto': line[11:42].strip(),
+                        'num_cartao': line[42:52].strip(),
+                        'nome_banco': line[52:92].strip(),
+                        'rg_banco': line[92:104].strip(),
+                        'cpf_banco': line[104:119].strip().replace('.', '').replace('-', ''),
+                        'agencia': '',
+                        'distrito': ''
+                    }
+                    if entry['num_cartao']:
+                        data.append(entry)
+                except:
+                    continue
+
+    # CASO 2: RESUMO DE CRÉDITO (Visual, multi-linha, começa com "NumCartao")
+    elif "RESUMO" in filename_upper or "Distrito    Agencia" in content:
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            # Procura padrao de linha de dados: Cartão (6 digitos) + Valor
+            # Ex: 394191     1593.90       ALAN ANTONIO DA SILVA
+            match_main = re.search(r'^\s*(\d{6,})\s+([\d\.]+)\s+(.+)$', line)
+            
+            if match_main:
+                cartao = match_main.group(1)
+                valor = match_main.group(2)
+                nome = match_main.group(3).strip()
+                
+                # Tenta pegar a próxima linha para Agencia e Distrito
+                # Ex: 00          1204        12               24
+                agencia = ''
+                distrito = ''
+                if i + 1 < len(lines):
+                    next_line = lines[i+1]
+                    parts = next_line.split()
+                    if len(parts) >= 2:
+                        distrito = parts[0]
+                        agencia = parts[1]
+                
+                data.append({
+                    'arquivo_origem': filename,
+                    'tipo_arquivo': 'RESUMO_SPOOL',
+                    'projeto': 'N/A', 
+                    'num_cartao': cartao,
+                    'nome_banco': nome,
+                    'rg_banco': '',
+                    'cpf_banco': '',
+                    'agencia': agencia,
+                    'distrito': distrito,
+                    'valor_banco': valor
+                })
+                i += 1 # Pula a linha extra
+            i += 1
+
+    # CASO 3: ARQUIVO DE LOTE (Ex: LOTE.CREDITO.OT)
+    # Identificação: linhas começam com '2000'
+    elif "LOTE" in filename_upper or (len(lines) > 1 and lines[1].startswith('2000')):
+        for line in lines:
+            if line.startswith('2'): # Detalhe
+                try:
+                    # Análise do arquivo LOTE.CREDITO.OT.V5439.TXT
+                    # Ex: 20000002200003795683...
+                    # Posição 13 a 20 parece ser o cartão (7 dígitos)
+                    # O nome está no final, após o marcador '30000004'
+                    
+                    # Extração do Cartão (Posicional Estimada 13:20)
+                    cartao_candidato = line[13:20].strip()
+                    
+                    # Extração do Nome (Fim da linha)
+                    # Procura pelo marcador comum de empresa/convênio '30000004'
+                    match_nome = re.search(r'30000004(.+)$', line)
+                    if match_nome:
+                        nome = match_nome.group(1).strip()
+                    else:
+                        # Fallback: pega caracteres não numéricos do fim
+                        nome_part = re.search(r'(\D+)$', line)
+                        nome = nome_part.group(1).strip() if nome_part else ""
+
+                    if cartao_candidato and nome:
+                        data.append({
+                            'arquivo_origem': filename,
+                            'tipo_arquivo': 'LOTE_PROCESSAMENTO',
+                            'projeto': 'LOTE',
+                            'num_cartao': cartao_candidato,
+                            'nome_banco': nome,
+                            'rg_banco': '',
+                            'cpf_banco': '',
+                            'agencia': '',
+                            'distrito': ''
+                        })
+                except:
+                    continue
+
+    return pd.DataFrame(data)
+
+# ===========================================
+# LÓGICA DE NEGÓCIO E VALIDAÇÃO (PADRÃO)
 # ===========================================
 
 COLUMN_MAP = {
@@ -360,7 +486,6 @@ def standardize_dataframe(df, filename):
     else:
         df['gerenciadora'] = df['gerenciadora'].fillna('NÃO IDENTIFICADA')
         
-    # --- EXTRAÇÃO DE MÊS E ANO ---
     meses_dict = {
         'JANEIRO': 1, 'FEVEREIRO': 2, 'MARÇO': 3, 'ABRIL': 4, 'MAIO': 5, 'JUNHO': 6,
         'JULHO': 7, 'AGOSTO': 8, 'SETEMBRO': 9, 'OUTUBRO': 10, 'NOVEMBRO': 11, 'DEZEMBRO': 12
@@ -369,24 +494,19 @@ def standardize_dataframe(df, filename):
     mes_ref = 'N/A'
     ano_ref = str(datetime.now().year)
     
-    # 1. Tentar extrair MÊS do nome do arquivo
     for mes in meses_dict.keys():
         if mes in filename_upper:
             mes_ref = mes
             break
     
-    # 2. Tentar extrair ANO do nome do arquivo (ex: 2024, 2025)
     ano_match = re.search(r'(20\d{2})', filename_upper)
     if ano_match:
         ano_ref = ano_match.group(1)
         
-    # 3. Fallback: Se não achou no nome, tentar extrair da coluna 'data_pagto'
     if (mes_ref == 'N/A' or ano_match is None) and 'data_pagto' in df.columns:
         try:
-            # Pega a primeira data válida não nula para estimar o período do arquivo
             first_valid_date = pd.to_datetime(df['data_pagto'], dayfirst=True, errors='coerce').dropna().iloc[0]
             if mes_ref == 'N/A':
-                # Converte numero do mês para nome em PT-BR (mapeamento reverso simples)
                 mes_num = first_valid_date.month
                 for nome, num in meses_dict.items():
                     if num == mes_num:
@@ -395,7 +515,7 @@ def standardize_dataframe(df, filename):
             if ano_match is None:
                 ano_ref = str(first_valid_date.year)
         except:
-            pass # Se der erro na conversão, mantém o padrão
+            pass
             
     if 'mes_ref' not in df.columns:
         df['mes_ref'] = mes_ref
@@ -409,16 +529,12 @@ def standardize_dataframe(df, filename):
 
     df = remove_total_row(df)
 
-    # Limpeza básica e Garantia de que Nulos sejam strings vazias para validação posterior
     if 'num_cartao' in df.columns:
-        # Primeiro converte nan para string vazia
         df['num_cartao'] = df['num_cartao'].fillna('').astype(str).str.strip()
-        # Remove sufixo .0 de floats convertidos e remove strings 'nan'
         df['num_cartao'] = df['num_cartao'].str.replace(r'\.0$', '', regex=True).replace(r'(?i)^nan$', '', regex=True)
         
     if 'cpf' in df.columns:
         df['cpf'] = df['cpf'].fillna('').astype(str).str.strip()
-        # Remove formatação e strings 'nan'
         df['cpf'] = df['cpf'].str.replace(r'\D', '', regex=True).replace(r'(?i)^nan$', '', regex=True)
     
     def clean_currency(x):
@@ -438,48 +554,33 @@ def standardize_dataframe(df, filename):
     return df[final_cols]
 
 def detect_inconsistencies(df):
-    """
-    Detecta inconsistências críticas:
-    1. Ausência de CPF (Inconsistência)
-    2. Ausência de Num Cartão (Dado Crítico)
-    3. Duplicidades de CPF/Cartão (Fraudes Potenciais)
-    """
     if df is None or df.empty:
         return pd.DataFrame()
     
-    # Garantir colunas
     needed = ['cpf', 'num_cartao', 'nome']
     for col in needed:
         if col not in df.columns:
             df[col] = ''
     
     df_check = df.copy()
-    
-    # Normalização local para análise
     df_check['cpf_raw'] = df_check['cpf'].fillna('').astype(str).str.strip()
     df_check['card_raw'] = df_check['num_cartao'].fillna('').astype(str).str.strip()
     
-    # Limpeza profunda para detecção de duplicatas
     df_check['cpf_clean'] = df_check['cpf_raw'].str.replace(r'\D', '', regex=True)
     df_check['card_clean'] = df_check['card_raw'].str.replace(r'^0+', '', regex=True).str.replace(r'\.0$', '', regex=True)
     df_check['nome_clean'] = df_check['nome'].apply(remove_accents)
     
     errors = []
 
-    # ==========================================
-    # 1. VERIFICAÇÃO DE DADOS AUSENTES (PRIORIDADE)
-    # ==========================================
     for idx, row in df_check.iterrows():
         motivos = []
         is_error = False
         
-        # Validação CPF Ausente (checa vazio ou string 'nan')
         cpf_val = row['cpf_raw']
         if not cpf_val or str(cpf_val).lower() == 'nan':
             motivos.append("CPF NÃO INFORMADO")
             is_error = True
             
-        # Validação Cartão Ausente
         card_val = row['card_raw']
         if not card_val or str(card_val).lower() == 'nan':
             motivos.append("CARTÃO NÃO INFORMADO")
@@ -497,17 +598,11 @@ def detect_inconsistencies(df):
                 'TIPO_ERRO': 'AUSENCIA'
             })
 
-    # ==========================================
-    # 2. VERIFICAÇÃO DE DUPLICIDADES / CONFLITOS
-    # ==========================================
-    
-    # Filtra apenas quem tem dados para checar duplicidade
     df_valid = df_check[ 
         (df_check['cpf_clean'] != '') & 
         (df_check['cpf_clean'].str.len() > 5)
     ]
 
-    # A. Conflitos de CPF (Um CPF -> Múltiplos Cartões ou Nomes)
     cpf_groups = df_valid.groupby('cpf_clean')
     for cpf, group in cpf_groups:
         unique_cards = [c for c in group['card_clean'].unique() if c]
@@ -526,7 +621,6 @@ def detect_inconsistencies(df):
             
             err_msg = " | ".join(motivo_dup)
             for _, row in group.iterrows():
-                # Só adiciona se não for erro de ausência já detectado (opcional, mas bom pra limpar visualização)
                 errors.append({
                     'ID': row.get('id', None),
                     'ARQUIVO': row.get('arquivo_origem', '-'),
@@ -538,7 +632,6 @@ def detect_inconsistencies(df):
                     'TIPO_ERRO': 'DUPLICIDADE'
                 })
 
-    # B. Cartão Duplicado em Pessoas Diferentes
     card_groups = df_valid.groupby('card_clean')
     for card, group in card_groups:
         if not card: continue
@@ -560,7 +653,6 @@ def detect_inconsistencies(df):
     if not errors: return pd.DataFrame()
     
     res_df = pd.DataFrame(errors)
-    # Priorizar visualização: Ausências primeiro, depois fraudes
     res_df['PRIORIDADE'] = res_df['TIPO_ERRO'].map({'AUSENCIA': 1, 'FRAUDE': 2, 'DUPLICIDADE': 3})
     res_df = res_df.sort_values('PRIORIDADE')
     
@@ -585,7 +677,6 @@ def print_pdf_row_multiline(pdf, widths, data, align='L', fill=False):
     pdf.set_font("Arial", '', font_size)
     line_height = 5
     max_lines = 1
-    # Calcular altura necessária
     for i, datum in enumerate(data):
         col_width = widths[i]
         text_width = pdf.get_string_width(sanitize_text(str(datum)))
@@ -594,7 +685,6 @@ def print_pdf_row_multiline(pdf, widths, data, align='L', fill=False):
             if lines_needed > max_lines: max_lines = lines_needed
     row_height = max_lines * line_height
     
-    # Quebra de página se necessário
     if pdf.get_y() + row_height > 190: 
         pdf.add_page(orientation='L')
     
@@ -611,7 +701,6 @@ def generate_pdf_report(df_filtered, inconsistency_df=None):
     pdf = FPDF()
     pdf.add_page(orientation='L')
     
-    # --- CABEÇALHO ---
     pdf.set_font("Arial", 'B', 14)
     pdf.cell(0, 8, sanitize_text("Prefeitura de São Paulo"), 0, 1, 'C')
     pdf.set_font("Arial", 'B', 12)
@@ -621,7 +710,6 @@ def generate_pdf_report(df_filtered, inconsistency_df=None):
     pdf.set_font("Arial", 'B', 16)
     pdf.cell(0, 12, sanitize_text("Relatório Executivo POT"), 1, 1, 'C', fill=True)
     
-    # -- PERÍODO DE REFERÊNCIA NO PDF --
     periods = df_filtered[['mes_ref', 'ano_ref']].drop_duplicates().sort_values(['ano_ref', 'mes_ref'])
     period_list = []
     for _, row in periods.iterrows():
@@ -640,7 +728,6 @@ def generate_pdf_report(df_filtered, inconsistency_df=None):
     pdf.cell(0, 6, sanitize_text(f"Gerado em: {data_br}"), 0, 1, 'R')
     pdf.ln(5)
 
-    # 1. RESUMO
     total_valor = df_filtered['valor_pagto'].sum() if 'valor_pagto' in df_filtered.columns else 0.0
     total_benef = df_filtered['num_cartao'].nunique() if 'num_cartao' in df_filtered.columns else 0
     total_projetos = df_filtered['programa'].nunique() if 'programa' in df_filtered.columns else 0
@@ -655,7 +742,6 @@ def generate_pdf_report(df_filtered, inconsistency_df=None):
     pdf.cell(0, 8, sanitize_text(f"Total Registros: {total_registros}"), 1, 1)
     pdf.ln(5)
 
-    # 2. GRÁFICOS
     pdf.set_font("Arial", 'B', 12)
     pdf.cell(0, 10, sanitize_text("2. Visualização Gráfica"), 0, 1)
     if plt and 'programa' in df_filtered.columns and not df_filtered.empty:
@@ -677,7 +763,6 @@ def generate_pdf_report(df_filtered, inconsistency_df=None):
     else: pdf.cell(0, 10, sanitize_text("Gráfico indisponível."), 0, 1)
     pdf.ln(10)
 
-    # 3. DETALHAMENTO
     pdf.set_font("Arial", 'B', 12)
     pdf.cell(0, 10, sanitize_text("3. Detalhamento Financeiro"), 0, 1)
     if 'programa' in df_filtered.columns and not df_filtered.empty:
@@ -695,7 +780,6 @@ def generate_pdf_report(df_filtered, inconsistency_df=None):
             pdf.cell(widths_det[2], 7, f"R$ {row['valor_pagto']:,.2f}", 1, 1, 'R')
     pdf.ln(10)
 
-    # 4. ALERTAS DE INCONSISTÊNCIAS E DADOS AUSENTES
     if inconsistency_df is None:
         inconsistency_df = detect_inconsistencies(df_filtered)
         
@@ -705,19 +789,17 @@ def generate_pdf_report(df_filtered, inconsistency_df=None):
         pdf.cell(0, 10, sanitize_text(f"⚠️ 4. ALERTA DE INCONSISTÊNCIAS E DADOS AUSENTES ({len(inconsistency_df)} Ocorrências)"), 0, 1)
         pdf.set_text_color(0, 0, 0)
         pdf.set_font("Arial", '', 10)
-        pdf.multi_cell(0, 6, sanitize_text("Abaixo estão listados os registros contendo inconsistências críticas (Ausência de CPF/Cartão) e conflitos cadastrais (Duplicidades)."))
+        pdf.multi_cell(0, 6, sanitize_text("Abaixo estão listados os registros contendo inconsistências críticas."))
         pdf.ln(2)
         
         pdf.set_font("Arial", 'B', 8)
         pdf.set_fill_color(255, 230, 230)
-        # Ajuste de larguras: Arquivo, Linha, CPF, Cartão, Nome, Erro
         widths = [45, 12, 28, 28, 60, 95]
         cols = ['ARQUIVO', 'LIN', 'CPF', 'CARTÃO', 'NOME', 'DESCRIÇÃO DO ERRO']
         for i, col in enumerate(cols): pdf.cell(widths[i], 8, sanitize_text(col), 1, 0, 'C', True)
         pdf.ln()
         pdf.set_font("Arial", '', 8)
         
-        # Limitar a exibição no PDF se for muito grande
         max_rows = 300
         count = 0
         for _, row in inconsistency_df.iterrows():
@@ -725,7 +807,6 @@ def generate_pdf_report(df_filtered, inconsistency_df=None):
                 pdf.cell(0, 8, sanitize_text(f"... e mais {len(inconsistency_df)-max_rows} inconsistências (veja no sistema)."), 1, 1, 'C')
                 break
             
-            # Formatar para o PDF
             data_row = [
                 str(row['ARQUIVO']), 
                 str(row['LINHA']), 
@@ -739,7 +820,7 @@ def generate_pdf_report(df_filtered, inconsistency_df=None):
     else:
         pdf.set_text_color(0, 128, 0)
         pdf.set_font("Arial", 'B', 11)
-        pdf.cell(0, 10, sanitize_text("✅ 4. Validação de Integridade: Nenhuma pendência (CPFs/Cartões ausentes ou duplicidades) detectada."), 0, 1)
+        pdf.cell(0, 10, sanitize_text("✅ 4. Validação de Integridade: Nenhuma pendência detectada."), 0, 1)
         pdf.set_text_color(0, 0, 0)
 
     return pdf.output(dest='S').encode('latin-1', 'replace')
@@ -797,18 +878,6 @@ def generate_conference_pdf(hist_df):
         ]
         print_pdf_row_multiline(pdf, widths, row_data)
     return pdf.output(dest='S').encode('latin-1', 'replace')
-
-def parse_bb_txt_cadastro(file):
-    colspecs = [(0, 11), (11, 42), (42, 52), (52, 92), (92, 104), (104, 119)]
-    names = ['tipo', 'projeto_bb', 'num_cartao', 'nome_bb', 'rg_bb', 'cpf_bb']
-    file.seek(0)
-    df = pd.read_fwf(file, colspecs=colspecs, names=names, dtype=str, encoding='latin1')
-    if 'tipo' in df.columns:
-        df = df[df['tipo'].astype(str).str.strip() == '1'].copy()
-    df['num_cartao'] = df['num_cartao'].str.strip()
-    df['nome_bb'] = df['nome_bb'].str.strip()
-    df['cpf_bb'] = df['cpf_bb'].str.replace(r'\D', '', regex=True)
-    return df
 
 # ===========================================
 # INTERFACE
@@ -868,9 +937,8 @@ def main_app():
     menu = ["Dashboard", "Upload e Processamento", "Análise e Correção", "Conferência Bancária (BB)", "Relatórios e Exportação"]
     menu.insert(1, "Manuais e Treinamento")
     
-    # NOVAS OPÇÕES DE MENU
     if user['role'] in ['admin_ti', 'admin_equipe']:
-        menu.append("Gestão de Dados") # Disponível para TI e Líderes
+        menu.append("Gestão de Dados")
         menu.append("Gestão de Equipe")
         
     if user['role'] == 'admin_ti': 
@@ -883,7 +951,6 @@ def main_app():
         st.session_state.clear()
         st.rerun()
 
-    # --- CARREGAR DADOS GLOBAIS DO BANCO ---
     conn = get_db_connection()
     try:
         df_payments = pd.read_sql("SELECT * FROM payments", conn)
@@ -891,13 +958,11 @@ def main_app():
         df_payments = pd.DataFrame()
     conn.close()
 
-    # --- DASHBOARD ---
     if choice == "Dashboard":
         render_header()
         st.markdown("### 📊 Dashboard Executivo")
         
         if not df_payments.empty:
-            # MOSTRAR PERÍODOS DE REFERÊNCIA NO TOPO
             periods = df_payments[['mes_ref', 'ano_ref']].drop_duplicates().sort_values(['ano_ref', 'mes_ref'])
             period_list = []
             for _, row in periods.iterrows():
@@ -932,7 +997,6 @@ def main_app():
                 st.plotly_chart(px.pie(g2, names='gerenciadora', values='valor_pagto'), use_container_width=True)
         else: st.info("Sem dados no sistema. Faça upload na aba 'Upload e Processamento'.")
 
-    # --- MANUAIS ---
     elif choice == "Manuais e Treinamento":
         render_header()
         st.markdown("### 📚 Manuais e Treinamento")
@@ -951,7 +1015,6 @@ def main_app():
                 pdf_team = create_manual_pdf("Manual de Gestão", content_team)
                 if pdf_team: st.download_button("Baixar PDF (Gestão)", pdf_team, "manual_gestao.pdf", "application/pdf")
 
-    # --- UPLOAD ---
     elif choice == "Upload e Processamento":
         render_header()
         st.markdown("### 📂 Upload de Pagamentos")
@@ -998,14 +1061,12 @@ def main_app():
                 log_action(user['email'], "UPLOAD", f"Upload de {len(files)} arquivos, {len(final)} registros")
                 st.success(f"✅ {len(final)} registros salvos com sucesso!")
                 
-                # FEEDBACK IMEDIATO DE ERROS CRÍTICOS (AUSÊNCIA DE DADOS)
                 inconsistencies = detect_inconsistencies(final)
                 if not inconsistencies.empty:
                     st.markdown("---")
                     st.error("🚨 ATENÇÃO: ERROS DE DADOS AUSENTES OU INCONSISTÊNCIAS IDENTIFICADOS NO UPLOAD!")
                     st.markdown("**Os seguintes registros possuem CPF ou Número de Cartão Ausentes, ou duplicidades críticas:**")
                     
-                    # Estilização para destacar as linhas
                     def highlight_rows(s):
                         return ['background-color: #fee2e2; color: #991b1b'] * len(s)
 
@@ -1013,14 +1074,8 @@ def main_app():
                         inconsistencies.style.apply(highlight_rows, axis=1), 
                         use_container_width=True
                     )
-                
-                # Rerun para atualizar contadores e tabelas globais
-                # Usar um pequeno sleep ou container para garantir que o usuário veja a tabela antes do refresh seria ideal,
-                # mas em Streamlit o refresh é necessário para atualizar o sidebar e dashboard principal.
-                # Se o usuário quiser ver, ele pode ir na aba "Análise e Correção".
                 st.warning("A tela será atualizada em instantes para consolidar os dados...")
                 
-    # --- ANÁLISE E CORREÇÃO ---
     elif choice == "Análise e Correção":
         render_header()
         st.markdown("### 🛠️ Análise e Auditoria de Dados")
@@ -1028,22 +1083,17 @@ def main_app():
         if df_payments.empty:
             st.info("Sem dados para analisar.")
         else:
-            # Detectar erros na base COMPLETA
             crit_all = detect_inconsistencies(df_payments)
             
             if not crit_all.empty:
                 st.error(f"🚨 {len(crit_all)} Registros com Inconsistências Críticas")
                 st.markdown("Estes registros precisam de correção (CPF/Cartão Ausente ou Duplicidade).")
-                
-                # REMOVIDO highlight por questão de contraste
                 st.dataframe(crit_all.drop(columns=['ID'], errors='ignore'), use_container_width=True)
                 
-                # ---- NOVA SEÇÃO DE CORREÇÃO ----
                 if user['role'] in ['admin_ti', 'admin_equipe']:
                     st.markdown("### ✏️ Correção Rápida de Inconsistências")
                     st.info("Abaixo estão APENAS os registros com inconsistências críticas para edição e correção imediata.")
                     
-                    # Filtra do df_payments original apenas os IDs que estão com erro
                     ids_com_erro = crit_all['ID'].dropna().unique()
                     
                     if len(ids_com_erro) > 0:
@@ -1065,7 +1115,6 @@ def main_app():
                             conn = get_db_connection()
                             cursor = conn.cursor()
                             try:
-                                # Update records one by one
                                 for index, row in edited_errors.iterrows():
                                     cursor.execute("""
                                         UPDATE payments 
@@ -1089,8 +1138,6 @@ def main_app():
                                 conn.close()
                     else:
                         st.warning("Não foi possível carregar os registros originais para edição (IDs não encontrados).")
-                # --------------------------------
-                
             else:
                 st.success("✅ Base íntegra. Nenhuma ausência de CPF/Cartão ou duplicidade detectada.")
             
@@ -1114,11 +1161,9 @@ def main_app():
                     except Exception as e:
                         st.error(f"Erro ao salvar: {e}")
             else:
-                # Para usuários comuns, apenas visualização
                 st.markdown("### 👁️ Visualização de Dados (Somente Leitura)")
                 st.dataframe(df_payments, use_container_width=True)
 
-    # --- RELATÓRIOS ---
     elif choice == "Relatórios e Exportação":
         render_header()
         st.markdown("### 📥 Relatórios e Exportação")
@@ -1132,7 +1177,6 @@ def main_app():
             else:
                 df_exp = df_payments
             
-            # Recalcular erros para o PDF baseados no filtro
             crit_subset = detect_inconsistencies(df_exp)
             
             st.markdown("---")
@@ -1142,7 +1186,6 @@ def main_app():
                 st.markdown("###### 📑 Relatório Executivo")
                 if st.button("Gerar Relatório PDF"):
                     with st.spinner("Gerando PDF..."):
-                        # Passa os erros detectados para incluir no PDF
                         pdf_data = generate_pdf_report(df_exp, crit_subset)
                         if isinstance(pdf_data, bytes):
                             st.download_button("⬇️ Baixar PDF", pdf_data, "relatorio_executivo.pdf", "application/pdf")
@@ -1165,10 +1208,11 @@ def main_app():
                 txt = generate_bb_txt(df_exp)
                 st.download_button("⬇️ Baixar TXT", txt, "remessa_bb.txt", "text/plain")
 
-    # --- CONFERÊNCIA BANCÁRIA ---
+    # --- CONFERÊNCIA BANCÁRIA ATUALIZADA (SMART PARSER) ---
     elif choice == "Conferência Bancária (BB)":
         render_header()
-        st.markdown("### 🏦 Conferência BB")
+        st.markdown("### 🏦 Conferência BB (Auditoria Avançada)")
+        st.info("Suporte a: Relatórios de Cadastro, Arquivos de Lote (CNAB) e Resumos de Crédito (Spool).")
         
         conn = get_db_connection()
         try:
@@ -1178,7 +1222,7 @@ def main_app():
         
         if not hist.empty:
             st.warning(f"⚠️ {len(hist)} divergências encontradas no histórico.")
-            st.dataframe(hist)
+            st.dataframe(hist, use_container_width=True)
             
             c_pdf, c_limp = st.columns(2)
             pdf_conf = generate_conference_pdf(hist)
@@ -1194,50 +1238,85 @@ def main_app():
                     st.success("Histórico limpo.")
                     st.rerun()
                 
-        files = st.file_uploader("Upload Retorno Banco (TXT)", accept_multiple_files=True)
-        if files and st.button("Processar Conferência"):
+        files = st.file_uploader("Upload Arquivos Banco (TXT)", accept_multiple_files=True)
+        if files and st.button("Executar Cruzamento (Malha Fina)"):
             dfs = []
             for f in files:
                 try:
-                    d = parse_bb_txt_cadastro(f)
-                    d['arquivo_bb'] = f.name
-                    dfs.append(d)
-                except: st.error(f"Erro ao ler {f.name}")
+                    d = parse_smart_bb(f, f.name)
+                    if not d.empty:
+                        dfs.append(d)
+                        st.toast(f"{f.name}: {len(d)} registros lidos.")
+                    else:
+                        st.warning(f"Arquivo {f.name} lido, mas sem dados reconhecidos.")
+                except Exception as e: st.error(f"Erro ao ler {f.name}: {e}")
             
             if dfs:
-                final_bb = pd.concat(dfs)
+                final_bb = pd.concat(dfs, ignore_index=True)
+                
+                # Normalização para Chave Primária (Cartão)
+                # Remove zeros à esquerda e sufixos .0
+                final_bb['key'] = final_bb['num_cartao'].astype(str).str.replace(r'^0+', '', regex=True).str.replace(r'\.0$', '', regex=True).str.strip()
+                
+                # Busca dados do sistema
                 conn = get_db_connection()
                 df_sys = pd.read_sql("SELECT num_cartao, nome, cpf FROM payments", conn)
+                conn.close()
                 
-                final_bb['key'] = final_bb['num_cartao'].astype(str).str.replace(r'^0+','', regex=True)
-                df_sys['key'] = df_sys['num_cartao'].astype(str).str.replace(r'^0+','', regex=True).str.replace(r'\.0$','', regex=True)
+                # Normalização Sistema
+                df_sys['key'] = df_sys['num_cartao'].astype(str).str.replace(r'^0+', '', regex=True).str.replace(r'\.0$', '', regex=True).str.strip()
                 
+                # Cruzamento (Inner Join garante que só auditamos o que existe em ambos)
                 merged = pd.merge(df_sys, final_bb, on='key', suffixes=('_sis', '_bb'))
+                
                 divs = []
                 for _, row in merged.iterrows():
-                    # AQUI FOI APLICADA A CORREÇÃO DE NORMALIZAÇÃO
+                    # Normalização rigorosa de nomes para evitar falso-positivo
                     nm_s = normalize_name(row.get('nome_sis', ''))
                     nm_b = normalize_name(row.get('nome_bb', ''))
                     
-                    # Só aponta erro se realmente forem diferentes após normalização rigorosa
+                    # 1. Checa Divergência de Nome (Crítico)
                     if nm_s != nm_b:
                         divs.append({
                             'cartao': row['key'],
-                            'nome_sis': row.get('nome_sis', ''), # Mantém o original para exibição
-                            'nome_bb': row.get('nome_bb', ''),   # Mantém o original para exibição
-                            'divergencia': 'NOME DIFERENTE',
-                            'arquivo_origem': row['arquivo_bb']
+                            'nome_sis': row.get('nome_sis', ''),
+                            'nome_bb': row.get('nome_bb', ''),
+                            'cpf_sis': row.get('cpf', ''),
+                            'cpf_bb': row.get('cpf_banco', ''),
+                            'divergencia': 'NOME DIVERGENTE',
+                            'arquivo_origem': row['arquivo_origem'],
+                            'tipo_erro': 'FRAUDE_POTENCIAL'
                         })
+                    
+                    # 2. Checa Divergência de CPF (se disponível no banco)
+                    cpf_bb = str(row.get('cpf_banco', '')).strip()
+                    if cpf_bb and len(cpf_bb) > 5:
+                        cpf_s_clean = str(row.get('cpf', '')).replace('.', '').replace('-', '').strip()
+                        cpf_b_clean = cpf_bb.replace('.', '').replace('-', '').strip()
+                        if cpf_s_clean != cpf_b_clean:
+                            divs.append({
+                                'cartao': row['key'],
+                                'nome_sis': row.get('nome_sis', ''),
+                                'nome_bb': row.get('nome_bb', ''),
+                                'cpf_sis': row.get('cpf', ''),
+                                'cpf_bb': cpf_bb,
+                                'divergencia': 'CPF DIVERGENTE',
+                                'arquivo_origem': row['arquivo_origem'],
+                                'tipo_erro': 'DADOS_CADASTRAIS'
+                            })
                 
                 if divs:
                     dd = pd.DataFrame(divs)
+                    conn = get_db_connection()
                     dd.to_sql('bank_discrepancies', conn, if_exists='append', index=False)
-                    st.error(f"🚨 {len(dd)} novas divergências encontradas e salvas!")
+                    conn.close()
+                    st.error(f"🚨 Operação Finalizada: {len(dd)} divergências identificadas!")
                     st.rerun()
-                else: st.success("✅ Processamento concluído: Nenhuma divergência encontrada.")
-                conn.close()
-    
-    # --- GESTÃO DE DADOS (NOVA SEÇÃO) ---
+                else: 
+                    st.success(f"✅ Operação Finalizada: {len(final_bb)} registros processados e 100% conciliados.")
+            else:
+                st.warning("Nenhum dado válido extraído dos arquivos enviados.")
+
     elif choice == "Gestão de Dados":
         render_header()
         st.markdown("### 🗄️ Gerenciamento de Registros e Arquivos")
@@ -1245,11 +1324,9 @@ def main_app():
         
         tab_files, tab_records = st.tabs(["📂 Excluir Arquivos Inteiros", "🔍 Buscar e Excluir Registros"])
         
-        # TAB 1: GERENCIAR ARQUIVOS
         with tab_files:
             conn = get_db_connection()
             try:
-                # Busca resumo dos arquivos
                 file_stats = pd.read_sql("""
                     SELECT arquivo_origem, COUNT(*) as qtd_registros, MAX(created_at) as data_importacao 
                     FROM payments 
@@ -1278,7 +1355,6 @@ def main_app():
             else:
                 st.info("Nenhum arquivo importado no momento.")
 
-        # TAB 2: GERENCIAR REGISTROS
         with tab_records:
             st.markdown("Busque por registros específicos para remoção cirúrgica.")
             search_term = st.text_input("Buscar por Nome, CPF ou Cartão (mínimo 3 caracteres)", "")
@@ -1298,7 +1374,6 @@ def main_app():
                 if not results.empty:
                     st.write(f"Encontrados {len(results)} registros (limitado a 50):")
                     
-                    # Usa selection_mode para permitir selecionar múltiplos
                     event = st.dataframe(
                         results,
                         use_container_width=True,
@@ -1316,7 +1391,6 @@ def main_app():
                         
                         if st.button("Confirmar Exclusão dos Selecionados"):
                             conn = get_db_connection()
-                            # SQLite não suporta lista direta no execute, precisamos fazer um loop ou string format
                             id_list = ','.join(map(str, ids_to_delete))
                             conn.execute(f"DELETE FROM payments WHERE id IN ({id_list})")
                             conn.commit()
@@ -1328,7 +1402,6 @@ def main_app():
                 else:
                     st.warning("Nenhum registro encontrado com este termo.")
 
-    # --- GESTÃO DE EQUIPE ---
     elif choice == "Gestão de Equipe":
         render_header()
         st.markdown("### 👥 Gestão de Acessos")
@@ -1398,7 +1471,6 @@ def main_app():
                     st.rerun()
                 st.markdown("<div class='user-row'></div>", unsafe_allow_html=True)
 
-    # --- ADMIN TI ---
     elif choice == "Administração TI" and user['role'] == 'admin_ti':
         render_header()
         st.markdown("### 🛡️ Painel de Auditoria e Controle")
