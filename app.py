@@ -112,6 +112,7 @@ def init_db():
         )
     ''')
     
+    # ATUALIZAÇÃO: Garantir colunas de data e competencia
     c.execute('''
         CREATE TABLE IF NOT EXISTS payments (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -123,6 +124,7 @@ def init_db():
             rg TEXT,
             valor_pagto REAL,
             data_pagto TEXT,
+            competencia TEXT,
             qtd_dias INTEGER,
             mes_ref TEXT,
             ano_ref TEXT,
@@ -133,6 +135,12 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    
+    # Migração segura para adicionar coluna competencia se não existir
+    try:
+        c.execute("ALTER TABLE payments ADD COLUMN competencia TEXT")
+    except sqlite3.OperationalError:
+        pass 
 
     c.execute('''
         CREATE TABLE IF NOT EXISTS bank_discrepancies (
@@ -203,7 +211,7 @@ def get_manual_content(tipo):
         
         ## 3. Upload e Processamento
         - Navegue até a aba **Upload e Processamento**.
-        - Ao carregar arquivos, uma tabela vermelha aparecerá se houver erros críticos.
+        - Ao carregar arquivos, o sistema tentará identificar automaticamente a **Competência** (Mês/Ano) no nome do arquivo.
         """
     elif tipo == "admin_equipe":
         return """
@@ -272,39 +280,65 @@ def remove_accents(input_str):
     return "".join([c for c in nfkd_form if not unicodedata.combining(c)]).upper().strip()
 
 def normalize_name(name):
-    """
-    Normaliza nomes para comparação estrita:
-    1. Remove acentos
-    2. Converte para maiúsculas
-    3. Remove espaços extras (inicio, fim e duplos no meio)
-    4. Trata Nulos
-    """
     if not name or str(name).lower() in ['nan', 'none', '']:
         return ""
-    
-    # Converter para string e normalizar unicode (remove acentos)
     s = str(name)
     nfkd_form = unicodedata.normalize('NFKD', s)
     only_ascii = "".join([c for c in nfkd_form if not unicodedata.combining(c)])
-    
-    # Maiúsculas e remover espaços extras (split sem args remove todo whitespace duplicado)
     return " ".join(only_ascii.upper().split())
 
 def get_brasilia_time():
     return datetime.now(timezone(timedelta(hours=-3)))
 
+# Mapeamento Completo de Meses
+MONTH_MAP_FULL = {
+    'JAN': 'Janeiro', 'JANEIRO': 'Janeiro', '01': 'Janeiro', '1': 'Janeiro',
+    'FEV': 'Fevereiro', 'FEVEREIRO': 'Fevereiro', '02': 'Fevereiro', '2': 'Fevereiro',
+    'MAR': 'Março', 'MARCO': 'Março', 'MARÇO': 'Março', '03': 'Março', '3': 'Março',
+    'ABR': 'Abril', 'ABRIL': 'Abril', '04': 'Abril', '4': 'Abril',
+    'MAI': 'Maio', 'MAIO': 'Maio', '05': 'Maio', '5': 'Maio',
+    'JUN': 'Junho', 'JUNHO': 'Junho', '06': 'Junho', '6': 'Junho',
+    'JUL': 'Julho', 'JULHO': 'Julho', '07': 'Julho', '7': 'Julho',
+    'AGO': 'Agosto', 'AGOSTO': 'Agosto', '08': 'Agosto', '8': 'Agosto',
+    'SET': 'Setembro', 'SETEMBRO': 'Setembro', '09': 'Setembro', '9': 'Setembro',
+    'OUT': 'Outubro', 'OUTUBRO': 'Outubro', '10': 'Outubro',
+    'NOV': 'Novembro', 'NOVEMBRO': 'Novembro', '11': 'Novembro',
+    'DEZ': 'Dezembro', 'DEZEMBRO': 'Dezembro', '12': 'Dezembro'
+}
+
+MONTH_NUM_MAP = {
+    'JAN': '01', 'JANEIRO': '01', 'FEV': '02', 'FEVEREIRO': '02', 'MAR': '03', 'MARCO': '03', 'MARÇO': '03',
+    'ABR': '04', 'ABRIL': '04', 'MAI': '05', 'MAIO': '05', 'JUN': '06', 'JUNHO': '06',
+    'JUL': '07', 'JULHO': '07', 'AGO': '08', 'AGOSTO': '08', 'SET': '09', 'SETEMBRO': '09',
+    'OUT': '10', 'OUTUBRO': '10', 'NOV': '11', 'NOVEMBRO': '11', 'DEZ': '12', 'DEZEMBRO': '12'
+}
+
+def format_competencia(mes, ano):
+    """Retorna formato 'Janeiro 2025'"""
+    if not mes or not ano: return "N/A"
+    
+    # Limpa input
+    mes_str = str(mes).upper().strip()
+    ano_str = str(ano).strip()
+    
+    # Tenta achar o nome bonito
+    nome_mes = MONTH_MAP_FULL.get(mes_str)
+    
+    # Se não achou direto, tenta ver se é numero
+    if not nome_mes and mes_str.isdigit():
+        mes_int = int(mes_str)
+        mes_key = f"{mes_int:02d}"
+        nome_mes = MONTH_MAP_FULL.get(mes_key, mes_str)
+    
+    if not nome_mes: nome_mes = mes_str
+        
+    return f"{nome_mes} {ano_str}"
+
 # ===========================================
-# PARSER INTELIGENTE BANCO DO BRASIL
+# PARSER INTELIGENTE BANCO DO BRASIL (COM DATAS)
 # ===========================================
 
 def parse_smart_bb(file_obj, filename):
-    """
-    Identifica automaticamente o layout do arquivo BB e extrai os dados.
-    Suporta:
-    1. Relatório de Cadastro (REL.CADASTRO) - Headers explícitos
-    2. Resumo de Crédito (Resumo_CREDITO) - Multi-linha visual
-    3. Arquivo de Lote (LOTE.CREDITO) - Posicional estrito (CNAB/Proprietário)
-    """
     try:
         content = file_obj.getvalue().decode('latin-1', errors='ignore')
     except:
@@ -315,12 +349,43 @@ def parse_smart_bb(file_obj, filename):
     
     filename_upper = filename.upper()
     
-    # CASO 1: RELATÓRIO DE CADASTRO (Começa com header '0' e tem 'Projeto')
+    # Tentar extrair data global do arquivo para fallback
+    data_arquivo = ""
+    competencia_fmt = ""
+    
+    # Regex para data tipo "08 Dec 2025" (Comum em Spool)
+    match_date_header = re.search(r'(\d{2})\s+([A-Za-z]{3})\s+(\d{4})', content[:500])
+    if match_date_header:
+        d, m_eng, y = match_date_header.groups()
+        # Mapa ingles simples pra garantir
+        eng_map = {'DEC':'Dezembro','JAN':'Janeiro','FEB':'Fevereiro','MAR':'Março','APR':'Abril','MAY':'Maio','JUN':'Junho','JUL':'Julho','AUG':'Agosto','SEP':'Setembro','OCT':'Outubro','NOV':'Novembro'}
+        m_pt = eng_map.get(m_eng.upper(), m_eng)
+        data_arquivo = f"{d}/{m_eng}/{y}" # Mantem original ou formata
+        competencia_fmt = f"{m_pt} {y}"
+        
+    # Regex para data tipo "20251006" (Comum em CNAB LOTE)
+    if not data_arquivo:
+        match_date_lote = re.search(r'20\d{6}', content[:500]) 
+        if match_date_lote:
+            ds = match_date_lote.group(0) # ex 20251006
+            y, m, d = ds[:4], ds[4:6], ds[6:8]
+            data_arquivo = f"{d}/{m}/{y}"
+            competencia_fmt = format_competencia(m, y)
+
+    # CASO 1: RELATÓRIO DE CADASTRO
     if "REL.CADASTRO" in filename_upper or (len(lines) > 0 and lines[0].startswith('0') and 'Projeto' in lines[0]):
         for line in lines:
-            if line.startswith('1'): # Linha de dados
+            if line.startswith('1'): 
                 try:
-                    # Layout baseado no REL.CADASTRO.OT.V8230.TXT
+                    # Tenta pegar DtLote no final da linha
+                    dt_lote_match = re.search(r'(\d{2}/\d{2}/\d{4})', line[150:]) 
+                    dt_row = dt_lote_match.group(1) if dt_lote_match else data_arquivo
+                    
+                    comp_row = competencia_fmt
+                    if dt_row and not comp_row:
+                        parts = dt_row.split('/')
+                        if len(parts) == 3: comp_row = format_competencia(parts[1], parts[2])
+
                     entry = {
                         'arquivo_origem': filename,
                         'tipo_arquivo': 'CADASTRO',
@@ -329,15 +394,14 @@ def parse_smart_bb(file_obj, filename):
                         'nome_banco': line[52:92].strip(),
                         'rg_banco': line[92:104].strip(),
                         'cpf_banco': line[104:119].strip().replace('.', '').replace('-', ''),
-                        'agencia': '',
-                        'distrito': ''
+                        'data_pagto': dt_row,
+                        'competencia': comp_row
                     }
                     if entry['num_cartao']:
                         data.append(entry)
-                except:
-                    continue
+                except: continue
 
-    # CASO 2: RESUMO DE CRÉDITO (Visual, multi-linha, começa com "NumCartao")
+    # CASO 2: RESUMO DE CRÉDITO
     elif "RESUMO" in filename_upper or "Distrito    Agencia" in content:
         i = 0
         while i < len(lines):
@@ -368,12 +432,14 @@ def parse_smart_bb(file_obj, filename):
                     'cpf_banco': '',
                     'agencia': agencia,
                     'distrito': distrito,
-                    'valor_banco': valor
+                    'valor_banco': valor,
+                    'data_pagto': data_arquivo,
+                    'competencia': competencia_fmt
                 })
                 i += 1 
             i += 1
 
-    # CASO 3: ARQUIVO DE LOTE (Ex: LOTE.CREDITO.OT)
+    # CASO 3: ARQUIVO DE LOTE
     elif "LOTE" in filename_upper or (len(lines) > 1 and lines[1].startswith('2000')):
         for line in lines:
             if line.startswith('2'): 
@@ -395,11 +461,10 @@ def parse_smart_bb(file_obj, filename):
                             'nome_banco': nome,
                             'rg_banco': '',
                             'cpf_banco': '',
-                            'agencia': '',
-                            'distrito': ''
+                            'data_pagto': data_arquivo,
+                            'competencia': competencia_fmt
                         })
-                except:
-                    continue
+                except: continue
 
     return pd.DataFrame(data)
 
@@ -410,13 +475,14 @@ def parse_smart_bb(file_obj, filename):
 COLUMN_MAP = {
     'num cartao': 'num_cartao', 'numcartao': 'num_cartao', 'numcartão': 'num_cartao', 
     'código': 'num_cartao', 'codigo': 'num_cartao', 'cartao': 'num_cartao', 'cartão': 'num_cartao',
-    'nome': 'nome', 'nome do beneficiário': 'nome', 'participante': 'nome',
+    'conta/código': 'num_cartao', 'conta/codigo': 'num_cartao',
+    'nome': 'nome', 'nome do beneficiário': 'nome', 'participante': 'nome', 'beneficiário': 'nome', 'beneficiario': 'nome',
     'cpf': 'cpf', 'rg': 'rg',
-    'valor pagto': 'valor_pagto', 'valorpagto': 'valor_pagto', 'valor total': 'valor_pagto',
+    'valor pagto': 'valor_pagto', 'valorpagto': 'valor_pagto', 'valor total': 'valor_pagto', 'valor': 'valor_pagto',
     'dias a apagar': 'qtd_dias', 'dias': 'qtd_dias',
     'data pagto': 'data_pagto', 'datapagto': 'data_pagto', 'dt pagto': 'data_pagto', 
     'dt. pagto': 'data_pagto', 'data do pagamento': 'data_pagto', 'dt pagamento': 'data_pagto',
-    'projeto': 'programa', 'mês': 'mes_ref', 'mes': 'mes_ref',
+    'projeto': 'programa', 'mês': 'mes_ref', 'mes': 'mes_ref', 'competência': 'competencia', 'competencia': 'competencia',
     'gerenciadora': 'gerenciadora', 'entidade': 'gerenciadora', 'parceiro': 'gerenciadora', 'os': 'gerenciadora'
 }
 
@@ -471,42 +537,46 @@ def standardize_dataframe(df, filename):
     else:
         df['gerenciadora'] = df['gerenciadora'].fillna('NÃO IDENTIFICADA')
         
-    meses_dict = {
-        'JANEIRO': 1, 'FEVEREIRO': 2, 'MARÇO': 3, 'ABRIL': 4, 'MAIO': 5, 'JUNHO': 6,
-        'JULHO': 7, 'AGOSTO': 8, 'SETEMBRO': 9, 'OUTUBRO': 10, 'NOVEMBRO': 11, 'DEZEMBRO': 12
-    }
+    # --- LÓGICA DE DATA E COMPETÊNCIA ---
     
-    mes_ref = 'N/A'
+    mes_ref = None
     ano_ref = str(datetime.now().year)
     
-    for mes in meses_dict.keys():
-        if mes in filename_upper:
-            mes_ref = mes
+    # 1. Tenta achar Mês no nome do arquivo (Ex: PGTO ABAE SETEMBRO.csv)
+    for nome_mes, num_mes in MONTH_NUM_MAP.items():
+        if nome_mes in filename_upper:
+            mes_ref = num_mes
             break
-    
+            
+    # 2. Tenta achar Ano no nome do arquivo
     ano_match = re.search(r'(20\d{2})', filename_upper)
     if ano_match:
         ano_ref = ano_match.group(1)
         
-    if (mes_ref == 'N/A' or ano_match is None) and 'data_pagto' in df.columns:
+    # 3. Se não achou no nome, tenta na coluna data_pagto
+    if (not mes_ref) and 'data_pagto' in df.columns:
         try:
             first_valid_date = pd.to_datetime(df['data_pagto'], dayfirst=True, errors='coerce').dropna().iloc[0]
-            if mes_ref == 'N/A':
-                mes_num = first_valid_date.month
-                for nome, num in meses_dict.items():
-                    if num == mes_num:
-                        mes_ref = nome
-                        break
-            if ano_match is None:
+            mes_ref = str(first_valid_date.month).zfill(2)
+            if not ano_match:
                 ano_ref = str(first_valid_date.year)
-        except:
-            pass
+        except: pass
+    
+    # 4. Fallback final: Mês atual
+    if not mes_ref:
+        mes_ref = str(datetime.now().month).zfill(2)
             
-    if 'mes_ref' not in df.columns:
-        df['mes_ref'] = mes_ref
+    # Constrói colunas faltantes
+    df['mes_ref'] = mes_ref
+    df['ano_ref'] = ano_ref
+    
+    # GERA A COMPETÊNCIA FORMATADA (Janeiro 2025)
+    if 'competencia' not in df.columns:
+        df['competencia'] = format_competencia(mes_ref, ano_ref)
         
-    if 'ano_ref' not in df.columns:
-        df['ano_ref'] = ano_ref
+    # GERA DATA DE PAGTO SE NÃO EXISTIR (Data do Arquivo ou Hoje)
+    if 'data_pagto' not in df.columns:
+        df['data_pagto'] = datetime.now().strftime('%d/%m/%Y')
         
     essential_check = ['num_cartao', 'nome', 'cpf', 'rg', 'valor_pagto']
     for col in essential_check:
@@ -534,7 +604,8 @@ def standardize_dataframe(df, filename):
         df['valor_pagto'] = df['valor_pagto'].apply(clean_currency)
         
     df['arquivo_origem'] = filename
-    cols_to_keep = ['programa', 'gerenciadora', 'num_cartao', 'nome', 'cpf', 'rg', 'valor_pagto', 'data_pagto', 'qtd_dias', 'mes_ref', 'ano_ref', 'arquivo_origem', 'linha_arquivo']
+    # Mantem colunas novas
+    cols_to_keep = ['programa', 'gerenciadora', 'num_cartao', 'nome', 'cpf', 'rg', 'valor_pagto', 'data_pagto', 'competencia', 'qtd_dias', 'mes_ref', 'ano_ref', 'arquivo_origem', 'linha_arquivo']
     final_cols = [c for c in cols_to_keep if c in df.columns]
     return df[final_cols]
 
@@ -695,17 +766,12 @@ def generate_pdf_report(df_filtered, inconsistency_df=None):
     pdf.set_font("Arial", 'B', 16)
     pdf.cell(0, 12, sanitize_text("Relatório Executivo POT"), 1, 1, 'C', fill=True)
     
-    periods = df_filtered[['mes_ref', 'ano_ref']].drop_duplicates().sort_values(['ano_ref', 'mes_ref'])
-    period_list = []
-    for _, row in periods.iterrows():
-        m = str(row['mes_ref'])
-        a = str(row['ano_ref'])
-        if m != 'N/A': period_list.append(f"{m}/{a}")
-        else: period_list.append(f"{a}")
-    period_str = ", ".join(period_list) if period_list else "N/A"
+    # Exibe Competências encontradas no cabeçalho
+    comps = df_filtered['competencia'].unique()
+    comp_str = ", ".join(str(c) for c in comps if c)
     
     pdf.set_font("Arial", 'B', 10)
-    pdf.cell(0, 8, sanitize_text(f"Período(s) de Referência: {period_str}"), 0, 1, 'C')
+    pdf.cell(0, 8, sanitize_text(f"Competência(s): {comp_str}"), 0, 1, 'C')
     pdf.ln(2)
     
     data_br = get_brasilia_time().strftime('%d/%m/%Y às %H:%M')
@@ -749,20 +815,24 @@ def generate_pdf_report(df_filtered, inconsistency_df=None):
     pdf.ln(10)
 
     pdf.set_font("Arial", 'B', 12)
-    pdf.cell(0, 10, sanitize_text("3. Detalhamento Financeiro"), 0, 1)
+    pdf.cell(0, 10, sanitize_text("3. Detalhamento Financeiro e Competência"), 0, 1)
     if 'programa' in df_filtered.columns and not df_filtered.empty:
-        group_proj = df_filtered.groupby('programa').agg({'valor_pagto': 'sum', 'num_cartao': 'count'}).reset_index().sort_values('valor_pagto', ascending=False)
+        # Agrupamento agora inclui Competência
+        group_proj = df_filtered.groupby(['programa', 'competencia']).agg({'valor_pagto': 'sum', 'num_cartao': 'count'}).reset_index().sort_values('valor_pagto', ascending=False)
+        
         pdf.set_font("Arial", 'B', 9)
         pdf.set_fill_color(240, 240, 240)
-        widths_det = [100, 40, 60]
-        cols_det = ['PROJETO', 'REGISTROS', 'VALOR TOTAL']
+        # Larguras ajustadas
+        widths_det = [90, 40, 25, 40]
+        cols_det = ['PROJETO', 'COMPETÊNCIA', 'QTD', 'VALOR TOTAL']
         for i, col in enumerate(cols_det): pdf.cell(widths_det[i], 8, sanitize_text(col), 1, 0, 'C', True)
         pdf.ln()
         pdf.set_font("Arial", '', 9)
         for _, row in group_proj.iterrows():
-            pdf.cell(widths_det[0], 7, sanitize_text(str(row['programa'])[:50]), 1)
-            pdf.cell(widths_det[1], 7, str(row['num_cartao']), 1, 0, 'C')
-            pdf.cell(widths_det[2], 7, f"R$ {row['valor_pagto']:,.2f}", 1, 1, 'R')
+            pdf.cell(widths_det[0], 7, sanitize_text(str(row['programa'])[:45]), 1)
+            pdf.cell(widths_det[1], 7, sanitize_text(str(row['competencia'])), 1, 0, 'C')
+            pdf.cell(widths_det[2], 7, str(row['num_cartao']), 1, 0, 'C')
+            pdf.cell(widths_det[3], 7, f"R$ {row['valor_pagto']:,.2f}", 1, 1, 'R')
     pdf.ln(10)
 
     if inconsistency_df is None:
@@ -948,18 +1018,11 @@ def main_app():
         st.markdown("### 📊 Dashboard Executivo")
         
         if not df_payments.empty:
-            periods = df_payments[['mes_ref', 'ano_ref']].drop_duplicates().sort_values(['ano_ref', 'mes_ref'])
-            period_list = []
-            for _, row in periods.iterrows():
-                m = str(row['mes_ref'])
-                a = str(row['ano_ref'])
-                if m != 'N/A':
-                    period_list.append(f"{m}/{a}")
-                else:
-                    period_list.append(f"{a}")
-            period_str = ", ".join(period_list)
+            # Mostra Competência ao invés de mes_ref isolado
+            periods = df_payments['competencia'].unique()
+            period_str = ", ".join(str(p) for p in periods if p)
             
-            st.info(f"📅 **Período(s) de Referência Identificado(s):** {period_str}")
+            st.info(f"📅 **Competência(s) em Análise:** {period_str}")
             
             k1, k2, k3, k4 = st.columns(4)
             total = df_payments['valor_pagto'].sum()
@@ -1131,6 +1194,7 @@ def main_app():
             if user['role'] in ['admin_ti', 'admin_equipe']:
                 st.markdown("### 📝 Editor de Dados (Malha Fina - Base Completa)")
                 st.warning("⚠️ Atenção: As alterações feitas aqui são aplicadas diretamente ao Banco de Dados.")
+                # Exibe colunas de data para edição também
                 edited_df = st.data_editor(df_payments, num_rows="dynamic", key="editor_analise", use_container_width=True)
                 
                 if st.button("💾 Salvar Correções no Banco de Dados (Base Completa)"):
@@ -1179,6 +1243,7 @@ def main_app():
             
             with c2:
                 st.markdown("###### 📄 Dados Completos")
+                # Inclui Competencia e Data no CSV
                 csv = df_exp.to_csv(index=False, sep=';').encode('utf-8-sig')
                 st.download_button("⬇️ Baixar CSV", csv, "dados_pot.csv", "text/csv")
             
