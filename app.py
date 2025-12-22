@@ -142,6 +142,8 @@ def init_db():
             nome_bb TEXT,
             cpf_sis TEXT,
             cpf_bb TEXT,
+            rg_sis TEXT,
+            rg_bb TEXT,
             divergencia TEXT,
             arquivo_origem TEXT,
             tipo_erro TEXT, 
@@ -292,7 +294,7 @@ def get_brasilia_time():
     return datetime.now(timezone(timedelta(hours=-3)))
 
 # ===========================================
-# PARSER INTELIGENTE BANCO DO BRASIL (NOVO)
+# PARSER INTELIGENTE BANCO DO BRASIL
 # ===========================================
 
 def parse_smart_bb(file_obj, filename):
@@ -312,8 +314,6 @@ def parse_smart_bb(file_obj, filename):
     data = []
     
     filename_upper = filename.upper()
-    
-    # --- DETECTOR DE LAYOUT ---
     
     # CASO 1: RELATÓRIO DE CADASTRO (Começa com header '0' e tem 'Projeto')
     if "REL.CADASTRO" in filename_upper or (len(lines) > 0 and lines[0].startswith('0') and 'Projeto' in lines[0]):
@@ -342,8 +342,6 @@ def parse_smart_bb(file_obj, filename):
         i = 0
         while i < len(lines):
             line = lines[i]
-            # Procura padrao de linha de dados: Cartão (6 digitos) + Valor
-            # Ex: 394191     1593.90       ALAN ANTONIO DA SILVA
             match_main = re.search(r'^\s*(\d{6,})\s+([\d\.]+)\s+(.+)$', line)
             
             if match_main:
@@ -351,8 +349,6 @@ def parse_smart_bb(file_obj, filename):
                 valor = match_main.group(2)
                 nome = match_main.group(3).strip()
                 
-                # Tenta pegar a próxima linha para Agencia e Distrito
-                # Ex: 00          1204        12               24
                 agencia = ''
                 distrito = ''
                 if i + 1 < len(lines):
@@ -374,30 +370,19 @@ def parse_smart_bb(file_obj, filename):
                     'distrito': distrito,
                     'valor_banco': valor
                 })
-                i += 1 # Pula a linha extra
+                i += 1 
             i += 1
 
     # CASO 3: ARQUIVO DE LOTE (Ex: LOTE.CREDITO.OT)
-    # Identificação: linhas começam com '2000'
     elif "LOTE" in filename_upper or (len(lines) > 1 and lines[1].startswith('2000')):
         for line in lines:
-            if line.startswith('2'): # Detalhe
+            if line.startswith('2'): 
                 try:
-                    # Análise do arquivo LOTE.CREDITO.OT.V5439.TXT
-                    # Ex: 20000002200003795683...
-                    # Posição 13 a 20 parece ser o cartão (7 dígitos)
-                    # O nome está no final, após o marcador '30000004'
-                    
-                    # Extração do Cartão (Posicional Estimada 13:20)
                     cartao_candidato = line[13:20].strip()
-                    
-                    # Extração do Nome (Fim da linha)
-                    # Procura pelo marcador comum de empresa/convênio '30000004'
                     match_nome = re.search(r'30000004(.+)$', line)
                     if match_nome:
                         nome = match_nome.group(1).strip()
                     else:
-                        # Fallback: pega caracteres não numéricos do fim
                         nome_part = re.search(r'(\D+)$', line)
                         nome = nome_part.group(1).strip() if nome_part else ""
 
@@ -419,7 +404,7 @@ def parse_smart_bb(file_obj, filename):
     return pd.DataFrame(data)
 
 # ===========================================
-# LÓGICA DE NEGÓCIO E VALIDAÇÃO (PADRÃO)
+# LÓGICA DE NEGÓCIO E VALIDAÇÃO
 # ===========================================
 
 COLUMN_MAP = {
@@ -1255,12 +1240,11 @@ def main_app():
                 final_bb = pd.concat(dfs, ignore_index=True)
                 
                 # Normalização para Chave Primária (Cartão)
-                # Remove zeros à esquerda e sufixos .0
                 final_bb['key'] = final_bb['num_cartao'].astype(str).str.replace(r'^0+', '', regex=True).str.replace(r'\.0$', '', regex=True).str.strip()
                 
-                # Busca dados do sistema
+                # Busca dados do sistema (incluindo RG)
                 conn = get_db_connection()
-                df_sys = pd.read_sql("SELECT num_cartao, nome, cpf FROM payments", conn)
+                df_sys = pd.read_sql("SELECT num_cartao, nome, cpf, rg FROM payments", conn)
                 conn.close()
                 
                 # Normalização Sistema
@@ -1271,7 +1255,7 @@ def main_app():
                 
                 divs = []
                 for _, row in merged.iterrows():
-                    # Normalização rigorosa de nomes para evitar falso-positivo
+                    # Normalização rigorosa
                     nm_s = normalize_name(row.get('nome_sis', ''))
                     nm_b = normalize_name(row.get('nome_bb', ''))
                     
@@ -1283,9 +1267,11 @@ def main_app():
                             'nome_bb': row.get('nome_bb', ''),
                             'cpf_sis': row.get('cpf', ''),
                             'cpf_bb': row.get('cpf_banco', ''),
-                            'divergencia': 'NOME DIVERGENTE',
+                            'rg_sis': row.get('rg', ''),
+                            'rg_bb': row.get('rg_banco', ''),
+                            'divergencia': 'ALERTA MÁXIMO: NOME DIVERGENTE',
                             'arquivo_origem': row['arquivo_origem'],
-                            'tipo_erro': 'FRAUDE_POTENCIAL'
+                            'tipo_erro': 'SUSPEITA_TROCA_TITULARIDADE'
                         })
                     
                     # 2. Checa Divergência de CPF (se disponível no banco)
@@ -1300,7 +1286,29 @@ def main_app():
                                 'nome_bb': row.get('nome_bb', ''),
                                 'cpf_sis': row.get('cpf', ''),
                                 'cpf_bb': cpf_bb,
-                                'divergencia': 'CPF DIVERGENTE',
+                                'rg_sis': row.get('rg', ''),
+                                'rg_bb': row.get('rg_banco', ''),
+                                'divergencia': 'CPF DIVERGENTE (FRAUDE)',
+                                'arquivo_origem': row['arquivo_origem'],
+                                'tipo_erro': 'DADOS_CADASTRAIS'
+                            })
+                            
+                    # 3. Checa Divergência de RG (Se disponível no arquivo de retorno)
+                    rg_bb = str(row.get('rg_banco', '')).strip()
+                    if rg_bb and len(rg_bb) > 3:
+                        rg_s_clean = str(row.get('rg', '')).replace('.', '').replace('-', '').strip()
+                        rg_b_clean = rg_bb.replace('.', '').replace('-', '').strip()
+                        # RG muitas vezes tem letras/digitos variados, checagem estrita
+                        if rg_s_clean != rg_b_clean:
+                             divs.append({
+                                'cartao': row['key'],
+                                'nome_sis': row.get('nome_sis', ''),
+                                'nome_bb': row.get('nome_bb', ''),
+                                'cpf_sis': row.get('cpf', ''),
+                                'cpf_bb': row.get('cpf_banco', ''),
+                                'rg_sis': row.get('rg', ''),
+                                'rg_bb': rg_bb,
+                                'divergencia': 'RG DIVERGENTE',
                                 'arquivo_origem': row['arquivo_origem'],
                                 'tipo_erro': 'DADOS_CADASTRAIS'
                             })
@@ -1310,10 +1318,10 @@ def main_app():
                     conn = get_db_connection()
                     dd.to_sql('bank_discrepancies', conn, if_exists='append', index=False)
                     conn.close()
-                    st.error(f"🚨 Operação Finalizada: {len(dd)} divergências identificadas!")
+                    st.error(f"🚨 ALERTA DE FRAUDE: {len(dd)} divergências de titularidade identificadas!")
                     st.rerun()
                 else: 
-                    st.success(f"✅ Operação Finalizada: {len(final_bb)} registros processados e 100% conciliados.")
+                    st.success(f"✅ Auditoria Blindada: {len(final_bb)} registros processados. Nenhuma troca de titularidade detectada.")
             else:
                 st.warning("Nenhum dado válido extraído dos arquivos enviados.")
 
