@@ -1131,14 +1131,18 @@ def main_app():
                     nomes_seguros = set(nomes_sucesso_fila + nomes_banco)
                     nomes_descobertos = [n for n in nomes_arquivo if n not in nomes_seguros and len(n) > 3]
                     
-                    # 4. Decisão de incluir dados e exibir alertas
+                    # 4. Adiciona aos dados finais se houver algo válido e dá o aviso sutil de sucesso
                     if not df_std.empty: 
                         dfs.append(df_std)
-                    else:
-                        # Só avisa se o arquivo falhou E as pessoas dele não foram salvas por outros arquivos
+                        st.toast(f"{f.name}: {len(df_std)} registros processados.")
+                    
+                    # 5. Exibe os alertas APENAS se houver CPFs/Nomes descobertos (que não estão em NENHUM outro arquivo/banco)
+                    # ISSO SUBSTITUI OS AVISOS ANTIGOS
+                    if df_std.empty or len(df_std) < len(df):
                         if len(nomes_descobertos) > 0:
-                            st.warning(f"⚠️ {f.name}: {len(nomes_descobertos)} registros não possuem dados mínimos e não foram encontrados nos outros arquivos de segurança.")
-                            
+                            st.warning(f"⚠️ {f.name}: {len(nomes_descobertos)} registros incompletos não foram localizados nos arquivos de segurança (Pendências/Pgto).")
+                    # ====================================================================
+                        
                 except Exception as e: st.error(f"Erro ao ler {f.name}: {e}")
                 
             if dfs:
