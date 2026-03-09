@@ -215,14 +215,9 @@ def get_db_connection():
 def log_action(user_email, action, details):
     try:
         conn = get_db_connection()
-    try:
-        df_payments = pd.read_sql("SELECT * FROM payments", conn)
-        # REMOÇÃO DO STATUS PARA ADEQUAÇÃO À LINGUAGEM SIMPLES
-        if 'status' in df_payments.columns:
-            df_payments = df_payments.drop(columns=['status'])
-    except:
-        df_payments = pd.DataFrame()
-    conn.close()
+        conn.execute("INSERT INTO audit_logs (user_email, action, details) VALUES (?, ?, ?)", (user_email, action, details))
+        conn.commit()
+        conn.close()
     except Exception as e:
         print(f"Erro ao logar: {e}")
 
@@ -1082,11 +1077,16 @@ def main_app():
         if files:
             if st.button("Processar Arquivos"):
                 conn = get_db_connection()
-                try:
-                    exist_query = pd.read_sql("SELECT DISTINCT arquivo_origem FROM payments", conn)
-                    exist = exist_query['arquivo_origem'].tolist() if not exist_query.empty else []
-                except: exist = []
-                conn.close()
+    try:
+        df_payments = pd.read_sql("SELECT * FROM payments", conn)
+        # ADEQUAÇÃO À LEI DE LINGUAGEM SIMPLES: REMOÇÃO DO STATUS
+        if 'status' in df_payments.columns:
+            df_payments = df_payments.drop(columns=['status'])
+        if 'Status' in df_payments.columns:
+            df_payments = df_payments.drop(columns=['Status'])
+    except:
+        df_payments = pd.DataFrame()
+    conn.close()
                 
                 dfs = []
                 for f in files:
