@@ -1078,86 +1078,87 @@ def main_app():
 
         files = st.file_uploader("Arquivos (CSV/XLSX)", accept_multiple_files=True)
         
-        if files and st.button("Processar Arquivos"):
-            conn = get_db_connection()
-            try:
-                exist_query = pd.read_sql("SELECT DISTINCT arquivo_origem FROM payments", conn)
-                exist = exist_query['arquivo_origem'].tolist() if not exist_query.empty else []
-            except: exist = []
-            conn.close()
-            
-            dfs = []
-            for f in files:
-                if f.name in exist:
-                    st.warning(f"Ignorado (já existe): {f.name}")
-                    continue
-                if 'REL.CADASTRO' in f.name.upper():
-                    st.warning(f"Ignorado (Parece arquivo de conferência bancária): {f.name}")
-                    continue
-                
-                try:
-                    if f.name.endswith('.csv'): 
-                        try: df = pd.read_csv(f, sep=';', encoding='latin1', dtype=str, low_memory=False)
-                        except: f.seek(0); df = pd.read_csv(f, sep=',', encoding='utf-8', dtype=str, low_memory=False)
-                    else: df = pd.read_excel(f, dtype=str)
-                    
-                    df_std = standardize_dataframe(df, f.name)
-                    
-                    # ====================================================================
-                    # VALIDAÇÃO SILENCIOSA: Oculta alertas se os dados já constam no sistema
-                    # ====================================================================
-                    nomes_arquivo = []
-                    # Procura a coluna de nome original para checagem cruzada
-                    col_nome = next((c for c in df.columns if str(c).strip().lower() in ['nome', 'nome do beneficiário', 'participante', 'beneficiário', 'beneficiario']), None)
-                    if col_nome:
-                        nomes_arquivo = df[col_nome].dropna().astype(str).apply(normalize_name).tolist()
-                        
-                    # 1. Levanta os nomes que já deram sucesso nesta mesma fila de upload (dfs)
-                    nomes_sucesso_fila = []
-                    if dfs:
-                        df_temp = pd.concat(dfs, ignore_index=True)
-                        if 'nome' in df_temp.columns:
-                            nomes_sucesso_fila = df_temp['nome'].dropna().astype(str).apply(normalize_name).tolist()
-                            
-                    # 2. Levanta os nomes que já estão consolidados no Banco de Dados
-                    conn = get_db_connection()
-                    try:
-                        nomes_banco = pd.read_sql("SELECT nome FROM payments", conn)['nome'].dropna().astype(str).apply(normalize_name).tolist()
-                    except:
-                        nomes_banco = []
-                    conn.close()
-                    
-                    # 3. Consolida todos os nomes seguros e cruza
-                    nomes_seguros = set(nomes_sucesso_fila + nomes_banco)
-                    nomes_descobertos = [n for n in nomes_arquivo if n not in nomes_seguros and len(n) > 3]
-                    
-                    # 4. Adiciona aos dados finais se houver algo válido e dá o aviso sutil de sucesso
-                    if not df_std.empty: 
-                        dfs.append(df_std)
-                        st.toast(f"{f.name}: {len(df_std)} registros processados.")
-                    
-                    # 5. Exibe os alertas APENAS se houver CPFs/Nomes descobertos (que não estão em NENHUM outro arquivo/banco)
-                    # ISSO SUBSTITUI OS AVISOS ANTIGOS
-                    if df_std.empty or len(df_std) < len(df):
-                        if len(nomes_descobertos) > 0:
-                            st.warning(f"⚠️ {f.name}: {len(nomes_descobertos)} registros incompletos não foram localizados nos arquivos de segurança (Pendências/Pgto).")
-                    # ====================================================================
-                        
-                except Exception as e: st.error(f"Erro ao ler {f.name}: {e}")
-                
-            if dfs:
-                final = pd.concat(dfs, ignore_index=True)
+        # Ajustado para garantir que o botão apareça assim que o arquivo for carregado
+        if files:
+            if st.button("Processar Arquivos"):
                 conn = get_db_connection()
-                final.to_sql('payments', conn, if_exists='append', index=False)
+                try:
+                    exist_query = pd.read_sql("SELECT DISTINCT arquivo_origem FROM payments", conn)
+                    exist = exist_query['arquivo_origem'].tolist() if not exist_query.empty else []
+                except: exist = []
                 conn.close()
-                log_action(user['email'], "UPLOAD", f"Upload de {len(files)} arquivos, {len(final)} registros")
-                st.success(f"✅ {len(final)} registros salvos com sucesso!")
-                inconsistencies = detect_inconsistencies(final)
-                if not inconsistencies.empty:
-                    st.markdown("---")
-                    st.error("🚨 ATENÇÃO: ERROS DE DADOS AUSENTES OU INCONSISTÊNCIAS IDENTIFICADOS NO UPLOAD!")
-                    st.dataframe(inconsistencies, use_container_width=True)
-                st.warning("A tela será atualizada em instantes para consolidar os dados...")
+                
+                dfs = []
+                for f in files:
+                    if f.name in exist:
+                        st.warning(f"Ignorado (já existe): {f.name}")
+                        continue
+                    if 'REL.CADASTRO' in f.name.upper():
+                        st.warning(f"Ignorado (Parece arquivo de conferência bancária): {f.name}")
+                        continue
+                    
+                    try:
+                        if f.name.endswith('.csv'): 
+                            try: df = pd.read_csv(f, sep=';', encoding='latin1', dtype=str, low_memory=False)
+                            except: f.seek(0); df = pd.read_csv(f, sep=',', encoding='utf-8', dtype=str, low_memory=False)
+                        else: df = pd.read_excel(f, dtype=str)
+                        
+                        df_std = standardize_dataframe(df, f.name)
+                        
+                        # ====================================================================
+                        # VALIDAÇÃO SILENCIOSA: Oculta alertas se os dados já constam no sistema
+                        # ====================================================================
+                        nomes_arquivo = []
+                        # Procura a coluna de nome original para checagem cruzada
+                        col_nome = next((c for c in df.columns if str(c).strip().lower() in ['nome', 'nome do beneficiário', 'participante', 'beneficiário', 'beneficiario']), None)
+                        if col_nome:
+                            nomes_arquivo = df[col_nome].dropna().astype(str).apply(normalize_name).tolist()
+                            
+                        # 1. Levanta os nomes que já deram sucesso nesta mesma fila de upload (dfs)
+                        nomes_sucesso_fila = []
+                        if dfs:
+                            df_temp = pd.concat(dfs, ignore_index=True)
+                            if 'nome' in df_temp.columns:
+                                nomes_sucesso_fila = df_temp['nome'].dropna().astype(str).apply(normalize_name).tolist()
+                                
+                        # 2. Levanta os nomes que já estão consolidados no Banco de Dados
+                        conn = get_db_connection()
+                        try:
+                            nomes_banco = pd.read_sql("SELECT nome FROM payments", conn)['nome'].dropna().astype(str).apply(normalize_name).tolist()
+                        except:
+                            nomes_banco = []
+                        conn.close()
+                        
+                        # 3. Consolida todos os nomes seguros e cruza
+                        nomes_seguros = set(nomes_sucesso_fila + nomes_banco)
+                        nomes_descobertos = [n for n in nomes_arquivo if n not in nomes_seguros and len(n) > 3]
+                        
+                        # 4. Adiciona aos dados finais se houver algo válido e dá o aviso sutil de sucesso
+                        if not df_std.empty: 
+                            dfs.append(df_std)
+                            st.toast(f"{f.name}: {len(df_std)} registros processados.")
+                        
+                        # 5. Exibe os alertas APENAS se houver CPFs/Nomes descobertos
+                        if df_std.empty or len(df_std) < len(df):
+                            if len(nomes_descobertos) > 0:
+                                st.warning(f"⚠️ {f.name}: {len(nomes_descobertos)} registros incompletos não foram localizados nos arquivos de segurança (Pendências/Pgto).")
+                        # ====================================================================
+                            
+                    except Exception as e: st.error(f"Erro ao ler {f.name}: {e}")
+                    
+                if dfs:
+                    final = pd.concat(dfs, ignore_index=True)
+                    conn = get_db_connection()
+                    final.to_sql('payments', conn, if_exists='append', index=False)
+                    conn.close()
+                    log_action(user['email'], "UPLOAD", f"Upload de {len(files)} arquivos, {len(final)} registros")
+                    st.success(f"✅ {len(final)} registros salvos com sucesso!")
+                    inconsistencies = detect_inconsistencies(final)
+                    if not inconsistencies.empty:
+                        st.markdown("---")
+                        st.error("🚨 ATENÇÃO: ERROS DE DADOS AUSENTES OU INCONSISTÊNCIAS IDENTIFICADOS NO UPLOAD!")
+                        st.dataframe(inconsistencies, use_container_width=True)
+                    st.warning("A tela será atualizada em instantes para consolidar os dados...")
                 
     # ===========================================
     # ANÁLISE E CORREÇÃO (ATUALIZADA COM MALHA FINA E BACKFILLING)
