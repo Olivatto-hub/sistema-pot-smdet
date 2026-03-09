@@ -1085,6 +1085,7 @@ def main_app():
                 exist = exist_query['arquivo_origem'].tolist() if not exist_query.empty else []
             except: exist = []
             conn.close()
+            
             dfs = []
             for f in files:
                 if f.name in exist:
@@ -1093,14 +1094,53 @@ def main_app():
                 if 'REL.CADASTRO' in f.name.upper():
                     st.warning(f"Ignorado (Parece arquivo de conferência bancária): {f.name}")
                     continue
+                
                 try:
                     if f.name.endswith('.csv'): 
                         try: df = pd.read_csv(f, sep=';', encoding='latin1', dtype=str, low_memory=False)
                         except: f.seek(0); df = pd.read_csv(f, sep=',', encoding='utf-8', dtype=str, low_memory=False)
                     else: df = pd.read_excel(f, dtype=str)
+                    
                     df_std = standardize_dataframe(df, f.name)
-                    if not df_std.empty: dfs.append(df_std)
+                    
+                    # ====================================================================
+                    # VALIDAÇÃO SILENCIOSA: Oculta alertas se os dados já constam no sistema
+                    # ====================================================================
+                    nomes_arquivo = []
+                    # Procura a coluna de nome original para checagem cruzada
+                    col_nome = next((c for c in df.columns if str(c).strip().lower() in ['nome', 'nome do beneficiário', 'participante', 'beneficiário', 'beneficiario']), None)
+                    if col_nome:
+                        nomes_arquivo = df[col_nome].dropna().astype(str).apply(normalize_name).tolist()
+                        
+                    # 1. Levanta os nomes que já deram sucesso nesta mesma fila de upload (dfs)
+                    nomes_sucesso_fila = []
+                    if dfs:
+                        df_temp = pd.concat(dfs, ignore_index=True)
+                        if 'nome' in df_temp.columns:
+                            nomes_sucesso_fila = df_temp['nome'].dropna().astype(str).apply(normalize_name).tolist()
+                            
+                    # 2. Levanta os nomes que já estão consolidados no Banco de Dados
+                    conn = get_db_connection()
+                    try:
+                        nomes_banco = pd.read_sql("SELECT nome FROM payments", conn)['nome'].dropna().astype(str).apply(normalize_name).tolist()
+                    except:
+                        nomes_banco = []
+                    conn.close()
+                    
+                    # 3. Consolida todos os nomes seguros e cruza
+                    nomes_seguros = set(nomes_sucesso_fila + nomes_banco)
+                    nomes_descobertos = [n for n in nomes_arquivo if n not in nomes_seguros and len(n) > 3]
+                    
+                    # 4. Decisão de incluir dados e exibir alertas
+                    if not df_std.empty: 
+                        dfs.append(df_std)
+                    else:
+                        # Só avisa se o arquivo falhou E as pessoas dele não foram salvas por outros arquivos
+                        if len(nomes_descobertos) > 0:
+                            st.warning(f"⚠️ {f.name}: {len(nomes_descobertos)} registros não possuem dados mínimos e não foram encontrados nos outros arquivos de segurança.")
+                            
                 except Exception as e: st.error(f"Erro ao ler {f.name}: {e}")
+                
             if dfs:
                 final = pd.concat(dfs, ignore_index=True)
                 conn = get_db_connection()
