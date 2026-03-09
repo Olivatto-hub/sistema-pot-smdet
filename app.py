@@ -215,10 +215,14 @@ def get_db_connection():
 def log_action(user_email, action, details):
     try:
         conn = get_db_connection()
-        conn.execute("INSERT INTO audit_logs (user_email, action, details) VALUES (?, ?, ?)", 
-                     (user_email, action, details))
-        conn.commit()
-        conn.close()
+    try:
+        df_payments = pd.read_sql("SELECT * FROM payments", conn)
+        # REMOÇÃO DO STATUS PARA ADEQUAÇÃO À LINGUAGEM SIMPLES
+        if 'status' in df_payments.columns:
+            df_payments = df_payments.drop(columns=['status'])
+    except:
+        df_payments = pd.DataFrame()
+    conn.close()
     except Exception as e:
         print(f"Erro ao logar: {e}")
 
@@ -1280,12 +1284,23 @@ def main_app():
             sel_proj = st.multiselect("Filtrar Projeto", projs, default=projs)
             
             if sel_proj:
-                df_exp = df_payments[df_payments['programa'].isin(sel_proj)]
+                # Usamos .copy() para evitar o aviso SettingWithCopyWarning do Pandas
+                df_exp = df_payments[df_payments['programa'].isin(sel_proj)].copy()
             else:
-                df_exp = df_payments
+                df_exp = df_payments.copy()
+            
+            # =========================================================
+            # ADEQUAÇÃO LINGUAGEM SIMPLES: Remoção da coluna de Status
+            # =========================================================
+            if 'Status' in df_exp.columns:
+                df_exp = df_exp.drop(columns=['Status'])
+            if 'status' in df_exp.columns:
+                df_exp = df_exp.drop(columns=['status'])
             
             crit_subset = detect_inconsistencies(df_exp)
             st.markdown("---")
+            
+            st.markdown("##### 📄 Exportações Gerais")
             c1, c2, c3, c4 = st.columns(4)
             
             with c1:
@@ -1313,6 +1328,49 @@ def main_app():
                 st.markdown("###### 🏦 Layout Banco (BB)")
                 txt = generate_bb_txt(df_exp)
                 st.download_button("⬇️ Baixar TXT", txt, "remessa_bb.txt", "text/plain")
+
+            # =========================================================
+            # EXTRAÇÕES ANALÍTICAS (PENDÊNCIAS E ACÚMULOS)
+            # =========================================================
+            st.markdown("---")
+            st.markdown("##### 🔍 Extrações Analíticas Específicas")
+            ca1, ca2 = st.columns(2)
+            
+            with ca1:
+                st.markdown("###### ⚠️ Pagamento de Pendências")
+                st.info("Extrai todos os registros oriundos de arquivos com a palavra 'PENDÊNCIA' ou 'PENDENCIA'.")
+                
+                if 'arquivo_origem' in df_exp.columns:
+                    # Busca flexível ignorando acentos e case sensitive
+                    mask_pendencias = df_exp['arquivo_origem'].str.contains(r'PEND[EÊ]NCIA', case=False, na=False)
+                    df_pendencias = df_exp[mask_pendencias]
+                    
+                    if not df_pendencias.empty:
+                        st.success(f"✅ {len(df_pendencias)} registros encontrados.")
+                        csv_pend = df_pendencias.to_csv(index=False, sep=';').encode('utf-8-sig')
+                        st.download_button("⬇️ Baixar Pendências", csv_pend, f"pagamento_pendencias_{datetime.now().strftime('%Y%m%d')}.csv", "text/csv")
+                    else:
+                        st.warning("Nenhum registro de pendência filtrado.")
+
+            with ca2:
+                st.markdown("###### 🔄 Acúmulo de Projetos")
+                st.info("Identifica beneficiários (CPF) recebendo por múltiplos projetos no mesmo período.")
+                
+                if 'cpf' in df_exp.columns:
+                    # Filtra apenas CPFs válidos (maiores que 5 dígitos)
+                    df_valid_cpf = df_exp[df_exp['cpf'].str.len() > 5].copy()
+                    
+                    # Agrupa e conta em quantos projetos diferentes o CPF aparece
+                    acumulo_cpfs = df_valid_cpf.groupby('cpf')['programa'].nunique()
+                    cpfs_acumulo = acumulo_cpfs[acumulo_cpfs > 1].index
+                    
+                    if len(cpfs_acumulo) > 0:
+                        df_acumulo = df_valid_cpf[df_valid_cpf['cpf'].isin(cpfs_acumulo)].sort_values(['cpf', 'programa'])
+                        st.error(f"🚨 {len(df_acumulo)} registros ({len(cpfs_acumulo)} CPFs únicos).")
+                        csv_acumulo = df_acumulo.to_csv(index=False, sep=';').encode('utf-8-sig')
+                        st.download_button("⬇️ Baixar Acúmulos", csv_acumulo, f"acumulo_projetos_{datetime.now().strftime('%Y%m%d')}.csv", "text/csv")
+                    else:
+                        st.success("Nenhum acúmulo detectado nos dados.")
 
     elif choice == "Conferência Bancária (BB)":
         render_header()
