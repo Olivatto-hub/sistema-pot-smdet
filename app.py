@@ -1013,6 +1013,11 @@ def main_app():
     conn = get_db_connection()
     try:
         df_payments = pd.read_sql("SELECT * FROM payments", conn)
+        # ADEQUAÇÃO À LEI DE LINGUAGEM SIMPLES: REMOÇÃO DO STATUS
+        if 'status' in df_payments.columns:
+            df_payments = df_payments.drop(columns=['status'])
+        if 'Status' in df_payments.columns:
+            df_payments = df_payments.drop(columns=['Status'])
     except:
         df_payments = pd.DataFrame()
     conn.close()
@@ -1077,16 +1082,12 @@ def main_app():
         if files:
             if st.button("Processar Arquivos"):
                 conn = get_db_connection()
-    try:
-        df_payments = pd.read_sql("SELECT * FROM payments", conn)
-        # ADEQUAÇÃO À LEI DE LINGUAGEM SIMPLES: REMOÇÃO DO STATUS
-        if 'status' in df_payments.columns:
-            df_payments = df_payments.drop(columns=['status'])
-        if 'Status' in df_payments.columns:
-            df_payments = df_payments.drop(columns=['Status'])
-    except:
-        df_payments = pd.DataFrame()
-    conn.close()
+                try:
+                    exist_query = pd.read_sql("SELECT DISTINCT arquivo_origem FROM payments", conn)
+                    exist = exist_query['arquivo_origem'].tolist() if not exist_query.empty else []
+                except: 
+                    exist = []
+                conn.close()
                 
                 dfs = []
                 for f in files:
